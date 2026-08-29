@@ -254,7 +254,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
             slot["coverage_pct"],
             approximate,
             power_w=item.get(CONF_POWER_W) if item else None,
-            profile=item.get(CONF_POWER_PROFILE) if item else None,
+            profile=item.get("profile") if item else None,
         )
 
     async def _async_update_data(self) -> dict[str, DeviceSchedule]:
