@@ -126,7 +126,8 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
                 "edit_base",
                 "add_device",
                 "remove_device",
-                "edit_device_profile",
+                "add_program",
+                "remove_program",
                 "add_fixed_load",
                 "remove_fixed_load",
             ],
@@ -166,16 +167,22 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
         names = [d[CONF_NAME] for d in self._devices]
         return self.async_show_form(step_id="remove_device", data_schema=vol.Schema({vol.Required(CONF_NAME): vol.In(names)}))
 
-    async def async_step_edit_device_profile(self, user_input: dict[str, Any] | None = None):
-        """Rebuild a device's single program as a multi-phase power_profile, one phase at a time."""
+    async def async_step_add_program(self, user_input: dict[str, Any] | None = None):
+        """Add a new named, multi-phase program to an existing device (on top of any it already has)."""
         if not self._devices:
             return self.async_abort(reason="no_devices")
+        device_names = [d[CONF_NAME] for d in self._devices]
+        schema = vol.Schema({vol.Required(CONF_NAME): vol.In(device_names), vol.Required("program_name"): str})
         if user_input is not None:
+            device = next(d for d in self._devices if d[CONF_NAME] == user_input[CONF_NAME])
+            existing_names = [p[CONF_NAME] for p in device.get(CONF_PROGRAMS, [])]
+            if user_input["program_name"] in existing_names:
+                return self.async_show_form(step_id="add_program", data_schema=schema, errors={"program_name": "duplicate_program"})
             self._editing_device_name = user_input[CONF_NAME]
+            self._new_program_name = user_input["program_name"]
             self._phases: list[dict[str, Any]] = []
             return await self.async_step_add_phase()
-        names = [d[CONF_NAME] for d in self._devices]
-        return self.async_show_form(step_id="edit_device_profile", data_schema=vol.Schema({vol.Required(CONF_NAME): vol.In(names)}))
+        return self.async_show_form(step_id="add_program", data_schema=schema)
 
     async def async_step_add_phase(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
@@ -183,13 +190,36 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
             if user_input["add_another_phase"]:
                 return self.async_show_form(step_id="add_phase", data_schema=_phase_schema())
             device_name = self._editing_device_name
-            program = {CONF_NAME: device_name, CONF_POWER_PROFILE: self._phases}
+            new_program = {CONF_NAME: self._new_program_name, CONF_POWER_PROFILE: self._phases}
             self._devices = [
-                {**d, CONF_PROGRAMS: [program], CONF_SELECTED_PROGRAM: device_name} if d[CONF_NAME] == device_name else d
+                {**d, CONF_PROGRAMS: [*d.get(CONF_PROGRAMS, []), new_program]} if d[CONF_NAME] == device_name else d
                 for d in self._devices
             ]
             return self.async_create_entry(title="", data=self._current_options())
         return self.async_show_form(step_id="add_phase", data_schema=_phase_schema())
+
+    async def async_step_remove_program(self, user_input: dict[str, Any] | None = None):
+        devices_with_programs = [d for d in self._devices if len(d.get(CONF_PROGRAMS, [])) > 1]
+        if not devices_with_programs:
+            return self.async_abort(reason="no_removable_programs")
+        device_names = [d[CONF_NAME] for d in devices_with_programs]
+        if user_input is not None and CONF_NAME in user_input and "program_name" not in user_input:
+            self._removing_device_name = user_input[CONF_NAME]
+            device = next(d for d in self._devices if d[CONF_NAME] == self._removing_device_name)
+            program_names = [p[CONF_NAME] for p in device[CONF_PROGRAMS]]
+            return self.async_show_form(
+                step_id="remove_program", data_schema=vol.Schema({vol.Required("program_name"): vol.In(program_names)})
+            )
+        if user_input is not None and "program_name" in user_input:
+            device_name = self._removing_device_name
+            self._devices = [
+                {**d, CONF_PROGRAMS: [p for p in d[CONF_PROGRAMS] if p[CONF_NAME] != user_input["program_name"]]}
+                if d[CONF_NAME] == device_name
+                else d
+                for d in self._devices
+            ]
+            return self.async_create_entry(title="", data=self._current_options())
+        return self.async_show_form(step_id="remove_program", data_schema=vol.Schema({vol.Required(CONF_NAME): vol.In(device_names)}))
 
     async def async_step_add_fixed_load(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:

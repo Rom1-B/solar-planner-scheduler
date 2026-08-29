@@ -22,7 +22,8 @@
           "edit_base": "Edit base settings",
           "add_device": "Add a device",
           "remove_device": "Remove a device",
-          "edit_device_profile": "Edit a device's power profile (multi-phase)",
+          "add_program": "Add a program to a device (multi-phase)",
+          "remove_program": "Remove a program from a device",
           "add_fixed_load": "Add a fixed load",
           "remove_fixed_load": "Remove a fixed load"
         }
@@ -51,18 +52,23 @@
         "title": "Remove a device",
         "data": { "name": "Device to remove" }
       },
-      "edit_device_profile": {
-        "title": "Edit a device's power profile",
-        "data": { "name": "Device to edit" }
+      "add_program": {
+        "title": "Add a program",
+        "description": "Pick the device and name the new program (e.g. \"Eco coton\"). The next screen asks for its phases.",
+        "data": { "name": "Device", "program_name": "Program name" }
       },
       "add_phase": {
         "title": "Add a phase",
-        "description": "Enter one phase of the power profile (e.g. 20 minutes at 150 W). Check the box to add another phase, or leave it unchecked to save the profile.",
+        "description": "Enter one phase of the power profile (e.g. 20 minutes at 150 W). Check the box to add another phase, or leave it unchecked to save the program.",
         "data": {
           "minutes": "Duration of this phase (minutes)",
           "power_w": "Power during this phase (W)",
           "add_another_phase": "Add another phase after this one"
         }
+      },
+      "remove_program": {
+        "title": "Remove a program",
+        "data": { "name": "Device", "program_name": "Program to remove" }
       },
       "add_fixed_load": {
         "title": "Add a fixed load",
@@ -80,7 +86,11 @@
     },
     "abort": {
       "no_devices": "No devices configured yet.",
-      "no_fixed_loads": "No fixed loads configured yet."
+      "no_fixed_loads": "No fixed loads configured yet.",
+      "no_removable_programs": "No device has more than one program to remove."
+    },
+    "error": {
+      "duplicate_program": "This device already has a program with that name."
     }
   }
 }
