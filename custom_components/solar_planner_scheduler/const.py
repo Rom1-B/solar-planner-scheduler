@@ -25,6 +25,11 @@ CONF_IDLE_POWER_THRESHOLD = "idle_power_threshold"
 CONF_DURATION_TOLERANCE_PERCENT = "duration_tolerance_percent"
 CONF_RUN_GAP_TOLERANCE_MINUTES = "run_gap_tolerance_minutes"
 
+CONF_ACCEPTED_DAY = "accepted_day"
+CONF_ACCEPTED_DATE = "accepted_date"
+ACCEPTED_DAY_TODAY = "today"
+ACCEPTED_DAY_TOMORROW = "tomorrow"
+
 NONE_PROGRAM = "None"
 
 DEFAULT_MAX_SIMULTANEOUS_POWER = 4000
@@ -38,3 +43,6 @@ ATTR_COVERAGE_PCT = "coverage_pct"
 ATTR_DURATION_MIN = "duration_min"
 ATTR_POWER_W = "power_w"
 ATTR_APPROXIMATE = "approximate"
+ATTR_PENDING_CHOICE = "pending_choice"
+ATTR_TODAY_COVERAGE_PCT = "today_coverage_pct"
+ATTR_TOMORROW_COVERAGE_PCT = "tomorrow_coverage_pct"

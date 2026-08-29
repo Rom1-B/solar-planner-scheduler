@@ -11,6 +11,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .const import (
+    ACCEPTED_DAY_TODAY,
+    ACCEPTED_DAY_TOMORROW,
+    CONF_ACCEPTED_DATE,
+    CONF_ACCEPTED_DAY,
     CONF_DEVICES,
     CONF_DURATION_MIN,
     CONF_NAME,
@@ -67,7 +71,48 @@ async def async_setup(hass: "HomeAssistant", config: dict) -> bool:
             await lovelace.resources.async_update_item(existing["id"], {"res_type": "module", "url": f"{url}?v={CARD_VERSION}"})
 
     await _register_resource()
+    _async_register_services(hass)
     return True
+
+
+def _async_register_services(hass: "HomeAssistant") -> None:
+    import voluptuous as vol
+    from homeassistant.helpers import config_validation as cv
+    from homeassistant.helpers import entity_registry as er
+    from homeassistant.util import dt as dt_util
+
+    schema = vol.Schema({vol.Required("entity_id"): cv.entity_id})
+
+    async def _handle_accept(call, accepted_day: str) -> None:
+        entity_id = call.data["entity_id"]
+        registry_entry = er.async_get(hass).async_get(entity_id)
+        if registry_entry is None or registry_entry.config_entry_id is None:
+            return
+        entry = hass.config_entries.async_get_entry(registry_entry.config_entry_id)
+        if entry is None:
+            return
+        device_name = registry_entry.unique_id.removeprefix(f"{entry.entry_id}_").removesuffix("_next_start")
+        devices = [
+            {**d, CONF_ACCEPTED_DAY: accepted_day, CONF_ACCEPTED_DATE: dt_util.now().date().isoformat()}
+            if d[CONF_NAME] == device_name
+            else d
+            for d in entry.options.get(CONF_DEVICES, [])
+        ]
+        hass.config_entries.async_update_entry(entry, options={**entry.options, CONF_DEVICES: devices})
+        await hass.data[DOMAIN][entry.entry_id].async_request_refresh()
+
+    # Two plain async wrappers, not a lambda around _handle_accept — HA checks
+    # asyncio.iscoroutinefunction() on the registered handler itself to decide whether to await
+    # it directly or run it in an executor; a lambda returning a coroutine fails that check and
+    # would silently never run the coroutine's body.
+    async def _accept_today(call) -> None:
+        await _handle_accept(call, ACCEPTED_DAY_TODAY)
+
+    async def _accept_tomorrow(call) -> None:
+        await _handle_accept(call, ACCEPTED_DAY_TOMORROW)
+
+    hass.services.async_register(DOMAIN, "accept_today", _accept_today, schema=schema)
+    hass.services.async_register(DOMAIN, "accept_tomorrow", _accept_tomorrow, schema=schema)
 
 
 async def async_migrate_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool:

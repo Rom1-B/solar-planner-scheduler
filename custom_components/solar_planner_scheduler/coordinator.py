@@ -12,6 +12,10 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    ACCEPTED_DAY_TODAY,
+    ACCEPTED_DAY_TOMORROW,
+    CONF_ACCEPTED_DATE,
+    CONF_ACCEPTED_DAY,
     CONF_CONSUMPTION_ENTITY,  # noqa: F401 - reserved for a future baseLoad refinement, unused for now
     CONF_DEVICES,
     CONF_DURATION_MIN,
@@ -40,7 +44,7 @@ from .const import (
     DOMAIN,
     NONE_PROGRAM,
 )
-from .scheduling import DRAG_SNAP_MS, Placement, detect_runs, find_best_placement, interpolate
+from .scheduling import DRAG_SNAP_MS, GOOD_ENOUGH_COVERAGE_PCT, Placement, detect_runs, find_best_placement, interpolate
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,6 +56,8 @@ class DeviceSchedule:
     end: datetime | None
     coverage_pct: int | None
     approximate: bool = False
+    today_coverage_pct: int | None = None
+    tomorrow_coverage_pct: int | None = None
 
 
 def _read_forecast_points(hass: HomeAssistant, entity_id: str | None) -> list[dict]:
@@ -85,6 +91,24 @@ def _read_float_state(hass: HomeAssistant, entity_id: str | None) -> float | Non
         return float(state.state)
     except ValueError:
         return None
+
+
+def _day_buckets(now: datetime, day_offset: int) -> list[dict]:
+    """5-minute-grid buckets for `now`'s day (day_offset=0, from now to 23:55) or a future day
+    (day_offset>=1, the full day from midnight to 23:55, mirroring _futureSurplusBuckets)."""
+    if day_offset == 0:
+        start = now
+        day_end = now.replace(hour=23, minute=55, second=0, microsecond=0)
+    else:
+        day_start = (now + timedelta(days=day_offset)).replace(hour=0, minute=0, second=0, microsecond=0)
+        start = day_start
+        day_end = day_start.replace(hour=23, minute=55, second=0, microsecond=0)
+    buckets = []
+    bucket_time = start
+    while bucket_time < day_end:
+        buckets.append({"start": bucket_time})
+        bucket_time += timedelta(milliseconds=DRAG_SNAP_MS)
+    return buckets
 
 
 def _fixed_load_windows(fixed_loads: list[dict], now: datetime) -> list[dict]:
@@ -149,6 +173,53 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
             return sum(r["avg_w"] for r in matching) / len(matching), False
         return sum(r["avg_w"] for r in runs) / len(runs), True
 
+    def _find_slot_for_day(
+        self,
+        item: dict,
+        duration_min: float,
+        points: list[dict],
+        base_load: float,
+        committed: list[dict],
+        max_power: float,
+        day_offset: int,
+    ) -> dict | None:
+        buckets = _day_buckets(dt_util.now(), day_offset)
+        if not buckets:
+            return None
+        placement: Placement | None = find_best_placement(buckets, item, max_power, points, base_load, committed)
+        if placement is None:
+            return None
+        start = buckets[placement.index]["start"]
+        end = start + timedelta(minutes=duration_min)
+        return {"start": start, "end": end, "coverage_pct": placement.coverage_pct}
+
+    def _resolve_accepted_day(self, device: dict, now: datetime) -> str | None:
+        """What to commit to unconditionally this cycle: "today", "tomorrow", or None (compare fresh).
+
+        A "tomorrow" acceptance only applies to the calendar day it was made on — once that day has
+        become today, it collapses to "today"; once it's fully passed it's stale and ignored, so an
+        unattended device never stays locked onto a day that no longer exists.
+        """
+        accepted_day = device.get(CONF_ACCEPTED_DAY)
+        accepted_date_str = device.get(CONF_ACCEPTED_DATE)
+        if not accepted_day or not accepted_date_str:
+            return None
+        accepted_date = dt_util.parse_date(accepted_date_str)
+        if accepted_date is None:
+            return None
+        target_date = accepted_date + timedelta(days=1 if accepted_day == ACCEPTED_DAY_TOMORROW else 0)
+        if now.date() > target_date:
+            return None
+        if now.date() == target_date:
+            return ACCEPTED_DAY_TODAY
+        return accepted_day
+
+    @staticmethod
+    def _schedule_from_slot(name: str, slot: dict | None, approximate: bool) -> DeviceSchedule:
+        if slot is None:
+            return DeviceSchedule(name, None, None, None, approximate)
+        return DeviceSchedule(name, slot["start"], slot["end"], slot["coverage_pct"], approximate)
+
     async def _async_update_data(self) -> dict[str, DeviceSchedule]:
         data = self.entry.data
         options = self.entry.options
@@ -167,12 +238,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         max_power = data.get(CONF_MAX_SIMULTANEOUS_POWER)
         fixed_loads = _fixed_load_windows(options.get(CONF_FIXED_LOADS, []), now)
 
-        day_end = now.replace(hour=23, minute=55, second=0, microsecond=0)
-        buckets = []
-        bucket_time = now
-        while bucket_time < day_end:
-            buckets.append({"start": bucket_time})
-            bucket_time = bucket_time + timedelta(milliseconds=DRAG_SNAP_MS)
+        forecast_tomorrow = data.get(CONF_FORECAST_TOMORROW_ENTITY)
 
         results: dict[str, DeviceSchedule] = {}
         committed = list(fixed_loads)
@@ -202,12 +268,47 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
                 power_w = estimated_w if estimated_w is not None else program.get(CONF_POWER_W)
                 item = {"power_w": power_w, "duration_min": duration_min}
 
-            placement: Placement | None = find_best_placement(buckets, item, max_power, points, base_load, committed)
-            if placement is None:
-                results[name] = DeviceSchedule(name, None, None, None, approximate)
+            def _append_committed(slot: dict | None) -> None:
+                if slot is not None:
+                    committed.append({**item, "start": slot["start"], "end": slot["end"]})
+
+            accepted = self._resolve_accepted_day(device, now)
+            if accepted == ACCEPTED_DAY_TOMORROW:
+                slot = self._find_slot_for_day(item, duration_min, points, base_load, committed, max_power, 1)
+                _append_committed(slot)
+                results[name] = self._schedule_from_slot(name, slot, approximate)
                 continue
-            start = buckets[placement.index]["start"]
-            end = start + timedelta(minutes=duration_min)
-            results[name] = DeviceSchedule(name, start, end, placement.coverage_pct, approximate)
-            committed.append({**item, "start": start, "end": end})
+
+            today_slot = self._find_slot_for_day(item, duration_min, points, base_load, committed, max_power, 0)
+
+            if accepted == ACCEPTED_DAY_TODAY:
+                _append_committed(today_slot)
+                results[name] = self._schedule_from_slot(name, today_slot, approximate)
+                continue
+
+            today_good_enough = today_slot is not None and today_slot["coverage_pct"] >= GOOD_ENOUGH_COVERAGE_PCT
+            if today_good_enough or not forecast_tomorrow:
+                _append_committed(today_slot)
+                results[name] = self._schedule_from_slot(name, today_slot, approximate)
+                continue
+
+            tomorrow_slot = self._find_slot_for_day(item, duration_min, points, base_load, committed, max_power, 1)
+            tomorrow_is_better = tomorrow_slot is not None and (
+                today_slot is None or tomorrow_slot["coverage_pct"] > today_slot["coverage_pct"]
+            )
+            if tomorrow_is_better:
+                # Neither day is committed yet — the user decides via accept_today/accept_tomorrow.
+                results[name] = DeviceSchedule(
+                    name,
+                    None,
+                    None,
+                    None,
+                    approximate,
+                    today_coverage_pct=today_slot["coverage_pct"] if today_slot else None,
+                    tomorrow_coverage_pct=tomorrow_slot["coverage_pct"],
+                )
+                continue
+
+            _append_committed(today_slot)
+            results[name] = self._schedule_from_slot(name, today_slot, approximate)
         return results

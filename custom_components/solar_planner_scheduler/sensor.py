@@ -8,7 +8,16 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import ATTR_APPROXIMATE, ATTR_COVERAGE_PCT, CONF_DEVICES, CONF_NAME, DOMAIN
+from .const import (
+    ATTR_APPROXIMATE,
+    ATTR_COVERAGE_PCT,
+    ATTR_PENDING_CHOICE,
+    ATTR_TODAY_COVERAGE_PCT,
+    ATTR_TOMORROW_COVERAGE_PCT,
+    CONF_DEVICES,
+    CONF_NAME,
+    DOMAIN,
+)
 from .coordinator import SolarPlannerSchedulerCoordinator
 
 
@@ -40,4 +49,10 @@ class NextStartSensor(CoordinatorEntity[SolarPlannerSchedulerCoordinator], Senso
         schedule = self.coordinator.data.get(self._device_name)
         if not schedule:
             return {}
-        return {ATTR_COVERAGE_PCT: schedule.coverage_pct, ATTR_APPROXIMATE: schedule.approximate}
+        attrs = {ATTR_COVERAGE_PCT: schedule.coverage_pct, ATTR_APPROXIMATE: schedule.approximate}
+        pending = schedule.tomorrow_coverage_pct is not None
+        attrs[ATTR_PENDING_CHOICE] = pending
+        if pending:
+            attrs[ATTR_TODAY_COVERAGE_PCT] = schedule.today_coverage_pct
+            attrs[ATTR_TOMORROW_COVERAGE_PCT] = schedule.tomorrow_coverage_pct
+        return attrs

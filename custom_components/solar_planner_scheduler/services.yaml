@@ -1,0 +1,23 @@
+accept_today:
+  name: Accept today's slot
+  description: Commit the device to today's computed slot instead of waiting to compare against tomorrow.
+  fields:
+    entity_id:
+      required: true
+      example: sensor.ballon_d_eau_chaude_next_start
+      selector:
+        entity:
+          domain: sensor
+          integration: solar_planner_scheduler
+
+accept_tomorrow:
+  name: Accept tomorrow's slot
+  description: Commit the device to tomorrow's computed slot instead of today's.
+  fields:
+    entity_id:
+      required: true
+      example: sensor.ballon_d_eau_chaude_next_start
+      selector:
+        entity:
+          domain: sensor
+          integration: solar_planner_scheduler
