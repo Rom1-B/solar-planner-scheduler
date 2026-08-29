@@ -1,13 +1,4 @@
 const CARD_TAG = "solar-planner-card";
-// Duration doubles as the program identifier (no separate catalog); 0 means none selected.
-const NONE_DURATION = 0;
-
-const DEFAULTS = {
-  history_lookback_days: 30,
-  idle_power_threshold: 10,
-  duration_tolerance_percent: 20,
-  run_gap_tolerance_minutes: 5,
-};
 
 const COLORS = {
   light: { forecast: "#2a78d6", actual: "#eb6834", consumption: "#1baf7a" },
@@ -25,8 +16,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export const BUCKET_MS = 30 * 60 * 1000;
 export const SMOOTH_BUCKET_MS = 5 * 60 * 1000;
 export const DRAG_SNAP_MS = 5 * 60 * 1000;
-// At/above this, today is "good enough" and tomorrow isn't even checked (see _resolveTodaySlot). Not 100 — coveragePct is unbounded above.
-export const GOOD_ENOUGH_COVERAGE_PCT = 99;
 
 // Snaps a dragged gantt bar's start to a readable grid instead of an arbitrary pixel-derived ms.
 export function snapToGrid(ms, stepMs = DRAG_SNAP_MS) {
@@ -55,16 +44,6 @@ function fmtWTick(w) {
 
 function fmtTime(d) {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-function fmtHaDatetime(d) {
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
-}
-
-function parseHaDatetime(state) {
-  if (!state || state === "unknown" || state === "unavailable") return null;
-  const d = new Date(state.replace(" ", "T"));
-  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 function startOfDay(d) {
@@ -113,57 +92,6 @@ function interpolate(points, t) {
     }
   }
   return 0;
-}
-
-function detectRuns(samples, idleThreshold, gapToleranceMin) {
-  const raw = [];
-  let run = null;
-  for (const sample of samples) {
-    if (sample.value > idleThreshold) {
-      if (!run) run = { start: sample.time, end: sample.time, points: [sample] };
-      else {
-        run.end = sample.time;
-        run.points.push(sample);
-      }
-    } else if (run) {
-      raw.push(run);
-      run = null;
-    }
-  }
-  if (run) raw.push(run);
-
-  const merged = [];
-  for (const r of raw) {
-    const prev = merged[merged.length - 1];
-    if (prev && (r.start.getTime() - prev.end.getTime()) / 60000 <= gapToleranceMin) {
-      // Mark idle gaps at 0 W, otherwise weightedAvg charges them at the run's last reading.
-      prev.points.push({ time: prev.end, value: 0 });
-      prev.end = r.end;
-      prev.points.push(...r.points);
-    } else {
-      merged.push({ start: r.start, end: r.end, points: [...r.points] });
-    }
-  }
-
-  // Time-weighted average: a plain sample mean overweights whichever phase emits the most state changes.
-  const weightedAvg = (points, runEnd) => {
-    let totalSec = 0;
-    let totalWV = 0;
-    for (let i = 0; i < points.length; i++) {
-      const next = i + 1 < points.length ? points[i + 1].time : runEnd;
-      const dt = (next.getTime() - points[i].time.getTime()) / 1000;
-      totalSec += dt;
-      totalWV += dt * points[i].value;
-    }
-    return totalSec > 0 ? totalWV / totalSec : points.reduce((s, p) => s + p.value, 0) / points.length;
-  };
-
-  return merged
-    .map((r) => ({
-      durationMin: (r.end.getTime() - r.start.getTime()) / 60000,
-      avgW: weightedAvg(r.points, r.end),
-    }))
-    .filter((r) => r.durationMin >= 1);
 }
 
 // Power at time t, summing every overlapping segment — segments concatenates several items, so a plain .find() would silently drop all but one concurrent item (real bug, see CLAUDE.local.md).
@@ -243,6 +171,8 @@ function fitsPeakCeiling(itemSegments, otherSegments, maxSimultaneousPower) {
 
 // Maximizes coverageRatio (unrounded — avoids ties from coveragePercent's rounding). max_simultaneous_power
 // stays a hard filter via fitsPeakCeiling; candidate step comes from `buckets` itself, not a hardcoded 30 min.
+// Kept here (though the card itself no longer calls it) as the JS half of the JS/Python mirrored pure-function
+// pair — scheduling.py's find_best_placement is verified against this exact function's test cases.
 export function findBestPlacement(buckets, item, maxSimultaneousPower, points, baseLoad, others) {
   const stepMs = buckets.length > 1 ? buckets[1].start.getTime() - buckets[0].start.getTime() : DRAG_SNAP_MS;
   const span = Math.max(1, Math.ceil(item.durationMin / (stepMs / 60000)));
@@ -264,6 +194,7 @@ export function findBestPlacement(buckets, item, maxSimultaneousPower, points, b
 }
 
 // preCommitted seeds already-reserved items; each newly placed item is pushed onto it so later items in the batch see earlier placements.
+// Kept for the same JS/Python mirroring reason as findBestPlacement — not called by the card anymore.
 export function scheduleProposals(buckets, items, maxSimultaneousPower, points, baseLoad, preCommitted = []) {
   const committed = [...preCommitted];
   const sorted = [...items].sort((a, b) => b.powerW - a.powerW);
@@ -295,6 +226,7 @@ export function phaseSegments(item) {
 }
 
 // Exact conflict check: sweeps real phase boundaries and sums truly concurrent power, not a 30-min bucket approximation.
+// Kept for the same JS/Python mirroring reason as findBestPlacement — not called by the card anymore.
 export function findPeakConflicts(entries, maxSimultaneousPower) {
   const withSegments = entries.filter((e) => e.start && e.end).map((e) => ({ entry: e, segments: phaseSegments(e) }));
   const breakpoints = new Set();
@@ -327,23 +259,16 @@ class SolarPlannerCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
-    this._estimates = new Map();
-    // Optimistic overlay — hass.callService resolving doesn't mean `hass` reflects the new state yet.
-    this._pending = new Map();
     this._actualPoints = [];
     this._actualCurve = [];
     this._consumptionPoints = [];
     this._consumptionCurve = [];
     this._lastRefresh = 0;
     this._lastSignature = null;
-    this._selectionError = null;
-    // Set by _resolveTodaySlot when tomorrow beats today — holds both slots/percentages for the "Use today/tomorrow" prompt.
-    this._scheduleChoice = null;
     // Live gantt-bar drag state, not re-rendered per pointermove — see _bindGanttDrag.
     this._drag = null;
   }
 
-  // Only shape — duration_minutes is always derived from the profile (see setConfig).
   _validateProfile(profile, label) {
     if (!Array.isArray(profile) || !profile.length) {
       throw new Error(`solar-planner-card: ${label} needs a non-empty 'power_profile'`);
@@ -355,41 +280,22 @@ class SolarPlannerCard extends HTMLElement {
     }
   }
 
+  // config.devices is a list of solar_planner_scheduler device slugs (the entity_id prefix shared
+  // by sensor.<slug>_next_start, binary_sensor.<slug>_should_run, select.<slug>_program,
+  // switch.<slug>_manual_mode, datetime.<slug>_manual_start) — the integration itself already
+  // validates device/program shape, so the card no longer needs to.
   setConfig(config) {
     if (!config.forecast_entity) throw new Error("solar-planner-card: 'forecast_entity' is required");
     if (!config.surplus_entity) throw new Error("solar-planner-card: 'surplus_entity' is required");
     if (!config.max_simultaneous_power) throw new Error("solar-planner-card: 'max_simultaneous_power' is required");
     if (!Array.isArray(config.devices) || !config.devices.length) {
-      throw new Error("solar-planner-card: 'devices[]' is required");
+      throw new Error("solar-planner-card: 'devices' must be a non-empty array of device slugs");
     }
-    const devices = config.devices.map((device) => {
-      if (!device.name || !device.power_sensor) {
-        throw new Error("solar-planner-card: each device needs 'name' and 'power_sensor'");
+    for (const slug of config.devices) {
+      if (typeof slug !== "string" || !slug) {
+        throw new Error("solar-planner-card: each entry in 'devices' must be a non-empty slug string");
       }
-      if (!Array.isArray(device.programs) || !device.programs.length) {
-        throw new Error(`solar-planner-card: device '${device.name}' needs 'programs[]'`);
-      }
-      const seenDurations = new Set();
-      const programs = device.programs.map((program) => {
-        if (!program.name) throw new Error(`solar-planner-card: each program of '${device.name}' needs 'name'`);
-        let durationMinutes = program.duration_minutes;
-        if (program.power_profile) {
-          this._validateProfile(program.power_profile, `program '${program.name}' of '${device.name}'`);
-          durationMinutes = program.power_profile.reduce((s, p) => s + p.minutes, 0);
-        } else if (!durationMinutes) {
-          // No power_profile means "estimate from history" — duration_minutes is required to match past cycles to this program.
-          throw new Error(`solar-planner-card: program '${program.name}' of '${device.name}' needs 'power_profile' or 'duration_minutes'`);
-        }
-        if (seenDurations.has(durationMinutes)) {
-          throw new Error(
-            `solar-planner-card: device '${device.name}' has two programs with duration_minutes=${durationMinutes} — durations must be unique per device (used as the selection identifier)`
-          );
-        }
-        seenDurations.add(durationMinutes);
-        return { ...program, duration_minutes: durationMinutes };
-      });
-      return { ...device, programs };
-    });
+    }
     const fixedLoads = (config.fixed_loads || []).map((load) => {
       if (!load.name || !load.start_time || !load.power_profile) {
         throw new Error("solar-planner-card: each fixed_loads[] entry needs 'name', 'start_time' (HH:MM) and 'power_profile'");
@@ -401,8 +307,7 @@ class SolarPlannerCard extends HTMLElement {
       const durationMinutes = load.power_profile.reduce((s, p) => s + p.minutes, 0);
       return { ...load, duration_minutes: durationMinutes };
     });
-    this._config = { ...DEFAULTS, ...config, devices, fixed_loads: fixedLoads };
-    this._estimates = new Map();
+    this._config = { ...config, fixed_loads: fixedLoads };
     this._lastRefresh = 0;
     this._lastSignature = null;
   }
@@ -453,8 +358,19 @@ class SolarPlannerCard extends HTMLElement {
   }
 
   _relevantSignature() {
-    // Excludes fast-ticking entities (surplus/power/etc.) that only feed 5-min-refreshed values — rendering on those would wipe focus/hover for nothing.
-    const ids = [this._config.forecast_entity, this._config.forecast_tomorrow_entity, this._config.state_entity].filter(Boolean);
+    // Excludes fast-ticking entities (surplus/power/etc.) that only feed 5-min-refreshed values —
+    // rendering on those would wipe focus/hover for nothing. Includes every per-device entity so a
+    // program selection, manual-mode toggle, or server-side recompute all trigger a re-render.
+    const ids = [this._config.forecast_entity, this._config.forecast_tomorrow_entity].filter(Boolean);
+    for (const slug of this._config.devices) {
+      ids.push(
+        `sensor.${slug}_next_start`,
+        `binary_sensor.${slug}_should_run`,
+        `select.${slug}_program`,
+        `switch.${slug}_manual_mode`,
+        `datetime.${slug}_manual_start`
+      );
+    }
     const dark = !!this._hass.themes?.darkMode;
     return `${dark}|${ids.map((id) => `${id}:${this._hass.states[id]?.state}`).join("|")}`;
   }
@@ -481,46 +397,13 @@ class SolarPlannerCard extends HTMLElement {
     }
   }
 
-  async _estimateDevicePrograms(device) {
-    // Skip the history fetch if every program already declares a power_profile.
-    const needsHistory = device.programs.some((p) => p.power_profile == null);
-    let runs = [];
-    if (needsHistory) {
-      const end = new Date();
-      const start = new Date(end.getTime() - this._config.history_lookback_days * DAY_MS);
-      const samples = await this._fetchHistory(device.power_sensor, start, end);
-      runs = detectRuns(samples, this._config.idle_power_threshold, this._config.run_gap_tolerance_minutes);
-    }
-    const tolerance = this._config.duration_tolerance_percent / 100;
-    for (const program of device.programs) {
-      let result;
-      if (program.power_profile) {
-        const totalMin = program.power_profile.reduce((s, p) => s + p.minutes, 0);
-        const avgW = program.power_profile.reduce((s, p) => s + p.minutes * p.power_w, 0) / totalMin;
-        result = { powerW: avgW, profile: program.power_profile, approximate: false };
-      } else {
-        const matching = runs.filter(
-          (r) => Math.abs(r.durationMin - program.duration_minutes) / program.duration_minutes <= tolerance
-        );
-        if (matching.length) {
-          result = { powerW: matching.reduce((s, r) => s + r.avgW, 0) / matching.length, approximate: false };
-        } else if (runs.length) {
-          result = { powerW: runs.reduce((s, r) => s + r.avgW, 0) / runs.length, approximate: true };
-        } else {
-          result = null;
-        }
-      }
-      this._estimates.set(`${device.power_sensor}::${program.name}`, result);
-    }
-  }
-
   async _refresh() {
     if (!this._hass || !this._config) return;
     this._lastRefresh = Date.now();
 
-    const jobs = this._config.devices.map((device) => this._estimateDevicePrograms(device));
     const midnight = startOfDay(new Date());
     const now = new Date();
+    const jobs = [];
     if (this._config.production_entity) {
       jobs.push(
         this._fetchHistory(this._config.production_entity, midnight, now).then((pts) => {
@@ -552,7 +435,6 @@ class SolarPlannerCard extends HTMLElement {
     const state = this._hass.states[this._config.forecast_entity];
     const detailed = state?.attributes?.detailedForecast;
     if (!Array.isArray(detailed)) return null;
-    // Tomorrow's forecast is opt-in — the scheduler only searches it via _resolveTodaySlot's comparison, not by default.
     const tomorrowState = this._config.forecast_tomorrow_entity ? this._hass.states[this._config.forecast_tomorrow_entity] : null;
     const tomorrowDetailed = Array.isArray(tomorrowState?.attributes?.detailedForecast) ? tomorrowState.attributes.detailedForecast : [];
     return [...detailed, ...tomorrowDetailed]
@@ -560,85 +442,23 @@ class SolarPlannerCard extends HTMLElement {
       .sort((a, b) => a.time - b.time);
   }
 
-  // dayOffset: 0 = today (default), 1 = tomorrow (full day) — 1 is only used by _resolveTodaySlot's comparison check.
-  _futureSurplusBuckets(points, dayOffset = 0) {
+  // Only baseLoad/surplusNow are still needed client-side (for the live drag preview's scorePct) —
+  // nothing searches candidate slots in the browser anymore, so no bucket grid is built here.
+  _futureSurplusBuckets(points) {
     const now = new Date();
-    const today = startOfDay(now);
-    // Rounded up to the next DRAG_SNAP_MS mark (not just `now`) so the candidate grid lines up with what a manual drag can reach.
-    const rangeStart =
-      dayOffset === 0 ? new Date(Math.ceil(now.getTime() / DRAG_SNAP_MS) * DRAG_SNAP_MS) : new Date(today.getTime() + dayOffset * DAY_MS);
-    const rangeEnd = new Date(today.getTime() + (dayOffset + 1) * DAY_MS);
     const surplusState = this._hass.states[this._config.surplus_entity];
     const surplusNow =
       surplusState && surplusState.state !== "unavailable" && surplusState.state !== "unknown"
         ? Math.max(0, parseFloat(surplusState.state))
         : 0;
-    // Prefer measured production over forecast for "now" so forecast error doesn't get baked into baseLoad.
     const productionState = this._config.production_entity ? this._hass.states[this._config.production_entity] : null;
     const measuredProdNow =
       productionState && productionState.state !== "unavailable" && productionState.state !== "unknown"
         ? parseFloat(productionState.state)
         : NaN;
-    const prodNow = !Number.isNaN(measuredProdNow) ? measuredProdNow : interpolate(points, now);
+    const prodNow = !Number.isNaN(measuredProdNow) ? measuredProdNow : interpolate(points || [], now);
     const baseLoad = Math.max(0, prodNow - surplusNow);
-    // Candidate grid at DRAG_SNAP_MS (5 min), not a coarser step, so auto-search can find anything a manual drag could.
-    const buckets = [];
-    for (let t = new Date(rangeStart); t < rangeEnd; t = new Date(t.getTime() + DRAG_SNAP_MS)) {
-      buckets.push({ start: new Date(t) });
-    }
-    return { buckets, baseLoad, surplusNow };
-  }
-
-  // One shared input_text (JSON, keyed by device name); invalid/missing content means "nothing selected".
-  _readSharedState() {
-    const raw = this._hass.states[this._config.state_entity]?.state;
-    if (!raw) return {};
-    try {
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === "object" ? parsed : {};
-    } catch {
-      return {};
-    }
-  }
-
-  _activeSelections() {
-    const result = [];
-    if (!this._config.state_entity) return result;
-    const shared = this._readSharedState();
-    for (const device of this._config.devices) {
-      const entry = shared[device.name];
-      const durationValue = entry?.duration;
-      const hassStart = entry?.start ? parseHaDatetime(entry.start) : null;
-
-      const pending = this._pending.get(device.name);
-      if (pending) {
-        const caughtUp = durationValue === pending.durationMin && hassStart && hassStart.getTime() === pending.start.getTime();
-        if (caughtUp) {
-          this._pending.delete(device.name);
-        } else {
-          result.push({ deviceName: device.name, ...pending });
-          continue;
-        }
-      }
-
-      if (!durationValue || Number.isNaN(durationValue)) continue;
-      const program = device.programs.find((p) => p.duration_minutes === durationValue);
-      if (!program) continue;
-      const est = this._estimates.get(`${device.power_sensor}::${program.name}`);
-      if (!est) continue;
-      const end = hassStart ? new Date(hassStart.getTime() + program.duration_minutes * 60000) : null;
-      result.push({
-        deviceName: device.name,
-        programName: program.name,
-        durationMin: program.duration_minutes,
-        powerW: est.powerW,
-        profile: est.profile,
-        approximate: est.approximate,
-        start: hassStart,
-        end,
-      });
-    }
-    return result;
+    return { baseLoad, surplusNow };
   }
 
   // days: daily-occurrence offsets from today (e.g. [0, 1] for today + tomorrow) — fixed loads recur daily.
@@ -667,205 +487,70 @@ class SolarPlannerCard extends HTMLElement {
     return result;
   }
 
-  // dayOffset forwarded to _futureSurplusBuckets — only ever 1 from _resolveTodaySlot's comparison check.
-  _suggestSlot(deviceName, program, dayOffset = 0) {
-    const points = this._theoreticalPoints();
-    if (!points) return null;
-    const est = this._estimates.get(
-      `${this._config.devices.find((d) => d.name === deviceName).power_sensor}::${program.name}`
-    );
-    if (!est) return null;
-    const item = { powerW: est.powerW, profile: est.profile, durationMin: program.duration_minutes };
-    const { buckets, baseLoad } = this._futureSurplusBuckets(points, dayOffset);
-    const others = [...this._activeSelections(), ...this._fixedLoadWindows(dayOffset === 0 ? [0] : [0, 1])].filter(
-      (o) => o.deviceName !== deviceName
-    );
-    const placement = findBestPlacement(buckets, item, this._config.max_simultaneous_power, points, baseLoad, others);
-    if (!placement) return null;
-    const start = buckets[placement.index].start;
-    // findBestPlacement always returns the least-bad start, not null — coveragePct tells the caller how good it actually is.
-    return { start, end: new Date(start.getTime() + program.duration_minutes * 60000), powerW: est.powerW, coveragePct: placement.coveragePct };
+  // One consolidated view of a device's server-computed state, read fresh every render from the
+  // five entities solar_planner_scheduler exposes for it. Nothing here is computed client-side —
+  // only the live drag preview in _bindGanttDrag still is (scorePct), for instant feedback before
+  // the server has a chance to recompute.
+  _readDeviceState(slug) {
+    const nextStart = this._hass.states[`sensor.${slug}_next_start`];
+    const shouldRun = this._hass.states[`binary_sensor.${slug}_should_run`];
+    const program = this._hass.states[`select.${slug}_program`];
+    const manualMode = this._hass.states[`switch.${slug}_manual_mode`];
+    const manualStart = this._hass.states[`datetime.${slug}_manual_start`];
+    const parseTs = (state) =>
+      state && state.state && state.state !== "unknown" && state.state !== "unavailable" ? new Date(state.state) : null;
+    const attrs = nextStart?.attributes || {};
+    return {
+      slug,
+      name: (attrs.friendly_name || slug).replace(/ next start$/, ""),
+      start: parseTs(nextStart),
+      end: attrs.end ? new Date(attrs.end) : null,
+      shouldRun: shouldRun?.state === "on",
+      coveragePct: attrs.coverage_pct ?? null,
+      approximate: !!attrs.approximate,
+      pendingChoice: !!attrs.pending_choice,
+      todayCoveragePct: attrs.today_coverage_pct ?? null,
+      tomorrowCoveragePct: attrs.tomorrow_coverage_pct ?? null,
+      powerW: attrs.power_w ?? null,
+      profile: attrs.profile ?? null,
+      programOptions: program?.attributes?.options || [],
+      programCurrent: program?.state ?? "None",
+      manualMode: manualMode?.state === "on",
+      manualStart: parseTs(manualStart),
+    };
   }
 
-  _previewSchedule(points) {
-    const { buckets, baseLoad } = this._futureSurplusBuckets(points);
-    // Selectable ("wired") is all-or-nothing: state_entity applies to every device, so nothing to preview once configured.
-    const items = [];
-    if (!this._config.state_entity) {
-      for (const device of this._config.devices) {
-        for (const program of device.programs) {
-          const est = this._estimates.get(`${device.power_sensor}::${program.name}`);
-          if (!est) continue;
-          items.push({
-            deviceName: device.name,
-            programName: program.name,
-            durationMin: program.duration_minutes,
-            powerW: est.powerW,
-            profile: est.profile,
-            approximate: est.approximate,
-          });
-        }
-      }
-    }
-    const committed = [...this._activeSelections(), ...this._fixedLoadWindows()];
-    return scheduleProposals(buckets, items, this._config.max_simultaneous_power, points, baseLoad, committed);
+  async _onSelectProgram(slug, programName) {
+    await this._hass.callService("select", "select_option", { entity_id: `select.${slug}_program`, option: programName });
   }
 
-  // Merges in any other device's optimistic _pending write not yet echoed back by hass, so it isn't clobbered.
-  async _writeSharedEntry(deviceName, entry) {
-    const shared = this._readSharedState();
-    for (const [name, pending] of this._pending) {
-      if (name !== deviceName) shared[name] = { duration: pending.durationMin, start: fmtHaDatetime(pending.start) };
-    }
-    if (entry) shared[deviceName] = entry;
-    else delete shared[deviceName];
-    await this._hass.callService("input_text", "set_value", {
-      entity_id: this._config.state_entity,
-      value: JSON.stringify(shared),
-    });
+  // Shared write path for the manual time input and gantt-bar drag. Sets the datetime first, then
+  // flips manual mode on — so a coordinator recompute triggered by the switch already sees the
+  // new value instead of racing it.
+  async _setManualStart(slug, date) {
+    await this._hass.callService("datetime", "set_value", { entity_id: `datetime.${slug}_manual_start`, datetime: date.toISOString() });
+    await this._hass.callService("switch", "turn_on", { entity_id: `switch.${slug}_manual_mode` });
   }
 
-  // Shared by _onSelectProgram/_onRecalculate/_onUseToday/_onUseTomorrow: optimistic pending write, then the real state_entity write.
-  async _commitSlot(device, program, slot) {
-    this._selectionError = null;
-    this._scheduleChoice = null;
-    this._pending.set(device.name, {
-      programName: program.name,
-      durationMin: program.duration_minutes,
-      powerW: slot.powerW,
-      profile: this._estimates.get(`${device.power_sensor}::${program.name}`)?.profile,
-      approximate: this._estimates.get(`${device.power_sensor}::${program.name}`)?.approximate,
-      start: slot.start,
-      end: slot.end,
-    });
-    this._requestRender();
-    await this._writeSharedEntry(device.name, { duration: program.duration_minutes, start: fmtHaDatetime(slot.start) });
-  }
-
-  // Shared by _onSelectProgram/_onRecalculate. Today alone isn't "best available" (findBestPlacement never fails on a poor match) — compares against tomorrow when configured and today is below GOOD_ENOUGH_COVERAGE_PCT, letting the user pick via _onUseToday/_onUseTomorrow instead of committing blindly. keepingSuffix: appended by _onRecalculate, whose previous window still stands if the prompt isn't acted on.
-  _resolveTodaySlot(deviceName, program, keepingSuffix = "") {
-    const today = this._suggestSlot(deviceName, program);
-    const hasTomorrowOption = !!this._config.forecast_tomorrow_entity;
-    // -Infinity (not 0) so a tomorrow with any real candidate counts as strictly better when today has none.
-    const todayCoveragePct = today?.coveragePct ?? -Infinity;
-    const tomorrow = hasTomorrowOption && todayCoveragePct < GOOD_ENOUGH_COVERAGE_PCT ? this._suggestSlot(deviceName, program, 1) : null;
-    const tomorrowIsBetter = !!tomorrow && (!today || tomorrow.coveragePct > todayCoveragePct);
-
-    if (tomorrowIsBetter) {
-      const todayPct = today ? today.coveragePct : null;
-      const tomorrowPct = tomorrow.coveragePct;
-      this._selectionError = today
-        ? `${deviceName}: today's best window for "${program.name}" covers ${todayPct}% from solar — tomorrow covers ${tomorrowPct}%.${keepingSuffix}`
-        : `${deviceName}: no solar window available today for "${program.name}" — tomorrow covers ${tomorrowPct}%.${keepingSuffix}`;
-      this._scheduleChoice = { deviceName, durationMin: program.duration_minutes, todaySlot: today, todayPct, tomorrowSlot: tomorrow, tomorrowPct };
-      return null;
-    }
-
-    if (!today) {
-      this._selectionError = `${deviceName}: no solar window available today${hasTomorrowOption ? " or tomorrow" : ""} for "${program.name}".${keepingSuffix}`;
-      return null;
-    }
-
-    return today;
-  }
-
-  async _onSelectProgram(deviceName, durationValue) {
-    const device = this._config.devices.find((d) => d.name === deviceName);
-    if (!device || !this._config.state_entity) return;
-    if (durationValue === NONE_DURATION) {
-      this._pending.delete(deviceName);
-      this._selectionError = null;
-      this._scheduleChoice = null;
-      await this._writeSharedEntry(deviceName, null);
-      return;
-    }
-    const program = device.programs.find((p) => p.duration_minutes === durationValue);
-    // Don't select without a committed slot: duration and start must move together, or the reminder fires on a stale time.
-    const slot = this._resolveTodaySlot(deviceName, program);
-    if (!slot) {
-      this._requestRender();
-      return;
-    }
-    await this._commitSlot(device, program, slot);
-  }
-
-  async _onRecalculate(deviceName) {
-    const device = this._config.devices.find((d) => d.name === deviceName);
-    const current = this._activeSelections().find((s) => s.deviceName === deviceName);
-    const program = current && device.programs.find((p) => p.duration_minutes === current.durationMin);
-    if (!program) return;
-    const slot = this._resolveTodaySlot(deviceName, program, " Keeping the previous window.");
-    if (!slot) {
-      this._requestRender();
-      return;
-    }
-    await this._commitSlot(device, program, slot);
-  }
-
-  // Commits _scheduleChoice's precomputed today slot as-is — the counterpart to _onUseTomorrow.
-  async _onUseToday(deviceName) {
-    const choice = this._scheduleChoice;
-    if (!choice || choice.deviceName !== deviceName || !choice.todaySlot) return;
-    const device = this._config.devices.find((d) => d.name === deviceName);
-    const program = device?.programs.find((p) => p.duration_minutes === choice.durationMin);
-    if (!program) {
-      this._scheduleChoice = null;
-      this._requestRender();
-      return;
-    }
-    await this._commitSlot(device, program, choice.todaySlot);
-  }
-
-  // Commits _scheduleChoice's precomputed tomorrow slot as-is, without recomputing — the shown percentage is exactly what gets written.
-  async _onUseTomorrow(deviceName) {
-    const choice = this._scheduleChoice;
-    if (!choice || choice.deviceName !== deviceName || !choice.tomorrowSlot) return;
-    const device = this._config.devices.find((d) => d.name === deviceName);
-    const program = device?.programs.find((p) => p.duration_minutes === choice.durationMin);
-    if (!program) {
-      this._scheduleChoice = null;
-      this._requestRender();
-      return;
-    }
-    await this._commitSlot(device, program, choice.tomorrowSlot);
-  }
-
-  // Neither field clears on its own — without this, an _onRecalculate prompt would sit on screen indefinitely.
-  _dismissSelectionError() {
-    this._selectionError = null;
-    this._scheduleChoice = null;
-    this._requestRender();
-  }
-
-  async _onManualTime(deviceName, timeValue) {
-    const current = this._activeSelections().find((s) => s.deviceName === deviceName);
-    if (!this._config.state_entity || !timeValue || !current) return;
-    const next = new Date(current.start || new Date());
+  async _onManualTime(slug, timeValue) {
+    if (!timeValue) return;
+    const ds = this._readDeviceState(slug);
+    const next = new Date(ds.start || new Date());
     const [h, m] = timeValue.split(":").map(Number);
     next.setHours(h, m, 0, 0);
-    await this._setManualStart(deviceName, next);
+    await this._setManualStart(slug, next);
   }
 
-  // Shared write path for the manual time input and gantt-bar drag — both just compute `next` differently.
-  async _setManualStart(deviceName, next) {
-    const device = this._config.devices.find((d) => d.name === deviceName);
-    const current = this._activeSelections().find((s) => s.deviceName === deviceName);
-    if (!this._config.state_entity || !current) return;
-    const program = device.programs.find((p) => p.duration_minutes === current.durationMin);
-    if (program) {
-      const est = this._estimates.get(`${device.power_sensor}::${program.name}`);
-      this._pending.set(deviceName, {
-        programName: program.name,
-        durationMin: program.duration_minutes,
-        powerW: est?.powerW,
-        profile: est?.profile,
-        approximate: est?.approximate,
-        start: next,
-        end: new Date(next.getTime() + program.duration_minutes * 60000),
-      });
-      this._requestRender();
-    }
-    await this._writeSharedEntry(deviceName, { duration: current.durationMin, start: fmtHaDatetime(next) });
+  async _onAutoMode(slug) {
+    await this._hass.callService("switch", "turn_off", { entity_id: `switch.${slug}_manual_mode` });
+  }
+
+  async _onUseToday(slug) {
+    await this._hass.callService("solar_planner_scheduler", "accept_today", { entity_id: `sensor.${slug}_next_start` });
+  }
+
+  async _onUseTomorrow(slug) {
+    await this._hass.callService("solar_planner_scheduler", "accept_tomorrow", { entity_id: `sensor.${slug}_next_start` });
   }
 
   _render() {
@@ -877,10 +562,7 @@ class SolarPlannerCard extends HTMLElement {
     const dark = !!this._hass.themes?.darkMode;
     const colors = dark ? COLORS.dark : COLORS.light;
     const deviceColorList = dark ? DEVICE_COLORS.dark : DEVICE_COLORS.light;
-    const deviceColor = (deviceName) => {
-      const i = this._config.devices.findIndex((d) => d.name === deviceName);
-      return deviceColorList[i % deviceColorList.length];
-    };
+    const deviceColor = (index) => deviceColorList[index % deviceColorList.length];
     // Fixed loads continue the same categorical sequence right after devices, not a shared gray.
     const fixedLoadColor = (index) => deviceColorList[(this._config.devices.length + index) % deviceColorList.length];
 
@@ -891,9 +573,7 @@ class SolarPlannerCard extends HTMLElement {
       return;
     }
 
-    const allWired = !!this._config.state_entity;
-    const activeSelections = this._activeSelections();
-    const preview = this._previewSchedule(points);
+    const deviceStates = this._config.devices.map((slug) => this._readDeviceState(slug));
     // Fixed loads recur daily — generate tomorrow's occurrence too once the view extends there.
     const fixedLoads = this._fixedLoadWindows(this._config.forecast_tomorrow_entity ? [0, 1] : [0]);
     const fixedLoadsByIndex = new Map();
@@ -902,26 +582,26 @@ class SolarPlannerCard extends HTMLElement {
       fixedLoadsByIndex.get(load.loadIndex).push(load);
     });
     const { baseLoad } = this._futureSurplusBuckets(points);
-    const missing = [];
-    for (const device of this._config.devices) {
-      for (const program of device.programs) {
-        if (!this._estimates.get(`${device.power_sensor}::${program.name}`)) {
-          missing.push(`${device.name} – ${program.name}`);
-        }
-      }
-    }
 
-    // Stacked layers: each device, then fixed loads — no base-load layer, that's an internal scheduling estimate, not user-configured (use fixed_loads for a real one).
-    const stackLayers = this._config.devices
-      .map((device) => {
-        const bars = allWired
-          ? activeSelections.filter((s) => s.deviceName === device.name && s.start)
-          : preview.filter((p) => p.deviceName === device.name && p.start);
-        return { color: deviceColor(device.name), bars, confirmed: allWired };
+    // Stacked layers: each device (config order, top-to-bottom), then fixed loads.
+    const stackLayers = deviceStates
+      .map((ds, i) => {
+        const bar =
+          ds.start && ds.end
+            ? {
+                deviceName: ds.name,
+                programName: ds.programCurrent,
+                durationMin: (ds.end.getTime() - ds.start.getTime()) / 60000,
+                powerW: ds.powerW,
+                profile: ds.profile,
+                approximate: ds.approximate,
+                start: ds.start,
+                end: ds.end,
+              }
+            : null;
+        return { color: deviceColor(i), bars: bar ? [bar] : [] };
       })
-      .concat(
-        (this._config.fixed_loads || []).map((load, i) => ({ color: fixedLoadColor(i), bars: fixedLoadsByIndex.get(i) || [], fixed: true }))
-      );
+      .concat((this._config.fixed_loads || []).map((load, i) => ({ color: fixedLoadColor(i), bars: fixedLoadsByIndex.get(i) || [], fixed: true })));
 
     const dayStart = startOfDay(new Date());
     const now = new Date();
@@ -993,7 +673,7 @@ class SolarPlannerCard extends HTMLElement {
         const seg = layer.bars.flatMap((b) => b.segments).find((s) => s.start.getTime() <= mid && mid < s.end.getTime());
         const w = seg ? seg.power : 0;
         total += w;
-        return { color: layer.color, fixed: layer.fixed, ghost: layer.confirmed === false, w };
+        return { color: layer.color, fixed: layer.fixed, w };
       });
       stackedBuckets.push({ start: new Date(t), end: new Date(bEnd), segments, total });
     }
@@ -1032,7 +712,7 @@ class SolarPlannerCard extends HTMLElement {
         // Reversed so the first config entry (gantt's top lane) ends up on top of the stack, not the bottom.
         for (const seg of [...bucket.segments].reverse()) {
           if (seg.w > 0) {
-            const cls = seg.fixed ? "stack-fixed" : seg.ghost ? "stack-ghost" : "stack-confirmed";
+            const cls = seg.fixed ? "stack-fixed" : "stack-confirmed";
             rects.push(
               `<rect x="${bx.toFixed(1)}" y="${y(cum + seg.w).toFixed(1)}" width="${bw.toFixed(1)}" height="${(y(cum) - y(cum + seg.w)).toFixed(1)}" style="${seg.color ? `fill:${seg.color}` : ""}" class="stack-segment ${cls}"/>`
             );
@@ -1077,42 +757,36 @@ class SolarPlannerCard extends HTMLElement {
     const laneHeight = 10;
     const laneGap = 2;
     const ganttTop = 2;
-    const laneCount = this._config.devices.length + this._config.fixed_loads.length;
+    const laneCount = deviceStates.length + (this._config.fixed_loads || []).length;
     const ganttHeight = laneCount * (laneHeight + laneGap) + ganttTop;
 
     const laneBars = [];
-    this._config.devices.forEach((device, i) => {
+    deviceStates.forEach((ds, i) => {
       const laneY = ganttTop + i * (laneHeight + laneGap);
-      const barColor = deviceColor(device.name);
-      const bars = allWired
-        ? activeSelections
-            .filter((s) => s.deviceName === device.name && s.start)
-            .map((s) => ({ ...s, confirmed: true }))
-        : preview.filter((p) => p.deviceName === device.name && p.start).map((p) => ({ ...p, confirmed: false }));
-
-      const rects = bars
-        .map((b) => {
-          const bx = x(b.start);
-          const bw = Math.max(2, x(b.end) - x(b.start));
-          const powerLabel = b.profile
-            ? `${fmtWh((b.powerW * b.durationMin) / 60)} · peak ${fmtW(Math.max(...b.profile.map((p) => p.power_w)))}`
-            : fmtWh((b.powerW * b.durationMin) / 60);
-          const label = `${b.programName} · ${fmtTime(b.start)}–${fmtTime(b.end)} · ${powerLabel}${b.approximate ? " ≈" : ""}`;
-          // Only a confirmed bar is draggable — a preview ghost has no real selection to move.
-          const dragCls = b.confirmed ? " bar-draggable" : "";
-          return `<g class="bar-group"><rect x="${bx.toFixed(1)}" y="${laneY}" width="${bw.toFixed(1)}" height="${laneHeight}" rx="2" style="fill:${barColor}" class="bar ${b.confirmed ? "confirmed" : "ghost"}${dragCls}" data-device="${device.name}"/><title>${label}</title></g>`;
-        })
-        .join("");
-      laneBars.push(rects);
+      const barColor = deviceColor(i);
+      const bars = [];
+      if (ds.start && ds.end) {
+        const durationMin = (ds.end.getTime() - ds.start.getTime()) / 60000;
+        const powerLabel = ds.profile
+          ? `${fmtWh((ds.powerW * durationMin) / 60)} · peak ${fmtW(Math.max(...ds.profile.map((p) => p.power_w)))}`
+          : fmtWh((ds.powerW * durationMin) / 60);
+        const label = `${ds.programCurrent} · ${fmtTime(ds.start)}–${fmtTime(ds.end)} · ${powerLabel}${ds.approximate ? " ≈" : ""}`;
+        const bx = x(ds.start);
+        const bw = Math.max(2, x(ds.end) - bx);
+        bars.push(
+          `<g class="bar-group"><rect x="${bx.toFixed(1)}" y="${laneY}" width="${bw.toFixed(1)}" height="${laneHeight}" rx="2" style="fill:${barColor}" class="bar confirmed bar-draggable" data-device="${ds.slug}"/><title>${label}</title></g>`
+        );
+      }
+      laneBars.push(bars.join(""));
     });
     // Fixed loads are read-only (hatched, "reserved" not "proposed"); a lane can hold today's + tomorrow's occurrence.
-    this._config.fixed_loads.forEach((loadConfig, i) => {
-      const laneY = ganttTop + (this._config.devices.length + i) * (laneHeight + laneGap);
+    (this._config.fixed_loads || []).forEach((loadConfig, i) => {
+      const laneY = ganttTop + (deviceStates.length + i) * (laneHeight + laneGap);
       const occurrences = fixedLoadsByIndex.get(i) || [];
       const rects = occurrences
         .map((load) => {
           const bx = x(load.start);
-          const bw = Math.max(2, x(load.end) - x(load.start));
+          const bw = Math.max(2, x(load.end) - bx);
           const loadPowerLabel = load.profile
             ? `${fmtWh((load.powerW * load.durationMin) / 60)} · peak ${fmtW(Math.max(...load.profile.map((p) => p.power_w)))}`
             : fmtWh((load.powerW * load.durationMin) / 60);
@@ -1123,80 +797,65 @@ class SolarPlannerCard extends HTMLElement {
       laneBars.push(rects);
     });
 
-    // Live coverage for every future committed slot — otherSegments (every other selection/fixed load) is subtracted so overlapping peaks can't both read as fully covered.
-    const coveragePctByDevice = new Map();
-    for (const s of activeSelections) {
-      if (!s.start || s.end <= now) continue;
-      const otherSegments = [...activeSelections, ...fixedLoads]
-        .filter((o) => o.deviceName !== s.deviceName && o.start && o.end)
-        .flatMap((o) => phaseSegments(o));
-      coveragePctByDevice.set(s.deviceName, coveragePercent(phaseSegments(s), otherSegments, points, baseLoad, s.start, s.end));
-    }
+    const unplaced = deviceStates.filter((ds) => ds.programCurrent !== "None" && !ds.start && !ds.pendingChoice);
 
-    const unplaced = activeSelections.filter((s) => !s.start);
-
-    const sharedState = this._readSharedState();
-    const deviceRows = this._config.devices
-      .map((device) => {
-        if (!allWired) return "";
-        const pending = this._pending.get(device.name);
-        const rawCurrent = pending ? pending.durationMin : sharedState[device.name]?.duration;
-        const current = rawCurrent != null ? Number(rawCurrent) : NONE_DURATION;
-        const selection = activeSelections.find((s) => s.deviceName === device.name);
-        const coveragePct = coveragePctByDevice.get(device.name);
-        const powerNow = Number(this._hass.states[device.power_sensor]?.state);
-        const isRunning = !Number.isNaN(powerNow) && powerNow > this._config.idle_power_threshold;
-        const buttons = [
-          ...device.programs.map((p) => ({ label: p.name, value: p.duration_minutes })),
-          { label: "None", value: NONE_DURATION },
-        ]
+    const deviceRows = deviceStates
+      .map((ds, i) => {
+        const buttons = [...ds.programOptions.filter((o) => o !== "None"), "None"]
           .map(
             (opt) =>
-              `<button class="program-btn ${current === opt.value ? "active" : ""}" data-device="${device.name}" data-duration="${opt.value}">${opt.label}</button>`
+              `<button class="program-btn ${ds.programCurrent === opt ? "active" : ""}" data-device="${ds.slug}" data-program="${opt}">${opt}</button>`
           )
           .join("");
-        const knownProgram = device.programs.some((p) => p.duration_minutes === current);
         const slotRow =
-          current !== NONE_DURATION && !knownProgram
-            ? `<div class="slot-row"><span class="warn-badge"><ha-icon icon="mdi:alert"></ha-icon> stored duration "${current}" doesn't match any program duration configured for ${device.name}.</span></div>`
-            : current !== NONE_DURATION
+          ds.programCurrent !== "None"
             ? `<div class="slot-row">
-                <input type="time" class="slot-time" data-device="${device.name}" value="${selection?.start ? fmtTime(selection.start) : ""}">
-                <span class="slot-power">${
-                  selection
-                    ? selection.profile
-                      ? `${fmtWh((selection.powerW * selection.durationMin) / 60)} · peak ${fmtW(Math.max(...selection.profile.map((p) => p.power_w)))}`
-                      : fmtWh((selection.powerW * selection.durationMin) / 60)
-                    : ""
-                }${selection?.approximate ? " ≈" : ""}</span>
-                <button class="recalc-btn" data-device="${device.name}">Recalculate</button>
+                <input type="time" class="slot-time" data-device="${ds.slug}" value="${ds.start ? fmtTime(ds.start) : ""}">
+                ${ds.manualMode ? `<button class="auto-btn" data-device="${ds.slug}">Auto</button>` : ""}
                 ${
-                  coveragePct != null
-                    ? `<span class="coverage-pct ${coveragePct >= 100 ? "coverage-good" : "coverage-low"}">${coveragePct}% solar</span>`
+                  ds.coveragePct != null
+                    ? `<span class="coverage-pct ${ds.coveragePct >= 100 ? "coverage-good" : "coverage-low"}">${ds.coveragePct}% solar</span>`
                     : ""
                 }
               </div>`
             : "";
+        const pendingRow = ds.pendingChoice
+          ? `<div class="warnings"><div><ha-icon icon="mdi:alert"></ha-icon>${ds.name}: today covers ${ds.todayCoveragePct ?? 0}% from solar — tomorrow covers ${ds.tomorrowCoveragePct}%.
+              <button class="use-today-btn" data-device="${ds.slug}">Use today</button>
+              <button class="use-tomorrow-btn" data-device="${ds.slug}">Use tomorrow</button></div></div>`
+          : "";
         return `<div class="device-select">
-          <div class="device-select-header"><span class="swatch" style="background:${deviceColor(device.name)}"></span><span class="device-name">${device.name}</span>${
-          isRunning ? `<ha-icon class="running-icon" icon="mdi:play-circle" title="Currently running"></ha-icon>` : ""
+          <div class="device-select-header"><span class="swatch" style="background:${deviceColor(i)}"></span><span class="device-name">${ds.name}</span>${
+          ds.shouldRun ? `<ha-icon class="running-icon" icon="mdi:play-circle" title="Currently running"></ha-icon>` : ""
         }</div>
           <div class="program-buttons">${buttons}</div>
           ${slotRow}
+          ${pendingRow}
         </div>`;
       })
       .join("");
 
     // Fixed loads aren't selectable, but still need a name/swatch legend since the gantt carries no text labels.
-    const fixedLoadsLegend = this._config.fixed_loads
+    const fixedLoadsLegend = (this._config.fixed_loads || [])
       .map(
         (load, i) =>
           `<div class="device-select"><div class="device-select-header"><span class="swatch fixed-swatch" style="background:${fixedLoadColor(i)}"></span><span class="device-name">${load.name} (external)</span></div></div>`
       )
       .join("");
 
+    const deviceTableRows = deviceStates
+      .filter((ds) => ds.start && ds.end)
+      .map((ds) => ({
+        deviceName: ds.name,
+        programName: ds.programCurrent,
+        start: ds.start,
+        end: ds.end,
+        powerW: ds.powerW,
+        durationMin: (ds.end.getTime() - ds.start.getTime()) / 60000,
+        approximate: ds.approximate,
+      }));
     // "Tomorrow " distinguishes today's/tomorrow's occurrence of a recurring fixed load — same HH:MM otherwise reads as an unexplained duplicate.
-    const tableRows = [...activeSelections, ...preview, ...fixedLoads]
+    const tableRows = [...deviceTableRows, ...fixedLoads]
       .map((p) => {
         const dayLabel = p.start && p.start >= todayEnd ? "Tomorrow " : "";
         return `<tr>
@@ -1225,7 +884,6 @@ class SolarPlannerCard extends HTMLElement {
         .actual-line { fill: none; stroke: ${colors.actual}; stroke-width: 2; }
         .consumption-line { fill: none; stroke: ${colors.consumption}; stroke-width: 2; }
         .stack-segment.stack-confirmed { opacity: 0.55; }
-        .stack-segment.stack-ghost { opacity: 0.25; }
         .stack-segment.stack-fixed { opacity: 0.45; }
         .max-line { stroke: var(--warning-color, #fab219); stroke-width: 1.5; stroke-dasharray: 4 3; }
         .now-line { stroke: var(--secondary-text-color); stroke-width: 1; stroke-dasharray: 2 2; }
@@ -1239,7 +897,6 @@ class SolarPlannerCard extends HTMLElement {
         .hover-box text { fill: var(--primary-text-color); font-size: 11px; }
         .gantt { margin-top: 4px; }
         .bar.confirmed { opacity: 0.9; }
-        .bar.ghost { opacity: 0.4; }
         .bar.fixed {
           opacity: 0.55;
           stroke: var(--secondary-text-color);
@@ -1260,15 +917,12 @@ class SolarPlannerCard extends HTMLElement {
         .program-btn.active { background: var(--primary-color); color: var(--text-primary-color, #fff); border-color: var(--primary-color); }
         .slot-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 0.85em; }
         .slot-time { border: 1px solid var(--divider-color); border-radius: 4px; background: none; color: var(--primary-text-color); }
-        .recalc-btn { background: none; border: none; color: var(--primary-color); cursor: pointer; font-size: 0.85em; padding: 0; }
-        .use-today-btn, .use-tomorrow-btn, .dismiss-btn { background: none; border: none; color: var(--primary-color); cursor: pointer; font-size: 0.85em; padding: 0; margin-left: 8px; text-decoration: underline; }
-        .warn-badge { color: var(--warning-color, #fab219); display: inline-flex; align-items: center; gap: 3px; font-size: 0.8em; }
+        .auto-btn, .use-today-btn, .use-tomorrow-btn { background: none; border: none; color: var(--primary-color); cursor: pointer; font-size: 0.85em; padding: 0; margin-left: 8px; text-decoration: underline; }
         .coverage-pct { font-size: 0.8em; font-weight: 500; }
         .coverage-pct.coverage-good { color: var(--success-color, #4caf50); }
         .coverage-pct.coverage-low { color: var(--warning-color, #fab219); }
         .warnings { margin-top: 10px; font-size: 0.85em; color: var(--warning-color, #fab219); }
         .warnings div { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
-        .missing { margin-top: 6px; font-size: 0.8em; color: var(--secondary-text-color); }
         .table-toggle { margin-top: 10px; cursor: pointer; font-size: 0.85em; color: var(--primary-color); background: none; border: none; padding: 0; }
         table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 0.85em; }
         th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--divider-color); }
@@ -1309,26 +963,12 @@ class SolarPlannerCard extends HTMLElement {
         ${deviceRows}
         ${fixedLoadsLegend}
         ${
-          this._selectionError
-            ? `<div class="warnings"><div><ha-icon icon="mdi:alert"></ha-icon>${this._selectionError}${
-                this._scheduleChoice?.todaySlot
-                  ? `<button class="use-today-btn" data-device="${this._scheduleChoice.deviceName}">Use today (${this._scheduleChoice.todayPct}%)</button>`
-                  : ""
-              }${
-                this._scheduleChoice?.tomorrowSlot
-                  ? `<button class="use-tomorrow-btn" data-device="${this._scheduleChoice.deviceName}">Use tomorrow (${this._scheduleChoice.tomorrowPct}%)</button>`
-                  : ""
-              }<button class="dismiss-btn">Dismiss</button></div></div>`
-            : ""
-        }
-        ${
           unplaced.length
             ? `<div class="warnings">${unplaced
-                .map((p) => `<div><ha-icon icon="mdi:alert"></ha-icon>No sufficient solar window today for ${p.deviceName} – ${p.programName}.</div>`)
+                .map((ds) => `<div><ha-icon icon="mdi:alert"></ha-icon>No sufficient solar window today for ${ds.name}.</div>`)
                 .join("")}</div>`
             : ""
         }
-        ${missing.length ? `<div class="missing">Not enough history to estimate: ${missing.join(", ")}.</div>` : ""}
         <button class="table-toggle" id="toggle-table">${this._showTable ? "Hide" : "Show"} as table</button>
         ${this._showTable ? `<table><thead><tr><th>Device</th><th>Program</th><th>Window</th><th>Energy</th></tr></thead><tbody>${tableRows}</tbody></table>` : ""}
       </ha-card>`;
@@ -1350,22 +990,19 @@ class SolarPlannerCard extends HTMLElement {
       this._render();
     });
     this.shadowRoot.querySelectorAll(".program-btn").forEach((btn) => {
-      btn.addEventListener("click", () => this._onSelectProgram(btn.dataset.device, Number(btn.dataset.duration)));
+      btn.addEventListener("click", () => this._onSelectProgram(btn.dataset.device, btn.dataset.program));
     });
     this.shadowRoot.querySelectorAll(".slot-time").forEach((input) => {
       input.addEventListener("change", () => this._onManualTime(input.dataset.device, input.value));
     });
-    this.shadowRoot.querySelectorAll(".recalc-btn").forEach((btn) => {
-      btn.addEventListener("click", () => this._onRecalculate(btn.dataset.device));
+    this.shadowRoot.querySelectorAll(".auto-btn").forEach((btn) => {
+      btn.addEventListener("click", () => this._onAutoMode(btn.dataset.device));
     });
     this.shadowRoot.querySelectorAll(".use-tomorrow-btn").forEach((btn) => {
       btn.addEventListener("click", () => this._onUseTomorrow(btn.dataset.device));
     });
     this.shadowRoot.querySelectorAll(".use-today-btn").forEach((btn) => {
       btn.addEventListener("click", () => this._onUseToday(btn.dataset.device));
-    });
-    this.shadowRoot.querySelectorAll(".dismiss-btn").forEach((btn) => {
-      btn.addEventListener("click", () => this._dismissSelectionError());
     });
 
     this._bindGanttDrag({ viewStart, viewSpanMs, marginLeft, marginRight, width });
@@ -1409,36 +1046,39 @@ class SolarPlannerCard extends HTMLElement {
     };
 
     this.shadowRoot.querySelectorAll(".bar-draggable").forEach((rect) => {
-      const deviceName = rect.dataset.device;
+      const slug = rect.dataset.device;
 
       rect.addEventListener("pointerdown", (ev) => {
-        const current = this._activeSelections().find((s) => s.deviceName === deviceName && s.start);
-        if (!current) return;
+        const ds = this._readDeviceState(slug);
+        if (!ds.start || !ds.end) return;
         rect.setPointerCapture?.(ev.pointerId);
-        const grabOffsetMs = timeAt(ev.clientX, ev.clientY).getTime() - current.start.getTime();
+        const grabOffsetMs = timeAt(ev.clientX, ev.clientY).getTime() - ds.start.getTime();
         const points = this._theoreticalPoints();
         const { baseLoad } = this._futureSurplusBuckets(points);
-        const others = [
-          ...this._activeSelections(),
-          ...this._fixedLoadWindows(this._config.forecast_tomorrow_entity ? [0, 1] : [0]),
-        ].filter((o) => o.deviceName !== deviceName);
+        const otherDeviceBars = this._config.devices
+          .filter((s) => s !== slug)
+          .map((s) => this._readDeviceState(s))
+          .filter((o) => o.start && o.end)
+          .map((o) => ({ start: o.start, end: o.end, powerW: o.powerW, profile: o.profile }));
+        const fixedLoads = this._fixedLoadWindows(this._config.forecast_tomorrow_entity ? [0, 1] : [0]);
+        const otherSegments = [...otherDeviceBars, ...fixedLoads].flatMap((o) => phaseSegments(o));
         this._drag = {
-          deviceName,
+          slug,
           pointerId: ev.pointerId,
           grabOffsetMs,
-          durationMin: current.durationMin,
-          currentStart: current.start,
-          item: { powerW: current.powerW, profile: current.profile, durationMin: current.durationMin },
+          durationMin: (ds.end.getTime() - ds.start.getTime()) / 60000,
+          currentStart: ds.start,
+          item: { powerW: ds.powerW, profile: ds.profile },
           points,
           baseLoad,
-          otherSegments: others.filter((o) => o.start && o.end).flatMap((o) => phaseSegments(o)),
+          otherSegments,
         };
         showPct(this._drag, parseFloat(rect.getAttribute("x")), parseFloat(rect.getAttribute("y")), parseFloat(rect.getAttribute("height")));
       });
 
       rect.addEventListener("pointermove", (ev) => {
         const drag = this._drag;
-        if (!drag || drag.pointerId !== ev.pointerId || drag.deviceName !== deviceName) return;
+        if (!drag || drag.pointerId !== ev.pointerId || drag.slug !== slug) return;
         const rawStartMs = timeAt(ev.clientX, ev.clientY).getTime() - drag.grabOffsetMs;
         drag.currentStart = new Date(snapToGrid(rawStartMs));
         const bx = marginLeft + ((drag.currentStart.getTime() - viewStart.getTime()) / viewSpanMs) * innerW;
@@ -1448,10 +1088,10 @@ class SolarPlannerCard extends HTMLElement {
 
       const commit = async (ev) => {
         const drag = this._drag;
-        if (!drag || drag.pointerId !== ev.pointerId || drag.deviceName !== deviceName) return;
+        if (!drag || drag.pointerId !== ev.pointerId || drag.slug !== slug) return;
         this._drag = null;
         pctGroup.style.opacity = "0";
-        await this._setManualStart(deviceName, drag.currentStart);
+        await this._setManualStart(slug, drag.currentStart);
       };
       rect.addEventListener("pointerup", commit);
       rect.addEventListener("pointercancel", (ev) => {
@@ -1543,5 +1183,5 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: CARD_TAG,
   name: "Solar Planner Card",
-  description: "Schedules your appliances based on forecast solar production and available surplus.",
+  description: "Displays the solar-based schedule computed by the solar_planner_scheduler integration.",
 });

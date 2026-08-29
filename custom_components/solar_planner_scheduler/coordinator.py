@@ -69,6 +69,8 @@ class DeviceSchedule:
     approximate: bool = False
     today_coverage_pct: int | None = None
     tomorrow_coverage_pct: int | None = None
+    power_w: float | None = None
+    profile: list | None = None
 
 
 def _read_forecast_points(hass: HomeAssistant, entity_id: str | None) -> list[dict]:
@@ -242,10 +244,18 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         return {"start": start, "end": end, "coverage_pct": coverage_pct}
 
     @staticmethod
-    def _schedule_from_slot(name: str, slot: dict | None, approximate: bool) -> DeviceSchedule:
+    def _schedule_from_slot(name: str, slot: dict | None, approximate: bool, item: dict | None = None) -> DeviceSchedule:
         if slot is None:
             return DeviceSchedule(name, None, None, None, approximate)
-        return DeviceSchedule(name, slot["start"], slot["end"], slot["coverage_pct"], approximate)
+        return DeviceSchedule(
+            name,
+            slot["start"],
+            slot["end"],
+            slot["coverage_pct"],
+            approximate,
+            power_w=item.get(CONF_POWER_W) if item else None,
+            profile=item.get(CONF_POWER_PROFILE) if item else None,
+        )
 
     async def _async_update_data(self) -> dict[str, DeviceSchedule]:
         data = self.entry.data
@@ -302,27 +312,27 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
             if device.get(CONF_MANUAL, False):
                 slot = self._manual_slot(device, item, duration_min, points, base_load, committed)
                 _append_committed(slot)
-                results[name] = self._schedule_from_slot(name, slot, approximate)
+                results[name] = self._schedule_from_slot(name, slot, approximate, item)
                 continue
 
             accepted = self._resolve_accepted_day(device, now)
             if accepted == ACCEPTED_DAY_TOMORROW:
                 slot = self._find_slot_for_day(item, duration_min, points, base_load, committed, max_power, 1)
                 _append_committed(slot)
-                results[name] = self._schedule_from_slot(name, slot, approximate)
+                results[name] = self._schedule_from_slot(name, slot, approximate, item)
                 continue
 
             today_slot = self._find_slot_for_day(item, duration_min, points, base_load, committed, max_power, 0)
 
             if accepted == ACCEPTED_DAY_TODAY:
                 _append_committed(today_slot)
-                results[name] = self._schedule_from_slot(name, today_slot, approximate)
+                results[name] = self._schedule_from_slot(name, today_slot, approximate, item)
                 continue
 
             today_good_enough = today_slot is not None and today_slot["coverage_pct"] >= GOOD_ENOUGH_COVERAGE_PCT
             if today_good_enough or not forecast_tomorrow:
                 _append_committed(today_slot)
-                results[name] = self._schedule_from_slot(name, today_slot, approximate)
+                results[name] = self._schedule_from_slot(name, today_slot, approximate, item)
                 continue
 
             tomorrow_slot = self._find_slot_for_day(item, duration_min, points, base_load, committed, max_power, 1)
@@ -343,5 +353,5 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
                 continue
 
             _append_committed(today_slot)
-            results[name] = self._schedule_from_slot(name, today_slot, approximate)
+            results[name] = self._schedule_from_slot(name, today_slot, approximate, item)
         return results
