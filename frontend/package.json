@@ -1,0 +1,8 @@
+{
+  "name": "solar-planner-card",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

@@ -16,6 +16,11 @@ CONF_POWER_SENSOR = "power_sensor"
 CONF_POWER_W = "power_w"
 CONF_DURATION_MIN = "duration_min"
 CONF_START_TIME = "start_time"
+CONF_PROGRAMS = "programs"
+CONF_POWER_PROFILE = "power_profile"
+CONF_SELECTED_PROGRAM = "selected_program"
+
+NONE_PROGRAM = "None"
 
 DEFAULT_MAX_SIMULTANEOUS_POWER = 4000
 DEFAULT_UPDATE_INTERVAL_MINUTES = 15

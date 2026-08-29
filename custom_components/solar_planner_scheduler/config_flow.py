@@ -26,6 +26,8 @@ from .const import (
     CONF_POWER_SENSOR,
     CONF_POWER_W,
     CONF_PRODUCTION_ENTITY,
+    CONF_PROGRAMS,
+    CONF_SELECTED_PROGRAM,
     CONF_START_TIME,
     CONF_SURPLUS_ENTITY,
     DEFAULT_MAX_SIMULTANEOUS_POWER,
@@ -77,7 +79,7 @@ def _fixed_load_schema() -> vol.Schema:
 class SolarPlannerSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Initial setup — base entities only."""
 
-    VERSION = 1
+    VERSION = 2
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
@@ -119,7 +121,20 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_add_device(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
-            self._devices.append(user_input)
+            name = user_input[CONF_NAME]
+            program = {
+                CONF_NAME: name,
+                CONF_POWER_W: user_input[CONF_POWER_W],
+                CONF_DURATION_MIN: user_input[CONF_DURATION_MIN],
+            }
+            self._devices.append(
+                {
+                    CONF_NAME: name,
+                    CONF_POWER_SENSOR: user_input.get(CONF_POWER_SENSOR, ""),
+                    CONF_PROGRAMS: [program],
+                    CONF_SELECTED_PROGRAM: name,
+                }
+            )
             return self.async_create_entry(title="", data=self._current_options())
         return self.async_show_form(step_id="add_device", data_schema=_device_schema())
 

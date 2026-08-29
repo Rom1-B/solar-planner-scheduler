@@ -3,6 +3,7 @@
   "name": "Solar Planner Scheduler",
   "codeowners": ["@Rom1-B"],
   "config_flow": true,
+  "dependencies": ["frontend", "http"],
   "documentation": "https://github.com/Rom1-B/solar-planner-scheduler",
   "issue_tracker": "https://github.com/Rom1-B/solar-planner-scheduler/issues",
   "iot_class": "calculated",

@@ -10,13 +10,92 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .const import DOMAIN
+from .const import (
+    CONF_DEVICES,
+    CONF_DURATION_MIN,
+    CONF_NAME,
+    CONF_POWER_SENSOR,
+    CONF_POWER_W,
+    CONF_PROGRAMS,
+    CONF_SELECTED_PROGRAM,
+    DOMAIN,
+)
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
-PLATFORMS = ["sensor", "binary_sensor"]
+PLATFORMS = ["sensor", "binary_sensor", "select"]
+
+CARD_URL_BASE = f"/{DOMAIN}_files"
+CARD_FILENAME = "solar-planner-card.js"
+# Bump manually whenever solar-planner-card.js changes, so the Lovelace resource URL's
+# cache-busting query string actually changes and browsers don't keep serving a stale copy.
+CARD_VERSION = "1"
+
+
+async def async_setup(hass: "HomeAssistant", config: dict) -> bool:
+    """Serve the bundled Lovelace card and register it in Lovelace's own resource storage.
+
+    `add_extra_js_url` alone does not make the frontend load a module — Lovelace (storage
+    mode) only loads modules it finds in its own `resources` storage collection, so this
+    writes an entry there directly. Home Assistant only calls this once per domain
+    regardless of how many config entries exist, so no "already registered" guard is
+    needed for the static path itself.
+    """
+    from pathlib import Path
+
+    from homeassistant.components.http import StaticPathConfig
+    from homeassistant.helpers.event import async_call_later
+
+    www_path = Path(__file__).parent / "www"
+    await hass.http.async_register_static_paths([StaticPathConfig(CARD_URL_BASE, str(www_path), False)])
+
+    lovelace = hass.data.get("lovelace")
+    if lovelace is None:
+        return True
+
+    async def _register_resource(_now=None) -> None:
+        if not lovelace.resources.loaded:
+            async_call_later(hass, 5, _register_resource)
+            return
+        url = f"{CARD_URL_BASE}/{CARD_FILENAME}"
+        existing = next((r for r in lovelace.resources.async_items() if r["url"].split("?")[0] == url), None)
+        if existing is None:
+            await lovelace.resources.async_create_item({"res_type": "module", "url": f"{url}?v={CARD_VERSION}"})
+        elif existing["url"].split("?v=")[-1] != CARD_VERSION:
+            await lovelace.resources.async_update_item(existing["id"], {"res_type": "module", "url": f"{url}?v={CARD_VERSION}"})
+
+    await _register_resource()
+    return True
+
+
+async def async_migrate_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool:
+    """Convert v1 flat devices (power_w/duration_min at the device root) to v2's programs[]."""
+    if entry.version == 1:
+        migrated_devices = []
+        for device in entry.options.get(CONF_DEVICES, []):
+            if CONF_PROGRAMS in device:
+                migrated_devices.append(device)
+                continue
+            name = device[CONF_NAME]
+            program = {
+                CONF_NAME: name,
+                CONF_POWER_W: device[CONF_POWER_W],
+                CONF_DURATION_MIN: device[CONF_DURATION_MIN],
+            }
+            migrated_devices.append(
+                {
+                    CONF_NAME: name,
+                    CONF_POWER_SENSOR: device.get(CONF_POWER_SENSOR, ""),
+                    CONF_PROGRAMS: [program],
+                    CONF_SELECTED_PROGRAM: name,
+                }
+            )
+        hass.config_entries.async_update_entry(
+            entry, options={**entry.options, CONF_DEVICES: migrated_devices}, version=2
+        )
+    return True
 
 
 async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool:

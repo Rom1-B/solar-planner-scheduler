@@ -20,12 +20,16 @@ from .const import (
     CONF_FORECAST_TOMORROW_ENTITY,
     CONF_MAX_SIMULTANEOUS_POWER,
     CONF_NAME,
+    CONF_POWER_PROFILE,
     CONF_POWER_W,
     CONF_PRODUCTION_ENTITY,
+    CONF_PROGRAMS,
+    CONF_SELECTED_PROGRAM,
     CONF_START_TIME,
     CONF_SURPLUS_ENTITY,
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
+    NONE_PROGRAM,
 )
 from .scheduling import DRAG_SNAP_MS, Placement, find_best_placement, interpolate
 
@@ -120,13 +124,30 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         results: dict[str, DeviceSchedule] = {}
         committed = list(fixed_loads)
         for device in options.get(CONF_DEVICES, []):
-            item = {"power_w": device[CONF_POWER_W], "duration_min": device[CONF_DURATION_MIN]}
+            name = device[CONF_NAME]
+            selected = device.get(CONF_SELECTED_PROGRAM)
+            if not selected or selected == NONE_PROGRAM:
+                results[name] = DeviceSchedule(name, None, None, None)
+                continue
+            program = next((p for p in device.get(CONF_PROGRAMS, []) if p[CONF_NAME] == selected), None)
+            if program is None:
+                results[name] = DeviceSchedule(name, None, None, None)
+                continue
+
+            profile = program.get(CONF_POWER_PROFILE)
+            duration_min = program.get(CONF_DURATION_MIN)
+            if duration_min is None and profile:
+                duration_min = sum(phase["minutes"] for phase in profile)
+            # phase_segments() reads item["profile"], not item["power_profile"] — this key rename is
+            # the whole point of going through a program instead of a flat power_w/duration_min pair.
+            item = {"profile": profile, "duration_min": duration_min} if profile else {"power_w": program[CONF_POWER_W], "duration_min": duration_min}
+
             placement: Placement | None = find_best_placement(buckets, item, max_power, points, base_load, committed)
             if placement is None:
-                results[device[CONF_NAME]] = DeviceSchedule(device[CONF_NAME], None, None, None)
+                results[name] = DeviceSchedule(name, None, None, None)
                 continue
             start = buckets[placement.index]["start"]
-            end = start + timedelta(minutes=device[CONF_DURATION_MIN])
-            results[device[CONF_NAME]] = DeviceSchedule(device[CONF_NAME], start, end, placement.coverage_pct)
+            end = start + timedelta(minutes=duration_min)
+            results[name] = DeviceSchedule(name, start, end, placement.coverage_pct)
             committed.append({**item, "start": start, "end": end})
         return results
