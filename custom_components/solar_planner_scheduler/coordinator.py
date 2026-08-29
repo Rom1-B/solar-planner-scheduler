@@ -15,23 +15,32 @@ from .const import (
     CONF_CONSUMPTION_ENTITY,  # noqa: F401 - reserved for a future baseLoad refinement, unused for now
     CONF_DEVICES,
     CONF_DURATION_MIN,
+    CONF_DURATION_TOLERANCE_PERCENT,
     CONF_FIXED_LOADS,
     CONF_FORECAST_ENTITY,
     CONF_FORECAST_TOMORROW_ENTITY,
+    CONF_HISTORY_LOOKBACK_DAYS,
+    CONF_IDLE_POWER_THRESHOLD,
     CONF_MAX_SIMULTANEOUS_POWER,
     CONF_NAME,
     CONF_POWER_PROFILE,
+    CONF_POWER_SENSOR,
     CONF_POWER_W,
     CONF_PRODUCTION_ENTITY,
     CONF_PROGRAMS,
+    CONF_RUN_GAP_TOLERANCE_MINUTES,
     CONF_SELECTED_PROGRAM,
     CONF_START_TIME,
     CONF_SURPLUS_ENTITY,
+    DEFAULT_DURATION_TOLERANCE_PERCENT,
+    DEFAULT_HISTORY_LOOKBACK_DAYS,
+    DEFAULT_IDLE_POWER_THRESHOLD,
+    DEFAULT_RUN_GAP_TOLERANCE_MINUTES,
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
     NONE_PROGRAM,
 )
-from .scheduling import DRAG_SNAP_MS, Placement, find_best_placement, interpolate
+from .scheduling import DRAG_SNAP_MS, Placement, detect_runs, find_best_placement, interpolate
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,6 +51,7 @@ class DeviceSchedule:
     start: datetime | None
     end: datetime | None
     coverage_pct: int | None
+    approximate: bool = False
 
 
 def _read_forecast_points(hass: HomeAssistant, entity_id: str | None) -> list[dict]:
@@ -96,6 +106,49 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES))
         self.entry = entry
 
+    async def _estimate_program_power(self, device: dict, program: dict) -> tuple[float | None, bool]:
+        """Estimates a flat-power program's real power from power_sensor history.
+
+        Returns (avg_w, approximate). (None, False) means no usable history was found — the
+        caller falls back to the program's declared power_w.
+        """
+        power_sensor = device.get(CONF_POWER_SENSOR)
+        if not power_sensor:
+            return None, False
+
+        # Deferred: recorder.history queries the DB and must run in an executor, not the event loop.
+        # The exact call (state_changes_during_period) has been stable across many HA releases, but
+        # verify it against the target HA version before relying on it — see CLAUDE.local.md.
+        from homeassistant.components.recorder import get_instance, history
+
+        end = dt_util.now()
+        lookback_days = self.entry.data.get(CONF_HISTORY_LOOKBACK_DAYS, DEFAULT_HISTORY_LOOKBACK_DAYS)
+        start = end - timedelta(days=lookback_days)
+        states_by_entity = await get_instance(self.hass).async_add_executor_job(
+            history.state_changes_during_period, self.hass, start, end, power_sensor
+        )
+        samples = []
+        for state in states_by_entity.get(power_sensor, []):
+            try:
+                samples.append({"time": state.last_changed, "value": float(state.state)})
+            except ValueError:
+                continue
+
+        idle_threshold = self.entry.data.get(CONF_IDLE_POWER_THRESHOLD, DEFAULT_IDLE_POWER_THRESHOLD)
+        gap_tolerance_min = self.entry.data.get(CONF_RUN_GAP_TOLERANCE_MINUTES, DEFAULT_RUN_GAP_TOLERANCE_MINUTES)
+        runs = detect_runs(samples, idle_threshold, gap_tolerance_min)
+        if not runs:
+            return None, False
+
+        target_duration = program.get(CONF_DURATION_MIN)
+        tolerance = self.entry.data.get(CONF_DURATION_TOLERANCE_PERCENT, DEFAULT_DURATION_TOLERANCE_PERCENT) / 100
+        matching = [
+            r for r in runs if target_duration and abs(r["duration_min"] - target_duration) / target_duration <= tolerance
+        ]
+        if matching:
+            return sum(r["avg_w"] for r in matching) / len(matching), False
+        return sum(r["avg_w"] for r in runs) / len(runs), True
+
     async def _async_update_data(self) -> dict[str, DeviceSchedule]:
         data = self.entry.data
         options = self.entry.options
@@ -138,16 +191,23 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
             duration_min = program.get(CONF_DURATION_MIN)
             if duration_min is None and profile:
                 duration_min = sum(phase["minutes"] for phase in profile)
-            # phase_segments() reads item["profile"], not item["power_profile"] — this key rename is
-            # the whole point of going through a program instead of a flat power_w/duration_min pair.
-            item = {"profile": profile, "duration_min": duration_min} if profile else {"power_w": program[CONF_POWER_W], "duration_min": duration_min}
+
+            approximate = False
+            if profile:
+                # phase_segments() reads item["profile"], not item["power_profile"] — this key rename
+                # is the whole point of going through a program instead of a flat power_w pair.
+                item = {"profile": profile, "duration_min": duration_min}
+            else:
+                estimated_w, approximate = await self._estimate_program_power(device, program)
+                power_w = estimated_w if estimated_w is not None else program.get(CONF_POWER_W)
+                item = {"power_w": power_w, "duration_min": duration_min}
 
             placement: Placement | None = find_best_placement(buckets, item, max_power, points, base_load, committed)
             if placement is None:
-                results[name] = DeviceSchedule(name, None, None, None)
+                results[name] = DeviceSchedule(name, None, None, None, approximate)
                 continue
             start = buckets[placement.index]["start"]
             end = start + timedelta(minutes=duration_min)
-            results[name] = DeviceSchedule(name, start, end, placement.coverage_pct)
+            results[name] = DeviceSchedule(name, start, end, placement.coverage_pct, approximate)
             committed.append({**item, "start": start, "end": end})
         return results
