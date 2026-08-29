@@ -41,11 +41,10 @@
       },
       "add_device": {
         "title": "Add a device",
+        "description": "Creates the device with no program yet — use \"Add a program\" next to give it one (or several).",
         "data": {
           "name": "Name",
-          "power_sensor": "Power sensor (optional)",
-          "power_w": "Power (W)",
-          "duration_min": "Duration (minutes)"
+          "power_sensor": "Power sensor (optional)"
         }
       },
       "remove_device": {

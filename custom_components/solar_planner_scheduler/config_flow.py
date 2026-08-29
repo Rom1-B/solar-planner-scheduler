@@ -61,8 +61,6 @@ def _device_schema() -> vol.Schema:
         {
             vol.Required(CONF_NAME): str,
             vol.Optional(CONF_POWER_SENSOR, default=""): selector.EntitySelector(),
-            vol.Required(CONF_POWER_W): vol.Coerce(float),
-            vol.Required(CONF_DURATION_MIN): vol.Coerce(int),
         }
     )
 
@@ -140,19 +138,16 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(step_id="edit_base", data_schema=_base_schema(self.config_entry.data))
 
     async def async_step_add_device(self, user_input: dict[str, Any] | None = None):
+        # No auto-created flat program here: a device with a name identical to its only program
+        # was a confusing extra option once real named programs exist (see "Add a program"). A
+        # freshly added device starts with no programs at all (select entity offers just "None")
+        # until one is added.
         if user_input is not None:
-            name = user_input[CONF_NAME]
-            program = {
-                CONF_NAME: name,
-                CONF_POWER_W: user_input[CONF_POWER_W],
-                CONF_DURATION_MIN: user_input[CONF_DURATION_MIN],
-            }
             self._devices.append(
                 {
-                    CONF_NAME: name,
+                    CONF_NAME: user_input[CONF_NAME],
                     CONF_POWER_SENSOR: user_input.get(CONF_POWER_SENSOR, ""),
-                    CONF_PROGRAMS: [program],
-                    CONF_SELECTED_PROGRAM: name,
+                    CONF_PROGRAMS: [],
                 }
             )
             return self.async_create_entry(title="", data=self._current_options())
