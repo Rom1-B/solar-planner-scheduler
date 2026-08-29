@@ -10,6 +10,43 @@ function pad(n) {
   return String(n).padStart(2, "0");
 }
 
+// The card reads forecast/surplus/production/consumption/max_simultaneous_power from this
+// sensor's attributes instead of its own config — spread into every test's `states` object.
+const BASE_CONFIG_ENTITY = {
+  "sensor.solar_planner_scheduler_config": {
+    state: "4000",
+    attributes: {
+      forecast_entity: "sensor.forecast",
+      forecast_tomorrow_entity: null,
+      surplus_entity: "sensor.surplus",
+      production_entity: null,
+      consumption_entity: null,
+      fixed_loads: [],
+    },
+  },
+};
+
+// Card no longer reads forecast_tomorrow_entity from its own config — flips it on in the shared
+// config sensor's attributes instead.
+function enableTomorrowForecast(card) {
+  const entity = card._hass.states["sensor.solar_planner_scheduler_config"];
+  card._hass.states["sensor.solar_planner_scheduler_config"] = {
+    ...entity,
+    attributes: { ...entity.attributes, forecast_tomorrow_entity: "sensor.forecast_tomorrow" },
+  };
+}
+
+// Card no longer reads fixed_loads from its own config either — set them on the shared config
+// sensor's attributes instead. Each load is {name, start_time, power_profile}, matching what
+// BaseConfigSensor exposes (already wrapped as a single-phase profile server-side).
+function setFixedLoads(card, fixedLoads) {
+  const entity = card._hass.states["sensor.solar_planner_scheduler_config"];
+  card._hass.states["sensor.solar_planner_scheduler_config"] = {
+    ...entity,
+    attributes: { ...entity.attributes, fixed_loads: fixedLoads },
+  };
+}
+
 function buildForecast(dayStart, peakKw = 3) {
   const detailedForecast = [];
   for (let h = 6; h <= 20; h++) {
@@ -66,14 +103,8 @@ function deviceEntities(
   };
 }
 
-function baseConfig(overrides = {}) {
-  return {
-    forecast_entity: "sensor.forecast",
-    surplus_entity: "sensor.surplus",
-    max_simultaneous_power: 4000,
-    devices: ["lave_linge", "lave_vaisselle"],
-    fixed_loads: [{ name: "PAC", start_time: overrides.pacStartTime, power_profile: [{ minutes: 60, power_w: 1500 }] }],
-  };
+function baseConfig() {
+  return { devices: ["lave_linge", "lave_vaisselle"] };
 }
 
 // Two devices (Lave-linge 120min@1800W, Lave-vaisselle 90min@1200W) plus one PAC fixed load —
@@ -84,8 +115,9 @@ function buildCard({ withActiveSelections = true } = {}) {
   const dayStart = new Date();
   dayStart.setHours(0, 0, 0, 0);
   const pacStart = new Date(Date.now() + 20 * 60000);
+  const pacStartTime = `${pad(pacStart.getHours())}:${pad(pacStart.getMinutes())}`;
   const card = new Card();
-  card.setConfig(baseConfig({ pacStartTime: `${pad(pacStart.getHours())}:${pad(pacStart.getMinutes())}` }));
+  card.setConfig(baseConfig());
 
   const slotStart = new Date(Date.now() + 10 * 60000);
 
@@ -94,6 +126,7 @@ function buildCard({ withActiveSelections = true } = {}) {
     callService: async () => {},
     callWS: async () => ({}),
     states: {
+      ...BASE_CONFIG_ENTITY,
       "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(dayStart) } },
       "sensor.surplus": { state: "500" },
       ...deviceEntities(
@@ -110,6 +143,7 @@ function buildCard({ withActiveSelections = true } = {}) {
       ),
     },
   };
+  setFixedLoads(card, [{ name: "PAC", start_time: pacStartTime, power_profile: [{ minutes: 60, power_w: 1500 }] }]);
   return card;
 }
 
@@ -243,7 +277,7 @@ test("forecast_tomorrow_entity widens the chart without shrinking today's own re
   tomorrowStart.setDate(tomorrowStart.getDate() + 1);
 
   const withTomorrow = buildCard();
-  withTomorrow._config.forecast_tomorrow_entity = "sensor.forecast_tomorrow";
+  enableTomorrowForecast(withTomorrow);
   withTomorrow._hass.states["sensor.forecast_tomorrow"] = { state: "3", attributes: { detailedForecast: buildForecast(tomorrowStart) } };
   withTomorrow._render();
   const htmlWith = withTomorrow.shadowRoot.innerHTML;
@@ -269,7 +303,7 @@ test("a daily fixed load also shows tomorrow's occurrence once forecast_tomorrow
   tomorrowStart.setDate(tomorrowStart.getDate() + 1);
 
   const withTomorrow = buildCard();
-  withTomorrow._config.forecast_tomorrow_entity = "sensor.forecast_tomorrow";
+  enableTomorrowForecast(withTomorrow);
   withTomorrow._hass.states["sensor.forecast_tomorrow"] = { state: "3", attributes: { detailedForecast: buildForecast(tomorrowStart) } };
   withTomorrow._render();
   const htmlWith = withTomorrow.shadowRoot.innerHTML;
@@ -288,7 +322,7 @@ test("the table marks tomorrow's fixed-load occurrence so it doesn't read as an 
   tomorrowStart.setDate(tomorrowStart.getDate() + 1);
 
   const card = buildCard();
-  card._config.forecast_tomorrow_entity = "sensor.forecast_tomorrow";
+  enableTomorrowForecast(card);
   card._hass.states["sensor.forecast_tomorrow"] = { state: "3", attributes: { detailedForecast: buildForecast(tomorrowStart) } };
   card._showTable = true;
   card._render();
@@ -313,7 +347,7 @@ test("a sunnier tomorrow doesn't rescale today's Y-axis", () => {
   tomorrowStart.setDate(tomorrowStart.getDate() + 1);
 
   const withSunnyTomorrow = buildCard();
-  withSunnyTomorrow._config.forecast_tomorrow_entity = "sensor.forecast_tomorrow";
+  enableTomorrowForecast(withSunnyTomorrow);
   withSunnyTomorrow._hass.states["sensor.forecast_tomorrow"] = {
     state: "8",
     attributes: { detailedForecast: buildForecast(tomorrowStart, 8) },
@@ -328,21 +362,17 @@ test("a full-day fixed load doesn't pull the default view back to midnight", () 
   const dayStart = new Date();
   dayStart.setHours(0, 0, 0, 0);
   const card = new Card();
-  card.setConfig({
-    forecast_entity: "sensor.forecast",
-    surplus_entity: "sensor.surplus",
-    max_simultaneous_power: 4000,
-    devices: ["lave_linge"],
-    fixed_loads: [{ name: "Conso de base", start_time: "00:00", power_profile: [{ minutes: 1440, power_w: 110 }] }],
-  });
+  card.setConfig({ devices: ["lave_linge"] });
   card._hass = {
     themes: { darkMode: false },
     states: {
+      ...BASE_CONFIG_ENTITY,
       "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(dayStart) } },
       "sensor.surplus": { state: "500" },
       ...deviceEntities("lave_linge", { name: "Lave-linge", program: "None" }),
     },
   };
+  setFixedLoads(card, [{ name: "Conso de base", start_time: "00:00", power_profile: [{ minutes: 1440, power_w: 110 }] }]);
   card._render();
   const html = card.shadowRoot.innerHTML;
   const nowX = parseFloat(/x1="([\d.]+)"[^>]*class="now-line"/.exec(html)?.[1] ?? "NaN");
@@ -427,6 +457,7 @@ test("stacked chart segments render at exact phase-boundary granularity, not a f
   card._hass = {
     themes: { darkMode: false },
     states: {
+      ...BASE_CONFIG_ENTITY,
       "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(dayStart) } },
       "sensor.surplus": { state: "500" },
       ...deviceEntities("lave_vaisselle", {
@@ -470,6 +501,7 @@ test("a profile-based program's energy label sums its phases, not durationMin ti
   card._hass = {
     themes: { darkMode: false },
     states: {
+      ...BASE_CONFIG_ENTITY,
       "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(dayStart) } },
       "sensor.surplus": { state: "500" },
       ...deviceEntities("lave_vaisselle", {
@@ -507,6 +539,7 @@ test("a short power spike renders at its true peak, not diluted by a bucket aver
   card._hass = {
     themes: { darkMode: false },
     states: {
+      ...BASE_CONFIG_ENTITY,
       "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(dayStart) } },
       "sensor.surplus": { state: "500" },
       ...deviceEntities("lave_vaisselle", {
@@ -527,24 +560,20 @@ test("a short power spike renders at its true peak, not diluted by a bucket aver
 
 test("fixed loads get distinct colors, not a shared gray", () => {
   const card = new Card();
-  card.setConfig({
-    forecast_entity: "sensor.forecast",
-    surplus_entity: "sensor.surplus",
-    max_simultaneous_power: 4000,
-    devices: ["lave_linge"],
-    fixed_loads: [
-      { name: "PAC", start_time: "13:00", power_profile: [{ minutes: 60, power_w: 1500 }] },
-      { name: "Base conso", start_time: "00:00", power_profile: [{ minutes: 1440, power_w: 300 }] },
-    ],
-  });
+  card.setConfig({ devices: ["lave_linge"] });
   card._hass = {
     themes: { darkMode: false },
     states: {
+      ...BASE_CONFIG_ENTITY,
       "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(new Date()) } },
       "sensor.surplus": { state: "500" },
       ...deviceEntities("lave_linge", { name: "Lave-linge", program: "None" }),
     },
   };
+  setFixedLoads(card, [
+    { name: "PAC", start_time: "13:00", power_profile: [{ minutes: 60, power_w: 1500 }] },
+    { name: "Base conso", start_time: "00:00", power_profile: [{ minutes: 1440, power_w: 300 }] },
+  ]);
   card._render();
   const html = card.shadowRoot.innerHTML;
   const styleMatches = [...html.matchAll(/style="fill:(#[0-9a-fA-F]+)" class="bar fixed"/g)].map((m) => m[1]);
@@ -655,6 +684,7 @@ test("stack order mirrors the gantt's top-to-bottom config order, not reversed",
   card._hass = {
     themes: { darkMode: false },
     states: {
+      ...BASE_CONFIG_ENTITY,
       "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(dayStart) } },
       "sensor.surplus": { state: "500" },
       ...deviceEntities("a", { name: "A", start: slotStart, end: new Date(slotStart.getTime() + 60 * 60000), powerW: 500, coveragePct: 90 }),

@@ -269,25 +269,12 @@ class SolarPlannerCard extends HTMLElement {
     this._drag = null;
   }
 
-  _validateProfile(profile, label) {
-    if (!Array.isArray(profile) || !profile.length) {
-      throw new Error(`solar-planner-card: ${label} needs a non-empty 'power_profile'`);
-    }
-    for (const phase of profile) {
-      if (!(phase.minutes > 0) || phase.power_w == null || phase.power_w < 0) {
-        throw new Error(`solar-planner-card: ${label} has a power_profile phase needing 'minutes' > 0 and 'power_w' >= 0`);
-      }
-    }
-  }
-
   // config.devices is a list of solar_planner_scheduler device slugs (the entity_id prefix shared
   // by sensor.<slug>_next_start, binary_sensor.<slug>_should_run, select.<slug>_program,
   // switch.<slug>_manual_mode, datetime.<slug>_manual_start) — the integration itself already
-  // validates device/program shape, so the card no longer needs to.
+  // validates device/program shape, so the card no longer needs to. fixed_loads is no longer
+  // read from here either — see _baseConfig(), sourced from the integration's own config entry.
   setConfig(config) {
-    if (!config.forecast_entity) throw new Error("solar-planner-card: 'forecast_entity' is required");
-    if (!config.surplus_entity) throw new Error("solar-planner-card: 'surplus_entity' is required");
-    if (!config.max_simultaneous_power) throw new Error("solar-planner-card: 'max_simultaneous_power' is required");
     if (!Array.isArray(config.devices) || !config.devices.length) {
       throw new Error("solar-planner-card: 'devices' must be a non-empty array of device slugs");
     }
@@ -296,20 +283,31 @@ class SolarPlannerCard extends HTMLElement {
         throw new Error("solar-planner-card: each entry in 'devices' must be a non-empty slug string");
       }
     }
-    const fixedLoads = (config.fixed_loads || []).map((load) => {
-      if (!load.name || !load.start_time || !load.power_profile) {
-        throw new Error("solar-planner-card: each fixed_loads[] entry needs 'name', 'start_time' (HH:MM) and 'power_profile'");
-      }
-      if (!/^\d{1,2}:\d{2}$/.test(load.start_time)) {
-        throw new Error(`solar-planner-card: fixed_loads '${load.name}' has an invalid start_time (expected "HH:MM")`);
-      }
-      this._validateProfile(load.power_profile, `fixed_loads '${load.name}'`);
-      const durationMinutes = load.power_profile.reduce((s, p) => s + p.minutes, 0);
-      return { ...load, duration_minutes: durationMinutes };
-    });
-    this._config = { ...config, fixed_loads: fixedLoads };
+    this._config = config;
     this._lastRefresh = 0;
     this._lastSignature = null;
+  }
+
+  // Reads forecast/surplus/production/consumption/max_simultaneous_power/fixed_loads from the
+  // integration's own sensor.solar_planner_scheduler_config instead of requiring them in card
+  // config — one source of truth instead of two.
+  _baseConfig() {
+    if (!this._hass) return { fixed_loads: [] };
+    const state = this._hass.states["sensor.solar_planner_scheduler_config"];
+    const attrs = state?.attributes || {};
+    const fixedLoads = (attrs.fixed_loads || []).map((load) => ({
+      ...load,
+      duration_minutes: load.power_profile.reduce((s, p) => s + p.minutes, 0),
+    }));
+    return {
+      forecast_entity: attrs.forecast_entity,
+      forecast_tomorrow_entity: attrs.forecast_tomorrow_entity,
+      surplus_entity: attrs.surplus_entity,
+      production_entity: attrs.production_entity,
+      consumption_entity: attrs.consumption_entity,
+      max_simultaneous_power: state ? parseFloat(state.state) : null,
+      fixed_loads: fixedLoads,
+    };
   }
 
   set hass(hass) {
@@ -354,14 +352,15 @@ class SolarPlannerCard extends HTMLElement {
   }
 
   getCardSize() {
-    return 4 + (this._config?.devices?.length || 0) + (this._config?.fixed_loads?.length || 0);
+    return 4 + (this._config?.devices?.length || 0) + this._baseConfig().fixed_loads.length;
   }
 
   _relevantSignature() {
     // Excludes fast-ticking entities (surplus/power/etc.) that only feed 5-min-refreshed values —
     // rendering on those would wipe focus/hover for nothing. Includes every per-device entity so a
     // program selection, manual-mode toggle, or server-side recompute all trigger a re-render.
-    const ids = [this._config.forecast_entity, this._config.forecast_tomorrow_entity].filter(Boolean);
+    const base = this._baseConfig();
+    const ids = ["sensor.solar_planner_scheduler_config", base.forecast_entity, base.forecast_tomorrow_entity].filter(Boolean);
     for (const slug of this._config.devices) {
       ids.push(
         `sensor.${slug}_next_start`,
@@ -401,12 +400,13 @@ class SolarPlannerCard extends HTMLElement {
     if (!this._hass || !this._config) return;
     this._lastRefresh = Date.now();
 
+    const base = this._baseConfig();
     const midnight = startOfDay(new Date());
     const now = new Date();
     const jobs = [];
-    if (this._config.production_entity) {
+    if (base.production_entity) {
       jobs.push(
-        this._fetchHistory(this._config.production_entity, midnight, now).then((pts) => {
+        this._fetchHistory(base.production_entity, midnight, now).then((pts) => {
           // Smoothed once here, not per mousemove — raw history can hold thousands of samples by afternoon.
           this._actualPoints = smoothCurve(pts, SMOOTH_BUCKET_MS, midnight, now);
           this._actualCurve = this._actualPoints.map((p) => ({ time: p.time, w: p.value }));
@@ -416,9 +416,9 @@ class SolarPlannerCard extends HTMLElement {
       this._actualPoints = [];
       this._actualCurve = [];
     }
-    if (this._config.consumption_entity) {
+    if (base.consumption_entity) {
       jobs.push(
-        this._fetchHistory(this._config.consumption_entity, midnight, now).then((pts) => {
+        this._fetchHistory(base.consumption_entity, midnight, now).then((pts) => {
           this._consumptionPoints = smoothCurve(pts, SMOOTH_BUCKET_MS, midnight, now);
           this._consumptionCurve = this._consumptionPoints.map((p) => ({ time: p.time, w: p.value }));
         })
@@ -432,10 +432,11 @@ class SolarPlannerCard extends HTMLElement {
   }
 
   _theoreticalPoints() {
-    const state = this._hass.states[this._config.forecast_entity];
+    const base = this._baseConfig();
+    const state = this._hass.states[base.forecast_entity];
     const detailed = state?.attributes?.detailedForecast;
     if (!Array.isArray(detailed)) return null;
-    const tomorrowState = this._config.forecast_tomorrow_entity ? this._hass.states[this._config.forecast_tomorrow_entity] : null;
+    const tomorrowState = base.forecast_tomorrow_entity ? this._hass.states[base.forecast_tomorrow_entity] : null;
     const tomorrowDetailed = Array.isArray(tomorrowState?.attributes?.detailedForecast) ? tomorrowState.attributes.detailedForecast : [];
     return [...detailed, ...tomorrowDetailed]
       .map((p) => ({ time: new Date(p.period_start), w: (p.pv_estimate || 0) * 1000 }))
@@ -445,13 +446,14 @@ class SolarPlannerCard extends HTMLElement {
   // Only baseLoad/surplusNow are still needed client-side (for the live drag preview's scorePct) —
   // nothing searches candidate slots in the browser anymore, so no bucket grid is built here.
   _futureSurplusBuckets(points) {
+    const base = this._baseConfig();
     const now = new Date();
-    const surplusState = this._hass.states[this._config.surplus_entity];
+    const surplusState = this._hass.states[base.surplus_entity];
     const surplusNow =
       surplusState && surplusState.state !== "unavailable" && surplusState.state !== "unknown"
         ? Math.max(0, parseFloat(surplusState.state))
         : 0;
-    const productionState = this._config.production_entity ? this._hass.states[this._config.production_entity] : null;
+    const productionState = base.production_entity ? this._hass.states[base.production_entity] : null;
     const measuredProdNow =
       productionState && productionState.state !== "unavailable" && productionState.state !== "unknown"
         ? parseFloat(productionState.state)
@@ -465,7 +467,7 @@ class SolarPlannerCard extends HTMLElement {
   _fixedLoadWindows(days = [0]) {
     const today = startOfDay(new Date());
     const result = [];
-    (this._config.fixed_loads || []).forEach((load, loadIndex) => {
+    this._baseConfig().fixed_loads.forEach((load, loadIndex) => {
       const [h, m] = load.start_time.split(":").map(Number);
       const powerW = load.power_profile.reduce((s, p) => s + p.minutes * p.power_w, 0) / load.duration_minutes;
       for (const dayOffset of days) {
@@ -558,6 +560,7 @@ class SolarPlannerCard extends HTMLElement {
     // _render() rebuilds the whole DOM every call, so .chart-scroll is new each time — restore scrollLeft or a horizontal scroll gets yanked back to the start.
     const scrollLeft = this.shadowRoot.querySelector(".chart-scroll")?.scrollLeft;
     this._lastSignature = this._relevantSignature();
+    const base = this._baseConfig();
     const points = this._theoreticalPoints();
     const dark = !!this._hass.themes?.darkMode;
     const colors = dark ? COLORS.dark : COLORS.light;
@@ -568,14 +571,14 @@ class SolarPlannerCard extends HTMLElement {
 
     if (!points) {
       this.shadowRoot.innerHTML = `<ha-card><div style="padding:16px;color:var(--error-color)">
-        Entity ${this._config.forecast_entity} doesn't expose a "detailedForecast" attribute (Solcast required).
+        Entity ${base.forecast_entity} doesn't expose a "detailedForecast" attribute (Solcast required).
       </div></ha-card>`;
       return;
     }
 
     const deviceStates = this._config.devices.map((slug) => this._readDeviceState(slug));
     // Fixed loads recur daily — generate tomorrow's occurrence too once the view extends there.
-    const fixedLoads = this._fixedLoadWindows(this._config.forecast_tomorrow_entity ? [0, 1] : [0]);
+    const fixedLoads = this._fixedLoadWindows(base.forecast_tomorrow_entity ? [0, 1] : [0]);
     const fixedLoadsByIndex = new Map();
     fixedLoads.forEach((load) => {
       if (!fixedLoadsByIndex.has(load.loadIndex)) fixedLoadsByIndex.set(load.loadIndex, []);
@@ -601,7 +604,7 @@ class SolarPlannerCard extends HTMLElement {
             : null;
         return { color: deviceColor(i), bars: bar ? [bar] : [] };
       })
-      .concat((this._config.fixed_loads || []).map((load, i) => ({ color: fixedLoadColor(i), bars: fixedLoadsByIndex.get(i) || [], fixed: true })));
+      .concat(base.fixed_loads.map((load, i) => ({ color: fixedLoadColor(i), bars: fixedLoadsByIndex.get(i) || [], fixed: true })));
 
     const dayStart = startOfDay(new Date());
     const now = new Date();
@@ -682,7 +685,7 @@ class SolarPlannerCard extends HTMLElement {
     const maxW =
       [
         ...points.filter((p) => p.time < todayEnd).map((p) => p.w),
-        this._config.max_simultaneous_power,
+        base.max_simultaneous_power,
         ...this._actualPoints.map((p) => p.value),
         ...this._consumptionPoints.map((p) => p.value),
         ...stackedBuckets.map((b) => b.total),
@@ -750,14 +753,14 @@ class SolarPlannerCard extends HTMLElement {
       );
     }
 
-    const maxLineY = y(this._config.max_simultaneous_power).toFixed(1);
+    const maxLineY = y(base.max_simultaneous_power).toFixed(1);
     const nowX = x(now).toFixed(1);
 
     // Color carries device identity; lanes stay thin since hover titles (not lane labels) carry the detail.
     const laneHeight = 10;
     const laneGap = 2;
     const ganttTop = 2;
-    const laneCount = deviceStates.length + (this._config.fixed_loads || []).length;
+    const laneCount = deviceStates.length + base.fixed_loads.length;
     const ganttHeight = laneCount * (laneHeight + laneGap) + ganttTop;
 
     const laneBars = [];
@@ -781,7 +784,7 @@ class SolarPlannerCard extends HTMLElement {
       laneBars.push(bars.join(""));
     });
     // Fixed loads are read-only (hatched, "reserved" not "proposed"); a lane can hold today's + tomorrow's occurrence.
-    (this._config.fixed_loads || []).forEach((loadConfig, i) => {
+    base.fixed_loads.forEach((loadConfig, i) => {
       const laneY = ganttTop + (deviceStates.length + i) * (laneHeight + laneGap);
       const occurrences = fixedLoadsByIndex.get(i) || [];
       const rects = occurrences
@@ -837,7 +840,7 @@ class SolarPlannerCard extends HTMLElement {
       .join("");
 
     // Fixed loads aren't selectable, but still need a name/swatch legend since the gantt carries no text labels.
-    const fixedLoadsLegend = (this._config.fixed_loads || [])
+    const fixedLoadsLegend = base.fixed_loads
       .map(
         (load, i) =>
           `<div class="device-select"><div class="device-select-header"><span class="swatch fixed-swatch" style="background:${fixedLoadColor(i)}"></span><span class="device-name">${load.name} (external)</span></div></div>`
@@ -1067,7 +1070,7 @@ class SolarPlannerCard extends HTMLElement {
           .map((s) => this._readDeviceState(s))
           .filter((o) => o.start && o.end)
           .map((o) => ({ start: o.start, end: o.end, powerW: o.powerW, profile: o.profile }));
-        const fixedLoads = this._fixedLoadWindows(this._config.forecast_tomorrow_entity ? [0, 1] : [0]);
+        const fixedLoads = this._fixedLoadWindows(this._baseConfig().forecast_tomorrow_entity ? [0, 1] : [0]);
         const otherSegments = [...otherDeviceBars, ...fixedLoads].flatMap((o) => phaseSegments(o));
         this._drag = {
           slug,
