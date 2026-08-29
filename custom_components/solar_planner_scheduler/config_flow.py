@@ -22,7 +22,9 @@ from .const import (
     CONF_FORECAST_ENTITY,
     CONF_FORECAST_TOMORROW_ENTITY,
     CONF_MAX_SIMULTANEOUS_POWER,
+    CONF_MINUTES,
     CONF_NAME,
+    CONF_POWER_PROFILE,
     CONF_POWER_SENSOR,
     CONF_POWER_W,
     CONF_PRODUCTION_ENTITY,
@@ -61,6 +63,16 @@ def _device_schema() -> vol.Schema:
             vol.Optional(CONF_POWER_SENSOR, default=""): selector.EntitySelector(),
             vol.Required(CONF_POWER_W): vol.Coerce(float),
             vol.Required(CONF_DURATION_MIN): vol.Coerce(int),
+        }
+    )
+
+
+def _phase_schema() -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Required(CONF_MINUTES): vol.Coerce(int),
+            vol.Required(CONF_POWER_W): vol.Coerce(float),
+            vol.Required("add_another_phase", default=False): bool,
         }
     )
 
@@ -110,7 +122,14 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         return self.async_show_menu(
             step_id="init",
-            menu_options=["edit_base", "add_device", "remove_device", "add_fixed_load", "remove_fixed_load"],
+            menu_options=[
+                "edit_base",
+                "add_device",
+                "remove_device",
+                "edit_device_profile",
+                "add_fixed_load",
+                "remove_fixed_load",
+            ],
         )
 
     async def async_step_edit_base(self, user_input: dict[str, Any] | None = None):
@@ -146,6 +165,31 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data=self._current_options())
         names = [d[CONF_NAME] for d in self._devices]
         return self.async_show_form(step_id="remove_device", data_schema=vol.Schema({vol.Required(CONF_NAME): vol.In(names)}))
+
+    async def async_step_edit_device_profile(self, user_input: dict[str, Any] | None = None):
+        """Rebuild a device's single program as a multi-phase power_profile, one phase at a time."""
+        if not self._devices:
+            return self.async_abort(reason="no_devices")
+        if user_input is not None:
+            self._editing_device_name = user_input[CONF_NAME]
+            self._phases: list[dict[str, Any]] = []
+            return await self.async_step_add_phase()
+        names = [d[CONF_NAME] for d in self._devices]
+        return self.async_show_form(step_id="edit_device_profile", data_schema=vol.Schema({vol.Required(CONF_NAME): vol.In(names)}))
+
+    async def async_step_add_phase(self, user_input: dict[str, Any] | None = None):
+        if user_input is not None:
+            self._phases.append({CONF_MINUTES: user_input[CONF_MINUTES], CONF_POWER_W: user_input[CONF_POWER_W]})
+            if user_input["add_another_phase"]:
+                return self.async_show_form(step_id="add_phase", data_schema=_phase_schema())
+            device_name = self._editing_device_name
+            program = {CONF_NAME: device_name, CONF_POWER_PROFILE: self._phases}
+            self._devices = [
+                {**d, CONF_PROGRAMS: [program], CONF_SELECTED_PROGRAM: device_name} if d[CONF_NAME] == device_name else d
+                for d in self._devices
+            ]
+            return self.async_create_entry(title="", data=self._current_options())
+        return self.async_show_form(step_id="add_phase", data_schema=_phase_schema())
 
     async def async_step_add_fixed_load(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:

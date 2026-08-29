@@ -19,6 +19,7 @@ CONF_START_TIME = "start_time"
 CONF_PROGRAMS = "programs"
 CONF_POWER_PROFILE = "power_profile"
 CONF_SELECTED_PROGRAM = "selected_program"
+CONF_MINUTES = "minutes"
 
 CONF_HISTORY_LOOKBACK_DAYS = "history_lookback_days"
 CONF_IDLE_POWER_THRESHOLD = "idle_power_threshold"
