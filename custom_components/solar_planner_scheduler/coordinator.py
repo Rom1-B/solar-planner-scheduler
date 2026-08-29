@@ -75,42 +75,27 @@ class DeviceSchedule:
 
 def _read_forecast_points(hass: HomeAssistant, entity_id: str | None) -> list[dict]:
     if not entity_id:
-        _LOGGER.warning("DEBUG _read_forecast_points: no entity_id given")
         return []
     state = hass.states.get(entity_id)
     if state is None:
-        _LOGGER.warning("DEBUG _read_forecast_points(%s): state is None", entity_id)
         return []
     detailed = state.attributes.get("detailedForecast")
     if not isinstance(detailed, list):
-        _LOGGER.warning(
-            "DEBUG _read_forecast_points(%s): detailedForecast is %s (attrs keys=%s)",
-            entity_id,
-            type(detailed),
-            list(state.attributes.keys()),
-        )
         return []
     points = []
-    skipped_none = 0
-    skipped_exc = 0
     for p in detailed:
         try:
-            period_start = dt_util.parse_datetime(p["period_start"])
+            # Solcast stores period_start as a real datetime object in its own in-memory attributes
+            # (only serialized to an ISO string once it crosses the WS/REST API boundary) — parse_datetime()
+            # requires a string, so a raw datetime here must be used as-is instead.
+            period_start = p["period_start"]
+            if isinstance(period_start, str):
+                period_start = dt_util.parse_datetime(period_start)
             if period_start is None:
-                skipped_none += 1
                 continue
             points.append({"time": period_start, "w": float(p.get("pv_estimate", 0)) * 1000})
-        except (KeyError, TypeError, ValueError) as exc:
-            skipped_exc += 1
-            _LOGGER.warning("DEBUG _read_forecast_points(%s): exception on point %s: %r", entity_id, p, exc)
-    _LOGGER.warning(
-        "DEBUG _read_forecast_points(%s): detailed=%d parsed=%d skipped_none=%d skipped_exc=%d",
-        entity_id,
-        len(detailed),
-        len(points),
-        skipped_none,
-        skipped_exc,
-    )
+        except (KeyError, TypeError, ValueError):
+            continue
     return sorted(points, key=lambda pt: pt["time"])
 
 
@@ -261,16 +246,6 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         item_segments = phase_segments({**item, "start": start, "end": end})
         other_segments = [seg for o in committed if o.get("start") and o.get("end") for seg in phase_segments(o)]
         coverage_pct = coverage_percent(item_segments, other_segments, points, base_load, start, end)
-        _LOGGER.warning(
-            "DEBUG manual_slot: start=%s end=%s base_load=%s points=%d other_segments=%d item=%s coverage_pct=%s",
-            start,
-            end,
-            base_load,
-            len(points),
-            len(other_segments),
-            item,
-            coverage_pct,
-        )
         return {"start": start, "end": end, "coverage_pct": coverage_pct}
 
     @staticmethod
@@ -294,14 +269,6 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         points = _read_forecast_points(self.hass, data.get(CONF_FORECAST_ENTITY))
         tomorrow_points = _read_forecast_points(self.hass, data.get(CONF_FORECAST_TOMORROW_ENTITY))
         points = sorted(points + tomorrow_points, key=lambda pt: pt["time"])
-        _LOGGER.warning(
-            "DEBUG points: today=%d tomorrow=%d total=%d first=%s last=%s",
-            len(points) - len(tomorrow_points),
-            len(tomorrow_points),
-            len(points),
-            points[0] if points else None,
-            points[-1] if points else None,
-        )
 
         now = dt_util.now()
         surplus = _read_float_state(self.hass, data.get(CONF_SURPLUS_ENTITY)) or 0.0
