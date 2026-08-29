@@ -25,6 +25,8 @@ from .const import (
     CONF_FORECAST_TOMORROW_ENTITY,
     CONF_HISTORY_LOOKBACK_DAYS,
     CONF_IDLE_POWER_THRESHOLD,
+    CONF_MANUAL,
+    CONF_MANUAL_START,
     CONF_MAX_SIMULTANEOUS_POWER,
     CONF_NAME,
     CONF_POWER_PROFILE,
@@ -44,7 +46,16 @@ from .const import (
     DOMAIN,
     NONE_PROGRAM,
 )
-from .scheduling import DRAG_SNAP_MS, GOOD_ENOUGH_COVERAGE_PCT, Placement, detect_runs, find_best_placement, interpolate
+from .scheduling import (
+    DRAG_SNAP_MS,
+    GOOD_ENOUGH_COVERAGE_PCT,
+    Placement,
+    coverage_percent,
+    detect_runs,
+    find_best_placement,
+    interpolate,
+    phase_segments,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -215,6 +226,22 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         return accepted_day
 
     @staticmethod
+    def _manual_slot(
+        device: dict, item: dict, duration_min: float, points: list[dict], base_load: float, committed: list[dict]
+    ) -> dict | None:
+        manual_start_str = device.get(CONF_MANUAL_START)
+        if not manual_start_str:
+            return None
+        start = dt_util.parse_datetime(manual_start_str)
+        if start is None:
+            return None
+        end = start + timedelta(minutes=duration_min)
+        item_segments = phase_segments({**item, "start": start, "end": end})
+        other_segments = [seg for o in committed if o.get("start") and o.get("end") for seg in phase_segments(o)]
+        coverage_pct = coverage_percent(item_segments, other_segments, points, base_load, start, end)
+        return {"start": start, "end": end, "coverage_pct": coverage_pct}
+
+    @staticmethod
     def _schedule_from_slot(name: str, slot: dict | None, approximate: bool) -> DeviceSchedule:
         if slot is None:
             return DeviceSchedule(name, None, None, None, approximate)
@@ -271,6 +298,12 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
             def _append_committed(slot: dict | None) -> None:
                 if slot is not None:
                     committed.append({**item, "start": slot["start"], "end": slot["end"]})
+
+            if device.get(CONF_MANUAL, False):
+                slot = self._manual_slot(device, item, duration_min, points, base_load, committed)
+                _append_committed(slot)
+                results[name] = self._schedule_from_slot(name, slot, approximate)
+                continue
 
             accepted = self._resolve_accepted_day(device, now)
             if accepted == ACCEPTED_DAY_TOMORROW:
