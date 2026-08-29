@@ -1,0 +1,151 @@
+"""Config flow for Solar Planner Scheduler.
+
+Base settings (forecast/surplus/etc entities) are set once at initial setup; devices and fixed
+loads are managed afterwards through the options flow so they can be added/removed without
+recreating the whole config entry.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import voluptuous as vol
+from homeassistant import config_entries
+from homeassistant.core import callback
+from homeassistant.helpers import selector
+
+from .const import (
+    CONF_CONSUMPTION_ENTITY,
+    CONF_DEVICES,
+    CONF_DURATION_MIN,
+    CONF_FIXED_LOADS,
+    CONF_FORECAST_ENTITY,
+    CONF_FORECAST_TOMORROW_ENTITY,
+    CONF_MAX_SIMULTANEOUS_POWER,
+    CONF_NAME,
+    CONF_POWER_SENSOR,
+    CONF_POWER_W,
+    CONF_PRODUCTION_ENTITY,
+    CONF_START_TIME,
+    CONF_SURPLUS_ENTITY,
+    DEFAULT_MAX_SIMULTANEOUS_POWER,
+    DOMAIN,
+)
+
+
+def _base_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
+    defaults = defaults or {}
+    return vol.Schema(
+        {
+            vol.Required(CONF_FORECAST_ENTITY, default=defaults.get(CONF_FORECAST_ENTITY, "")): selector.EntitySelector(),
+            vol.Optional(
+                CONF_FORECAST_TOMORROW_ENTITY, default=defaults.get(CONF_FORECAST_TOMORROW_ENTITY, "")
+            ): selector.EntitySelector(),
+            vol.Required(CONF_SURPLUS_ENTITY, default=defaults.get(CONF_SURPLUS_ENTITY, "")): selector.EntitySelector(),
+            vol.Optional(CONF_PRODUCTION_ENTITY, default=defaults.get(CONF_PRODUCTION_ENTITY, "")): selector.EntitySelector(),
+            vol.Optional(CONF_CONSUMPTION_ENTITY, default=defaults.get(CONF_CONSUMPTION_ENTITY, "")): selector.EntitySelector(),
+            vol.Required(
+                CONF_MAX_SIMULTANEOUS_POWER,
+                default=defaults.get(CONF_MAX_SIMULTANEOUS_POWER, DEFAULT_MAX_SIMULTANEOUS_POWER),
+            ): vol.Coerce(int),
+        }
+    )
+
+
+def _device_schema() -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Required(CONF_NAME): str,
+            vol.Optional(CONF_POWER_SENSOR, default=""): selector.EntitySelector(),
+            vol.Required(CONF_POWER_W): vol.Coerce(float),
+            vol.Required(CONF_DURATION_MIN): vol.Coerce(int),
+        }
+    )
+
+
+def _fixed_load_schema() -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Required(CONF_NAME): str,
+            vol.Required(CONF_START_TIME): str,
+            vol.Required(CONF_POWER_W): vol.Coerce(float),
+            vol.Required(CONF_DURATION_MIN): vol.Coerce(int),
+        }
+    )
+
+
+class SolarPlannerSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+    """Initial setup — base entities only."""
+
+    VERSION = 1
+
+    async def async_step_user(self, user_input: dict[str, Any] | None = None):
+        if user_input is not None:
+            return self.async_create_entry(
+                title="Solar Planner Scheduler",
+                data=user_input,
+                options={CONF_DEVICES: [], CONF_FIXED_LOADS: []},
+            )
+        return self.async_show_form(step_id="user", data_schema=_base_schema())
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> "SolarPlannerSchedulerOptionsFlow":
+        return SolarPlannerSchedulerOptionsFlow(config_entry)
+
+
+class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
+    """Add/remove devices and fixed loads, or edit the base entities.
+
+    Each action finishes the flow (the user reopens "Configure" to do another) — a menu that loops
+    back to itself is a natural follow-up but not needed for a first working version.
+    """
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        self._devices: list[dict[str, Any]] = list(config_entry.options.get(CONF_DEVICES, []))
+        self._fixed_loads: list[dict[str, Any]] = list(config_entry.options.get(CONF_FIXED_LOADS, []))
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None):
+        return self.async_show_menu(
+            step_id="init",
+            menu_options=["edit_base", "add_device", "remove_device", "add_fixed_load", "remove_fixed_load"],
+        )
+
+    async def async_step_edit_base(self, user_input: dict[str, Any] | None = None):
+        if user_input is not None:
+            self.hass.config_entries.async_update_entry(self.config_entry, data=user_input)
+            return self.async_create_entry(title="", data=self._current_options())
+        return self.async_show_form(step_id="edit_base", data_schema=_base_schema(self.config_entry.data))
+
+    async def async_step_add_device(self, user_input: dict[str, Any] | None = None):
+        if user_input is not None:
+            self._devices.append(user_input)
+            return self.async_create_entry(title="", data=self._current_options())
+        return self.async_show_form(step_id="add_device", data_schema=_device_schema())
+
+    async def async_step_remove_device(self, user_input: dict[str, Any] | None = None):
+        if not self._devices:
+            return self.async_abort(reason="no_devices")
+        if user_input is not None:
+            self._devices = [d for d in self._devices if d[CONF_NAME] != user_input[CONF_NAME]]
+            return self.async_create_entry(title="", data=self._current_options())
+        names = [d[CONF_NAME] for d in self._devices]
+        return self.async_show_form(step_id="remove_device", data_schema=vol.Schema({vol.Required(CONF_NAME): vol.In(names)}))
+
+    async def async_step_add_fixed_load(self, user_input: dict[str, Any] | None = None):
+        if user_input is not None:
+            self._fixed_loads.append(user_input)
+            return self.async_create_entry(title="", data=self._current_options())
+        return self.async_show_form(step_id="add_fixed_load", data_schema=_fixed_load_schema())
+
+    async def async_step_remove_fixed_load(self, user_input: dict[str, Any] | None = None):
+        if not self._fixed_loads:
+            return self.async_abort(reason="no_fixed_loads")
+        if user_input is not None:
+            self._fixed_loads = [f for f in self._fixed_loads if f[CONF_NAME] != user_input[CONF_NAME]]
+            return self.async_create_entry(title="", data=self._current_options())
+        names = [f[CONF_NAME] for f in self._fixed_loads]
+        return self.async_show_form(step_id="remove_fixed_load", data_schema=vol.Schema({vol.Required(CONF_NAME): vol.In(names)}))
+
+    def _current_options(self) -> dict[str, Any]:
+        return {CONF_DEVICES: self._devices, CONF_FIXED_LOADS: self._fixed_loads}

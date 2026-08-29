@@ -1,0 +1,72 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Solar Planner Scheduler",
+        "data": {
+          "forecast_entity": "Forecast entity (e.g. Solcast today)",
+          "forecast_tomorrow_entity": "Forecast entity for tomorrow (optional)",
+          "surplus_entity": "Grid surplus/return entity",
+          "production_entity": "Solar production entity (optional)",
+          "consumption_entity": "House consumption entity (optional)",
+          "max_simultaneous_power": "Max simultaneous power (W, breaker safety ceiling)"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Solar Planner Scheduler",
+        "menu_options": {
+          "edit_base": "Edit base settings",
+          "add_device": "Add a device",
+          "remove_device": "Remove a device",
+          "add_fixed_load": "Add a fixed load",
+          "remove_fixed_load": "Remove a fixed load"
+        }
+      },
+      "edit_base": {
+        "title": "Base settings",
+        "data": {
+          "forecast_entity": "Forecast entity (e.g. Solcast today)",
+          "forecast_tomorrow_entity": "Forecast entity for tomorrow (optional)",
+          "surplus_entity": "Grid surplus/return entity",
+          "production_entity": "Solar production entity (optional)",
+          "consumption_entity": "House consumption entity (optional)",
+          "max_simultaneous_power": "Max simultaneous power (W, breaker safety ceiling)"
+        }
+      },
+      "add_device": {
+        "title": "Add a device",
+        "data": {
+          "name": "Name",
+          "power_sensor": "Power sensor (optional)",
+          "power_w": "Power (W)",
+          "duration_min": "Duration (minutes)"
+        }
+      },
+      "remove_device": {
+        "title": "Remove a device",
+        "data": { "name": "Device to remove" }
+      },
+      "add_fixed_load": {
+        "title": "Add a fixed load",
+        "data": {
+          "name": "Name",
+          "start_time": "Daily start time (HH:MM)",
+          "power_w": "Power (W)",
+          "duration_min": "Duration (minutes)"
+        }
+      },
+      "remove_fixed_load": {
+        "title": "Remove a fixed load",
+        "data": { "name": "Fixed load to remove" }
+      }
+    },
+    "abort": {
+      "no_devices": "No devices configured yet.",
+      "no_fixed_loads": "No fixed loads configured yet."
+    }
+  }
+}

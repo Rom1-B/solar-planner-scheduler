@@ -1,0 +1,11 @@
+{
+  "domain": "solar_planner_scheduler",
+  "name": "Solar Planner Scheduler",
+  "codeowners": ["@Rom1-B"],
+  "config_flow": true,
+  "documentation": "https://github.com/Rom1-B/solar-planner-scheduler",
+  "issue_tracker": "https://github.com/Rom1-B/solar-planner-scheduler/issues",
+  "iot_class": "calculated",
+  "requirements": [],
+  "version": "0.1.0"
+}
