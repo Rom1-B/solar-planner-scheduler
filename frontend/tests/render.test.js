@@ -445,6 +445,48 @@ test("stacked chart segments render at exact phase-boundary granularity, not a f
   assert.ok(widths[3] < widths[0] / 4, `expected the 5-min phase narrower than the 40-min one, got ${widths[3]} vs ${widths[0]}`);
 });
 
+test("a profile-based program's energy label sums its phases, not durationMin times a null powerW", () => {
+  // Regression: profile-based programs have powerW=null (the flat-power field is only meaningful
+  // for non-profile programs) — the energy label must sum minutes*power_w per phase instead of
+  // multiplying durationMin by a null powerW (which silently renders "0.0 kWh").
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const card = new Card();
+  card.setConfig({
+    forecast_entity: "sensor.forecast",
+    surplus_entity: "sensor.surplus",
+    max_simultaneous_power: 4000,
+    devices: ["lave_vaisselle"],
+  });
+  const profile = [
+    { minutes: 40, power_w: 100 },
+    { minutes: 10, power_w: 2000 },
+    { minutes: 15, power_w: 100 },
+    { minutes: 5, power_w: 2000 },
+    { minutes: 20, power_w: 100 },
+  ];
+  const durationMin = profile.reduce((s, p) => s + p.minutes, 0);
+  const slotStart = new Date(Date.now() + 10 * 60000);
+  card._hass = {
+    themes: { darkMode: false },
+    states: {
+      "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(dayStart) } },
+      "sensor.surplus": { state: "500" },
+      ...deviceEntities("lave_vaisselle", {
+        name: "Lave-vaisselle",
+        start: slotStart,
+        end: new Date(slotStart.getTime() + durationMin * 60000),
+        profile,
+        coveragePct: 90,
+      }),
+    },
+  };
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  assert.ok(!html.includes("0.0 kWh"), "expected a real energy total, not the null-powerW artifact");
+  assert.ok(html.includes("0.6 kWh · peak 2.0 kW"), `expected "0.6 kWh · peak 2.0 kW" in the gantt title, got: ${html}`);
+});
+
 test("a short power spike renders at its true peak, not diluted by a bucket average", () => {
   const dayStart = new Date();
   dayStart.setHours(0, 0, 0, 0);

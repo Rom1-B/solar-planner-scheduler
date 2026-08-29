@@ -767,9 +767,10 @@ class SolarPlannerCard extends HTMLElement {
       const bars = [];
       if (ds.start && ds.end) {
         const durationMin = (ds.end.getTime() - ds.start.getTime()) / 60000;
-        const powerLabel = ds.profile
-          ? `${fmtWh((ds.powerW * durationMin) / 60)} · peak ${fmtW(Math.max(...ds.profile.map((p) => p.power_w)))}`
-          : fmtWh((ds.powerW * durationMin) / 60);
+        // A profile has no single flat powerW — total energy is the sum of each phase's own
+        // minutes*power_w, not durationMin*powerW (powerW is null for profile-based programs).
+        const energyWh = ds.profile ? ds.profile.reduce((s, p) => s + (p.minutes * p.power_w) / 60, 0) : (ds.powerW * durationMin) / 60;
+        const powerLabel = ds.profile ? `${fmtWh(energyWh)} · peak ${fmtW(Math.max(...ds.profile.map((p) => p.power_w)))}` : fmtWh(energyWh);
         const label = `${ds.programCurrent} · ${fmtTime(ds.start)}–${fmtTime(ds.end)} · ${powerLabel}${ds.approximate ? " ≈" : ""}`;
         const bx = x(ds.start);
         const bw = Math.max(2, x(ds.end) - bx);
@@ -845,23 +846,29 @@ class SolarPlannerCard extends HTMLElement {
 
     const deviceTableRows = deviceStates
       .filter((ds) => ds.start && ds.end)
-      .map((ds) => ({
-        deviceName: ds.name,
-        programName: ds.programCurrent,
-        start: ds.start,
-        end: ds.end,
-        powerW: ds.powerW,
-        durationMin: (ds.end.getTime() - ds.start.getTime()) / 60000,
-        approximate: ds.approximate,
-      }));
+      .map((ds) => {
+        const durationMin = (ds.end.getTime() - ds.start.getTime()) / 60000;
+        return {
+          deviceName: ds.name,
+          programName: ds.programCurrent,
+          start: ds.start,
+          end: ds.end,
+          // A profile has no single flat powerW — sum each phase's own minutes*power_w instead.
+          energyWh: ds.profile ? ds.profile.reduce((s, p) => s + (p.minutes * p.power_w) / 60, 0) : (ds.powerW * durationMin) / 60,
+          approximate: ds.approximate,
+        };
+      });
     // "Tomorrow " distinguishes today's/tomorrow's occurrence of a recurring fixed load — same HH:MM otherwise reads as an unexplained duplicate.
-    const tableRows = [...deviceTableRows, ...fixedLoads]
+    const tableRows = [
+      ...deviceTableRows,
+      ...fixedLoads.map((p) => ({ ...p, energyWh: (p.powerW * p.durationMin) / 60 })),
+    ]
       .map((p) => {
         const dayLabel = p.start && p.start >= todayEnd ? "Tomorrow " : "";
         return `<tr>
           <td>${p.deviceName}${p.fixed ? " (external)" : ""}</td><td>${p.fixed ? "-" : p.programName}</td>
           <td>${p.start ? `${dayLabel}${fmtTime(p.start)} – ${fmtTime(p.end)}` : "no window"}</td>
-          <td>${fmtWh((p.powerW * p.durationMin) / 60)}${p.approximate ? " (rough estimate)" : ""}</td>
+          <td>${fmtWh(p.energyWh)}${p.approximate ? " (rough estimate)" : ""}</td>
         </tr>`;
       })
       .join("");
