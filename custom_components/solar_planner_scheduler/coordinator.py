@@ -197,6 +197,53 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
             return sum(r["avg_w"] for r in matching) / len(matching), False
         return sum(r["avg_w"] for r in runs) / len(runs), True
 
+    def _failed_to_start(self, device: dict, now: datetime) -> bool:
+        """True only if a power sensor is configured and currently reads below the idle threshold.
+
+        Without a power sensor there's no telemetry to tell whether the device was actually
+        started, so we trust the committed window rather than force an endless unlock/relock loop.
+        """
+        power_sensor = device.get(CONF_POWER_SENSOR)
+        if not power_sensor:
+            return False
+        state = self.hass.states.get(power_sensor)
+        if state is None or state.state in ("unknown", "unavailable"):
+            return False
+        try:
+            power = float(state.state)
+        except ValueError:
+            return False
+        idle_threshold = self.entry.data.get(CONF_IDLE_POWER_THRESHOLD, DEFAULT_IDLE_POWER_THRESHOLD)
+        return power < idle_threshold
+
+    def _locked_today_slot(self, name: str, device: dict, duration_min: float, now: datetime) -> dict | None:
+        """Reuse today's already-committed slot instead of re-searching from scratch, once it's
+        close (within one update_interval — the same constant the coordinator itself polls on, so
+        the lock can never be a cycle late) or already under way.
+
+        Without this, every refresh re-runs find_best_placement over the whole remaining day; a
+        slot later in the day (typically near solar noon) can keep looking marginally better than
+        an imminent one, so the "best" start keeps sliding forward and never actually arrives —
+        the device's target time is perpetually a few minutes away but never reached.
+        """
+        previous = self.data.get(name) if self.data else None
+        if previous is None or previous.start is None or previous.end is None:
+            return None
+        if previous.start.date() != now.date():
+            return None  # stale (e.g. carried over from before midnight), not "today" anymore
+        locked_duration = (previous.end - previous.start).total_seconds() / 60
+        if abs(locked_duration - duration_min) > 0.01:
+            return None  # the selected program changed since the slot was committed
+        if now >= previous.end:
+            return None  # window fully elapsed
+        if now >= previous.start:
+            if self._failed_to_start(device, now):
+                return None  # unlock: recompute a fresh slot instead of waiting forever
+            return {"start": previous.start, "end": previous.end, "coverage_pct": previous.coverage_pct}
+        if previous.start - now <= timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES):
+            return {"start": previous.start, "end": previous.end, "coverage_pct": previous.coverage_pct}
+        return None
+
     def _find_slot_for_day(
         self,
         item: dict,
@@ -333,7 +380,9 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
                 results[name] = self._schedule_from_slot(name, slot, approximate, item)
                 continue
 
-            today_slot = self._find_slot_for_day(item, duration_min, points, base_load, committed, max_power, 0)
+            today_slot = self._locked_today_slot(name, device, duration_min, now) or self._find_slot_for_day(
+                item, duration_min, points, base_load, committed, max_power, 0
+            )
 
             if accepted == ACCEPTED_DAY_TODAY:
                 _append_committed(today_slot)

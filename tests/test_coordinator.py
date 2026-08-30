@@ -7,9 +7,21 @@ test below, to set mock entity states via the `hass` fixture.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.solar_planner_scheduler.const import (
+    CONF_FORECAST_ENTITY,
+    CONF_IDLE_POWER_THRESHOLD,
+    CONF_MAX_SIMULTANEOUS_POWER,
+    CONF_POWER_SENSOR,
+    DEFAULT_UPDATE_INTERVAL_MINUTES,
+    DOMAIN,
+)
 from custom_components.solar_planner_scheduler.coordinator import (
+    DeviceSchedule,
+    SolarPlannerSchedulerCoordinator,
     _ceil_to_five_minutes,
     _day_buckets,
     _read_forecast_points,
@@ -49,3 +61,97 @@ async def test_read_forecast_points_handles_a_raw_datetime_period_start(hass):
     points = _read_forecast_points(hass, "sensor.forecast")
 
     assert points == [{"time": period_start, "w": 1500.0}]
+
+
+def _coordinator(hass, previous_schedule=None):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options={},
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    if previous_schedule is not None:
+        coordinator.data = {"lave_linge": previous_schedule}
+    return coordinator
+
+
+def test_locked_today_slot_reuses_an_imminent_slot_without_recomputing(hass):
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    start = now + timedelta(minutes=2)
+    end = start + timedelta(minutes=30)
+    coordinator = _coordinator(hass, DeviceSchedule("lave_linge", start, end, 95))
+
+    slot = coordinator._locked_today_slot("lave_linge", {}, duration_min=30, now=now)
+
+    assert slot == {"start": start, "end": end, "coverage_pct": 95}
+
+
+def test_locked_today_slot_returns_none_when_the_target_is_far_off(hass):
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    start = now + timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES + 1)
+    end = start + timedelta(minutes=30)
+    coordinator = _coordinator(hass, DeviceSchedule("lave_linge", start, end, 95))
+
+    slot = coordinator._locked_today_slot("lave_linge", {}, duration_min=30, now=now)
+
+    assert slot is None
+
+
+def test_locked_today_slot_keeps_a_slot_in_progress_without_a_power_sensor(hass):
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    start = now - timedelta(minutes=2)
+    end = start + timedelta(minutes=30)
+    coordinator = _coordinator(hass, DeviceSchedule("lave_linge", start, end, 95))
+
+    slot = coordinator._locked_today_slot("lave_linge", {}, duration_min=30, now=now)
+
+    assert slot == {"start": start, "end": end, "coverage_pct": 95}
+
+
+def test_locked_today_slot_unlocks_when_a_power_sensor_shows_it_never_started(hass):
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    start = now - timedelta(minutes=2)
+    end = start + timedelta(minutes=30)
+    coordinator = _coordinator(hass, DeviceSchedule("lave_linge", start, end, 95))
+    hass.states.async_set("sensor.lave_linge_power", "0")
+
+    device = {CONF_POWER_SENSOR: "sensor.lave_linge_power"}
+    slot = coordinator._locked_today_slot("lave_linge", device, duration_min=30, now=now)
+
+    assert slot is None
+
+
+def test_locked_today_slot_stays_locked_when_the_power_sensor_shows_it_running(hass):
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    start = now - timedelta(minutes=2)
+    end = start + timedelta(minutes=30)
+    coordinator = _coordinator(hass, DeviceSchedule("lave_linge", start, end, 95))
+    hass.states.async_set("sensor.lave_linge_power", "1800")
+
+    device = {CONF_POWER_SENSOR: "sensor.lave_linge_power", CONF_IDLE_POWER_THRESHOLD: 10}
+    slot = coordinator._locked_today_slot("lave_linge", device, duration_min=30, now=now)
+
+    assert slot == {"start": start, "end": end, "coverage_pct": 95}
+
+
+def test_locked_today_slot_ignores_a_stale_slot_after_the_program_changed(hass):
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    start = now + timedelta(minutes=2)
+    end = start + timedelta(minutes=30)
+    coordinator = _coordinator(hass, DeviceSchedule("lave_linge", start, end, 95))
+
+    slot = coordinator._locked_today_slot("lave_linge", {}, duration_min=60, now=now)
+
+    assert slot is None
+
+
+def test_locked_today_slot_returns_none_once_the_window_has_fully_elapsed(hass):
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    start = now - timedelta(minutes=40)
+    end = start + timedelta(minutes=30)
+    coordinator = _coordinator(hass, DeviceSchedule("lave_linge", start, end, 95))
+
+    slot = coordinator._locked_today_slot("lave_linge", {}, duration_min=30, now=now)
+
+    assert slot is None
