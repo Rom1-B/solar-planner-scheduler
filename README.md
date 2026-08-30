@@ -80,7 +80,9 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 cd frontend && node --test   # JS
 ```
 
-CI runs both suites plus `hassfest` and HACS validation on every push/PR.
+CI runs both suites plus `hassfest` and HACS validation on every push/PR. `./scripts/check-ci.sh`
+reproduces all four locally (same Docker images CI uses) if you want to check before pushing; it's
+slow, so it's opt-in, not part of the regular loop.
 
 For visually testing UI-facing changes (config flow forms, entities, the card) without pushing to
 a real Home Assistant instance, run a throwaway local one with Docker:
