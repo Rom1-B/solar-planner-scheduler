@@ -23,6 +23,7 @@
           "add_device": "Add a device",
           "remove_device": "Remove a device",
           "add_program": "Add a program to a device (multi-phase)",
+          "edit_program": "Edit a program's phases",
           "remove_program": "Remove a program from a device",
           "add_fixed_load": "Add a fixed load",
           "remove_fixed_load": "Remove a fixed load"
@@ -56,14 +57,24 @@
         "description": "Pick the device and name the new program (e.g. \"Eco coton\"). The next screen asks for its phases.",
         "data": { "name": "Device", "program_name": "Program name" }
       },
-      "add_phase": {
-        "title": "Add a phase",
-        "description": "Enter one phase of the power profile (e.g. 20 minutes at 150 W). Check the box to add another phase, or leave it unchecked to save the program.",
-        "data": {
-          "minutes": "Duration of this phase (minutes)",
-          "power_w": "Power during this phase (W)",
-          "add_another_phase": "Add another phase after this one"
-        }
+      "add_program_phases": {
+        "title": "Program phases",
+        "description": "One phase per line, format `<minutes>min@<watts>W`, e.g. `20min@150W`. At least one phase is required.",
+        "data": { "phases": "Phases" }
+      },
+      "edit_program": {
+        "title": "Edit a program",
+        "description": "Pick which device's program to edit.",
+        "data": { "name": "Device" }
+      },
+      "edit_program_pick": {
+        "title": "Edit a program",
+        "data": { "program_name": "Program" }
+      },
+      "edit_program_phases": {
+        "title": "Program phases",
+        "description": "One phase per line, format `<minutes>min@<watts>W`, e.g. `20min@150W`. This replaces the whole list of phases.",
+        "data": { "phases": "Phases" }
       },
       "remove_program": {
         "title": "Remove a program",
@@ -86,10 +97,13 @@
     "abort": {
       "no_devices": "No devices configured yet.",
       "no_fixed_loads": "No fixed loads configured yet.",
+      "no_programs": "No device has a program to edit yet.",
       "no_removable_programs": "No device has more than one program to remove."
     },
     "error": {
-      "duplicate_program": "This device already has a program with that name."
+      "duplicate_program": "This device already has a program with that name.",
+      "invalid_phase_line": "Each line must be `<minutes>min@<watts>W`, e.g. `20min@150W`.",
+      "empty_phases": "Enter at least one phase."
     }
   }
 }

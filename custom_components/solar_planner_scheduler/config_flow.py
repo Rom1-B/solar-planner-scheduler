@@ -7,6 +7,7 @@ recreating the whole config entry.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import voluptuous as vol
@@ -65,12 +66,43 @@ def _device_schema() -> vol.Schema:
     )
 
 
-def _phase_schema() -> vol.Schema:
+_PHASE_LINE_RE = re.compile(r"^\s*(\d+)\s*min\s*@\s*(\d+(?:\.\d+)?)\s*w\s*$", re.IGNORECASE)
+
+
+class _PhaseParseError(Exception):
+    """A line in the phases text field doesn't match `<minutes>min@<watts>W`."""
+
+    def __init__(self, error_key: str) -> None:
+        self.error_key = error_key
+        super().__init__(error_key)
+
+
+def _parse_phases(text: str) -> list[dict[str, Any]]:
+    phases: list[dict[str, Any]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = _PHASE_LINE_RE.match(line)
+        if match is None:
+            raise _PhaseParseError("invalid_phase_line")
+        minutes, power_w = match.groups()
+        phases.append({CONF_MINUTES: int(minutes), CONF_POWER_W: float(power_w)})
+    if not phases:
+        raise _PhaseParseError("empty_phases")
+    return phases
+
+
+def _phases_to_text(phases: list[dict[str, Any]]) -> str:
+    return "\n".join(f"{p[CONF_MINUTES]}min@{p[CONF_POWER_W]:g}W" for p in phases)
+
+
+def _phases_schema(default_text: str = "") -> vol.Schema:
     return vol.Schema(
         {
-            vol.Required(CONF_MINUTES): vol.Coerce(int),
-            vol.Required(CONF_POWER_W): vol.Coerce(float),
-            vol.Required("add_another_phase", default=False): bool,
+            vol.Required("phases", default=default_text): selector.TextSelector(
+                selector.TextSelectorConfig(multiline=True)
+            ),
         }
     )
 
@@ -125,6 +157,7 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
                 "add_device",
                 "remove_device",
                 "add_program",
+                "edit_program",
                 "remove_program",
                 "add_fixed_load",
                 "remove_fixed_load",
@@ -175,23 +208,81 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
                 return self.async_show_form(step_id="add_program", data_schema=schema, errors={"program_name": "duplicate_program"})
             self._editing_device_name = user_input[CONF_NAME]
             self._new_program_name = user_input["program_name"]
-            self._phases: list[dict[str, Any]] = []
-            return await self.async_step_add_phase()
+            return await self.async_step_add_program_phases()
         return self.async_show_form(step_id="add_program", data_schema=schema)
 
-    async def async_step_add_phase(self, user_input: dict[str, Any] | None = None):
+    async def async_step_add_program_phases(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
-            self._phases.append({CONF_MINUTES: user_input[CONF_MINUTES], CONF_POWER_W: user_input[CONF_POWER_W]})
-            if user_input["add_another_phase"]:
-                return self.async_show_form(step_id="add_phase", data_schema=_phase_schema())
+            try:
+                phases = _parse_phases(user_input["phases"])
+            except _PhaseParseError as err:
+                return self.async_show_form(
+                    step_id="add_program_phases",
+                    data_schema=_phases_schema(user_input["phases"]),
+                    errors={"phases": err.error_key},
+                )
             device_name = self._editing_device_name
-            new_program = {CONF_NAME: self._new_program_name, CONF_POWER_PROFILE: self._phases}
+            new_program = {CONF_NAME: self._new_program_name, CONF_POWER_PROFILE: phases}
             self._devices = [
                 {**d, CONF_PROGRAMS: [*d.get(CONF_PROGRAMS, []), new_program]} if d[CONF_NAME] == device_name else d
                 for d in self._devices
             ]
             return self.async_create_entry(title="", data=self._current_options())
-        return self.async_show_form(step_id="add_phase", data_schema=_phase_schema())
+        return self.async_show_form(step_id="add_program_phases", data_schema=_phases_schema())
+
+    async def async_step_edit_program(self, user_input: dict[str, Any] | None = None):
+        """Pick which device's program to edit (step 1 of 3: device -> program -> phases)."""
+        devices_with_programs = [d for d in self._devices if d.get(CONF_PROGRAMS)]
+        if not devices_with_programs:
+            return self.async_abort(reason="no_programs")
+        if user_input is not None:
+            self._editing_device_name = user_input[CONF_NAME]
+            return await self.async_step_edit_program_pick()
+        device_names = [d[CONF_NAME] for d in devices_with_programs]
+        return self.async_show_form(
+            step_id="edit_program", data_schema=vol.Schema({vol.Required(CONF_NAME): vol.In(device_names)})
+        )
+
+    async def async_step_edit_program_pick(self, user_input: dict[str, Any] | None = None):
+        device = next(d for d in self._devices if d[CONF_NAME] == self._editing_device_name)
+        if user_input is not None:
+            self._editing_program_name = user_input["program_name"]
+            return await self.async_step_edit_program_phases()
+        program_names = [p[CONF_NAME] for p in device[CONF_PROGRAMS]]
+        return self.async_show_form(
+            step_id="edit_program_pick", data_schema=vol.Schema({vol.Required("program_name"): vol.In(program_names)})
+        )
+
+    async def async_step_edit_program_phases(self, user_input: dict[str, Any] | None = None):
+        device = next(d for d in self._devices if d[CONF_NAME] == self._editing_device_name)
+        program = next(p for p in device[CONF_PROGRAMS] if p[CONF_NAME] == self._editing_program_name)
+        if user_input is not None:
+            try:
+                phases = _parse_phases(user_input["phases"])
+            except _PhaseParseError as err:
+                return self.async_show_form(
+                    step_id="edit_program_phases",
+                    data_schema=_phases_schema(user_input["phases"]),
+                    errors={"phases": err.error_key},
+                )
+            device_name = self._editing_device_name
+            program_name = self._editing_program_name
+            self._devices = [
+                {
+                    **d,
+                    CONF_PROGRAMS: [
+                        {**p, CONF_POWER_PROFILE: phases} if p[CONF_NAME] == program_name else p
+                        for p in d[CONF_PROGRAMS]
+                    ],
+                }
+                if d[CONF_NAME] == device_name
+                else d
+                for d in self._devices
+            ]
+            return self.async_create_entry(title="", data=self._current_options())
+        return self.async_show_form(
+            step_id="edit_program_phases", data_schema=_phases_schema(_phases_to_text(program[CONF_POWER_PROFILE]))
+        )
 
     async def async_step_remove_program(self, user_input: dict[str, Any] | None = None):
         devices_with_programs = [d for d in self._devices if len(d.get(CONF_PROGRAMS, [])) > 1]
