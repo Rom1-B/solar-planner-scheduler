@@ -19,6 +19,12 @@ CONF_PROGRAMS = "programs"
 CONF_POWER_PROFILE = "power_profile"
 CONF_SELECTED_PROGRAM = "selected_program"
 CONF_MINUTES = "minutes"
+CONF_AUTO_DAYS = "auto_days"
+
+# ISO weekday order (Monday first), used both as the config_flow multi-select's option values and
+# to index datetime.weekday() (0=Monday) when the coordinator checks today against a program's
+# auto_days.
+WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 CONF_HISTORY_LOOKBACK_DAYS = "history_lookback_days"
 CONF_IDLE_POWER_THRESHOLD = "idle_power_threshold"

@@ -17,6 +17,7 @@ from .const import (
     ACCEPTED_DAY_TOMORROW,
     CONF_ACCEPTED_DATE,
     CONF_ACCEPTED_DAY,
+    CONF_AUTO_DAYS,
     CONF_DEVICES,
     CONF_DURATION_MIN,
     CONF_DURATION_TOLERANCE_PERCENT,
@@ -44,6 +45,7 @@ from .const import (
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
     NONE_PROGRAM,
+    WEEKDAYS,
 )
 from .scheduling import (
     DRAG_SNAP_MS,
@@ -56,6 +58,13 @@ from .scheduling import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Sentinel returned by _locked_today_slot(): the committed slot already ran (its window elapsed) —
+# don't search for a new one today. Distinct from None ("nothing locked, go search fresh"). Daily
+# repetition is driven by the program's own auto_days (see _auto_day_allowed): _locked_today_slot
+# itself treats a previous day's commitment as stale, so once today is an allowed day again, a
+# fresh search naturally resumes with no explicit reset needed.
+ALREADY_RAN = object()
 
 
 @dataclass
@@ -216,26 +225,30 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         idle_threshold = self.entry.data.get(CONF_IDLE_POWER_THRESHOLD, DEFAULT_IDLE_POWER_THRESHOLD)
         return power < idle_threshold
 
-    def _locked_today_slot(self, name: str, device: dict, duration_min: float, now: datetime) -> dict | None:
-        """Reuse today's already-committed slot instead of re-searching from scratch, once it's
-        close (within one update_interval — the same constant the coordinator itself polls on, so
-        the lock can never be a cycle late) or already under way.
+    def _locked_today_slot(self, name: str, device: dict, duration_min: float, now: datetime):
+        """Reuse the already-committed slot instead of re-searching from scratch, once it's close
+        (within one update_interval — the same constant the coordinator itself polls on, so the
+        lock can never be a cycle late) or already under way. Returns ALREADY_RAN once that slot's
+        window has fully elapsed: a device is meant to run once per selection, not keep proposing
+        a new slot for the rest of the day once it's already had its committed run.
 
-        Without this, every refresh re-runs find_best_placement over the whole remaining day; a
-        slot later in the day (typically near solar noon) can keep looking marginally better than
-        an imminent one, so the "best" start keeps sliding forward and never actually arrives —
-        the device's target time is perpetually a few minutes away but never reached.
+        Without the "close" half of this, every refresh re-runs find_best_placement over the whole
+        remaining day; a slot later in the day (typically near solar noon) can keep looking
+        marginally better than an imminent one, so the "best" start keeps sliding forward and never
+        actually arrives — the device's target time is perpetually a few minutes away but never
+        reached. Without the ALREADY_RAN half, a device would get proposed a second slot the same
+        day (or any day after) as soon as another good-enough window appears.
         """
         previous = self.data.get(name) if self.data else None
         if previous is None or previous.start is None or previous.end is None:
             return None
         if previous.start.date() != now.date():
-            return None  # stale (e.g. carried over from before midnight), not "today" anymore
+            return None  # a previous day's commitment doesn't carry over — today gets a fresh look
         locked_duration = (previous.end - previous.start).total_seconds() / 60
         if abs(locked_duration - duration_min) > 0.01:
-            return None  # the selected program changed since the slot was committed
+            return None  # the selected program changed since the slot was committed — fresh choice
         if now >= previous.end:
-            return None  # window fully elapsed
+            return ALREADY_RAN
         if now >= previous.start:
             if self._failed_to_start(device, now):
                 return None  # unlock: recompute a fresh slot instead of waiting forever
@@ -243,6 +256,15 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         if previous.start - now <= timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES):
             return {"start": previous.start, "end": previous.end, "coverage_pct": previous.coverage_pct}
         return None
+
+    @staticmethod
+    def _auto_day_allowed(program: dict, now: datetime) -> bool:
+        """Whether the coordinator may auto-schedule this program today at all.
+
+        Manual mode bypasses this entirely (an explicit pinned start is always honored regardless
+        of auto_days) — this only gates the automatic search path.
+        """
+        return WEEKDAYS[now.weekday()] in program.get(CONF_AUTO_DAYS, [])
 
     def _find_slot_for_day(
         self,
@@ -373,6 +395,10 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
                 results[name] = self._schedule_from_slot(name, slot, approximate, item)
                 continue
 
+            if not self._auto_day_allowed(program, now):
+                results[name] = DeviceSchedule(name, None, None, None, approximate)
+                continue
+
             accepted = self._resolve_accepted_day(device, now)
             if accepted == ACCEPTED_DAY_TOMORROW:
                 slot = self._find_slot_for_day(item, duration_min, points, base_load, committed, max_power, 1)
@@ -380,7 +406,14 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
                 results[name] = self._schedule_from_slot(name, slot, approximate, item)
                 continue
 
-            today_slot = self._locked_today_slot(name, device, duration_min, now) or self._find_slot_for_day(
+            locked = self._locked_today_slot(name, device, duration_min, now)
+            if locked is ALREADY_RAN:
+                # Already had its committed run: stop here, don't even look at tomorrow — a device
+                # is scheduled once per selection, not re-proposed as soon as another window scores
+                # well. Runs again only once the program selection itself changes.
+                results[name] = DeviceSchedule(name, None, None, None, approximate)
+                continue
+            today_slot = locked or self._find_slot_for_day(
                 item, duration_min, points, base_load, committed, max_power, 0
             )
 

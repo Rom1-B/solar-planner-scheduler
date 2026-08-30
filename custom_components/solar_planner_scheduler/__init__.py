@@ -15,6 +15,7 @@ from .const import (
     ACCEPTED_DAY_TOMORROW,
     CONF_ACCEPTED_DATE,
     CONF_ACCEPTED_DAY,
+    CONF_AUTO_DAYS,
     CONF_DEVICES,
     CONF_DURATION_MIN,
     CONF_FIXED_LOADS,
@@ -27,6 +28,7 @@ from .const import (
     CONF_SELECTED_PROGRAM,
     CONF_START_TIME,
     DOMAIN,
+    WEEKDAYS,
 )
 
 if TYPE_CHECKING:
@@ -126,7 +128,14 @@ async def async_migrate_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bo
     a single-phase list — same shape programs already use, so fixed loads can have several phases
     too via the same "phases" editor in the options flow.
 
-    Both blocks use `if`, not `elif`, so an entry sitting at v1 falls through both in one call.
+    v3->v4: programs gain auto_days (which weekdays the coordinator is allowed to auto-schedule
+    them on). New programs created from now on default to none selected (the user must opt in
+    explicitly), but that would silently stop scheduling every *existing* program the moment this
+    migration runs — so pre-existing programs are backfilled to all 7 days, preserving their
+    current "runs every day" behavior instead of going dark on deploy.
+
+    All three blocks use `if`, not `elif`, so an entry sitting at v1 falls through all of them in
+    one call.
     """
     if entry.version == 1:
         migrated_devices = []
@@ -167,6 +176,21 @@ async def async_migrate_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bo
             )
         hass.config_entries.async_update_entry(
             entry, options={**entry.options, CONF_FIXED_LOADS: migrated_fixed_loads}, version=3
+        )
+
+    if entry.version == 3:
+        migrated_devices = [
+            {
+                **device,
+                CONF_PROGRAMS: [
+                    {**program, CONF_AUTO_DAYS: WEEKDAYS} if CONF_AUTO_DAYS not in program else program
+                    for program in device.get(CONF_PROGRAMS, [])
+                ],
+            }
+            for device in entry.options.get(CONF_DEVICES, [])
+        ]
+        hass.config_entries.async_update_entry(
+            entry, options={**entry.options, CONF_DEVICES: migrated_devices}, version=4
         )
 
     return True

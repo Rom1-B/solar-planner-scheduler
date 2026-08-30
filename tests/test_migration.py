@@ -1,4 +1,5 @@
-"""async_migrate_entry tests: v1 devices -> v2 programs, v2 fixed loads -> v3 power_profile."""
+"""async_migrate_entry tests: v1 devices -> v2 programs, v2 fixed loads -> v3 power_profile,
+v3 programs -> v4 auto_days (backfilled to every day for pre-existing programs)."""
 
 from __future__ import annotations
 
@@ -6,6 +7,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.solar_planner_scheduler import async_migrate_entry
 from custom_components.solar_planner_scheduler.const import (
+    CONF_AUTO_DAYS,
     CONF_DEVICES,
     CONF_DURATION_MIN,
     CONF_FIXED_LOADS,
@@ -19,6 +21,7 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_SELECTED_PROGRAM,
     CONF_START_TIME,
     DOMAIN,
+    WEEKDAYS,
 )
 
 BASE_DATA = {
@@ -43,7 +46,7 @@ async def test_migrate_v2_fixed_load_to_v3_wraps_flat_load_in_a_single_phase_pro
 
     assert await async_migrate_entry(hass, entry) is True
 
-    assert entry.version == 3
+    assert entry.version == 4
     load = entry.options[CONF_FIXED_LOADS][0]
     assert load[CONF_NAME] == "PAC"
     assert load[CONF_START_TIME] == "13:00:00"
@@ -68,10 +71,12 @@ async def test_migrate_v1_to_v3_chains_both_steps_in_one_call(hass):
 
     assert await async_migrate_entry(hass, entry) is True
 
-    assert entry.version == 3
+    assert entry.version == 4
     device = entry.options[CONF_DEVICES][0]
     assert device[CONF_SELECTED_PROGRAM] == "lave_linge"
-    assert device[CONF_PROGRAMS][0][CONF_POWER_W] == 2000.0
+    program = device[CONF_PROGRAMS][0]
+    assert program[CONF_POWER_W] == 2000.0
+    assert program[CONF_AUTO_DAYS] == WEEKDAYS  # backfilled: preserve "runs every day" on deploy
     load = entry.options[CONF_FIXED_LOADS][0]
     assert load[CONF_POWER_PROFILE] == [{"minutes": 60, "power_w": 1500.0}]
 
@@ -87,4 +92,64 @@ async def test_migrate_is_a_no_op_for_an_already_v3_fixed_load(hass):
     entry.add_to_hass(hass)
 
     assert await async_migrate_entry(hass, entry) is True
+    assert entry.version == 4
     assert entry.options[CONF_FIXED_LOADS][0] == fixed_load
+
+
+async def test_migrate_v3_backfills_auto_days_for_a_pre_existing_program(hass):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=3,
+        data=BASE_DATA,
+        options={
+            CONF_DEVICES: [
+                {
+                    CONF_NAME: "ballon_d_eau_chaude",
+                    CONF_POWER_SENSOR: "",
+                    CONF_SELECTED_PROGRAM: "Eau chaude",
+                    CONF_PROGRAMS: [
+                        {CONF_NAME: "Eau chaude", CONF_POWER_PROFILE: [{"minutes": 30, "power_w": 1600.0}]}
+                    ],
+                }
+            ],
+            CONF_FIXED_LOADS: [],
+        },
+    )
+    entry.add_to_hass(hass)
+
+    assert await async_migrate_entry(hass, entry) is True
+
+    assert entry.version == 4
+    program = entry.options[CONF_DEVICES][0][CONF_PROGRAMS][0]
+    assert program[CONF_AUTO_DAYS] == WEEKDAYS
+
+
+async def test_migrate_v3_does_not_override_an_already_set_auto_days(hass):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=3,
+        data=BASE_DATA,
+        options={
+            CONF_DEVICES: [
+                {
+                    CONF_NAME: "lave_linge",
+                    CONF_POWER_SENSOR: "",
+                    CONF_SELECTED_PROGRAM: "Eco coton",
+                    CONF_PROGRAMS: [
+                        {
+                            CONF_NAME: "Eco coton",
+                            CONF_POWER_PROFILE: [{"minutes": 30, "power_w": 150.0}],
+                            CONF_AUTO_DAYS: ["mon"],
+                        }
+                    ],
+                }
+            ],
+            CONF_FIXED_LOADS: [],
+        },
+    )
+    entry.add_to_hass(hass)
+
+    assert await async_migrate_entry(hass, entry) is True
+
+    program = entry.options[CONF_DEVICES][0][CONF_PROGRAMS][0]
+    assert program[CONF_AUTO_DAYS] == ["mon"]

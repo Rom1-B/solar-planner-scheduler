@@ -58,8 +58,8 @@
       },
       "add_program_phases": {
         "title": "Phases du programme",
-        "description": "Une phase par ligne, ex. `20min@150W` ou `1.5h@150W`. Au moins une phase est requise.",
-        "data": { "phases": "Phases" }
+        "description": "Une phase par ligne, ex. `20min@150W` ou `1.5h@150W`. Au moins une phase est requise. Cochez les jours où ce programme peut être planifié automatiquement (laissez tout décoché pour ne l'utiliser qu'en mode manuel).",
+        "data": { "phases": "Phases", "auto_days": "Planification auto le" }
       },
       "edit_program": {
         "title": "Modifier un programme",
@@ -72,8 +72,8 @@
       },
       "edit_program_phases": {
         "title": "Phases du programme",
-        "description": "Une phase par ligne, ex. `20min@150W` ou `1.5h@150W`. Ceci remplace toute la liste de phases.",
-        "data": { "phases": "Phases" }
+        "description": "Une phase par ligne, ex. `20min@150W` ou `1.5h@150W`. Ceci remplace toute la liste de phases. Cochez les jours où ce programme peut être planifié automatiquement (laissez tout décoché pour ne l'utiliser qu'en mode manuel).",
+        "data": { "phases": "Phases", "auto_days": "Planification auto le" }
       },
       "remove_program": {
         "title": "Supprimer un programme",

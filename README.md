@@ -32,16 +32,23 @@ session:
 
 - **Device**: name + optional power sensor.
 - **Program**: pick a device, name it, then enter its phases, one per line, e.g. `20min@150W` or
-  `1.5h@800W` (multi-phase supported). A device can have several programs; `select.<device>_program`
-  picks the active one ("None" disables it). "Edit a program's phases" replaces them in place,
-  pre-filled with the current ones.
+  `1.5h@800W` (multi-phase supported), and check which days of the week it may be scheduled
+  automatically (unchecked by default — a program only auto-runs once you opt days in). A device
+  can have several programs; `select.<device>_program` picks the active one ("None" disables it).
+  "Edit a program's phases" replaces both the phases and the auto-schedule days in place, pre-filled
+  with the current ones.
 - **Fixed load**: a recurring non-schedulable load (start time + phases, same syntax as programs),
   subtracted from available solar capacity. Also editable in place.
 
-Manual mode (`switch.<device>_manual_mode`) pins the start time to `datetime.<device>_manual_start`
-instead of the computed slot. When today is good enough but tomorrow could be better, the sensor
-exposes a pending choice (`today_coverage_pct`/`tomorrow_coverage_pct`); resolve it with the
-`accept_today`/`accept_tomorrow` services.
+A device is scheduled once per program selection: once its committed slot has run (its window has
+elapsed), it won't be proposed a second slot that day, and won't be rescheduled on a later day
+either unless that day is checked in the program's auto-schedule days — there's no separate "reset"
+needed, a new allowed day naturally gets a fresh search. Manual mode
+(`switch.<device>_manual_mode`) is a separate, unrestricted override: it pins the start time to
+`datetime.<device>_manual_start` regardless of the program's auto-schedule days. When today is good
+enough but tomorrow could be better, the sensor exposes a pending choice
+(`today_coverage_pct`/`tomorrow_coverage_pct`); resolve it with the `accept_today`/`accept_tomorrow`
+services.
 
 Only declared consumers (fixed loads, scheduled devices) are subtracted from available solar —
 there's no live "background consumption" estimate, since a single instantaneous reading spikes

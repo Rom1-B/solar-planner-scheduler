@@ -14,6 +14,7 @@ from __future__ import annotations
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.solar_planner_scheduler.const import (
+    CONF_AUTO_DAYS,
     CONF_DEVICES,
     CONF_FIXED_LOADS,
     CONF_FORECAST_ENTITY,
@@ -68,6 +69,25 @@ async def test_add_program_phases_parses_valid_multiline_text(hass, enable_custo
         {"minutes": 20, "power_w": 150.0},
         {"minutes": 45, "power_w": 1800.0},
     ]
+    # Nothing checked by default: a new program doesn't inherit "every day" for free.
+    assert program[CONF_AUTO_DAYS] == []
+
+
+async def test_add_program_phases_stores_the_selected_auto_days(hass, enable_custom_integrations):
+    entry = _entry(hass, [{CONF_NAME: "lave_linge", CONF_POWER_SENSOR: "", CONF_PROGRAMS: []}])
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_program"})
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_NAME: "lave_linge", "program_name": "Eco coton"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"phases": "20min@150W", CONF_AUTO_DAYS: ["mon", "wed", "fri"]}
+    )
+
+    assert result["type"] == "menu"
+    program = entry.options[CONF_DEVICES][0][CONF_PROGRAMS][0]
+    assert program[CONF_AUTO_DAYS] == ["mon", "wed", "fri"]
 
 
 async def test_add_program_phases_accepts_hours(hass, enable_custom_integrations):
@@ -126,6 +146,7 @@ async def test_edit_program_prefills_and_replaces_phases_in_place(hass, enable_c
                 {
                     CONF_NAME: "Eco coton",
                     CONF_POWER_PROFILE: [{"minutes": 20, "power_w": 150.0}, {"minutes": 45, "power_w": 1800.0}],
+                    CONF_AUTO_DAYS: ["tue", "thu"],
                 }
             ],
         }
@@ -139,16 +160,21 @@ async def test_edit_program_prefills_and_replaces_phases_in_place(hass, enable_c
 
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"program_name": "Eco coton"})
     assert result["step_id"] == "edit_program_phases"
-    # The field is pre-filled with the program's current phases, not left blank.
-    assert result["data_schema"]({})["phases"] == "20min@150W\n45min@1800W"
+    # The field is pre-filled with the program's current phases and auto_days, not left blank.
+    prefilled = result["data_schema"]({})
+    assert prefilled["phases"] == "20min@150W\n45min@1800W"
+    assert prefilled[CONF_AUTO_DAYS] == ["tue", "thu"]
 
-    result = await hass.config_entries.options.async_configure(result["flow_id"], {"phases": "10min@300W"})
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"phases": "10min@300W", CONF_AUTO_DAYS: ["sat", "sun"]}
+    )
     assert result["type"] == "menu"
 
     programs = entry.options[CONF_DEVICES][0][CONF_PROGRAMS]
     assert len(programs) == 1
     assert programs[0][CONF_NAME] == "Eco coton"
     assert programs[0][CONF_POWER_PROFILE] == [{"minutes": 10, "power_w": 300.0}]
+    assert programs[0][CONF_AUTO_DAYS] == ["sat", "sun"]
 
 
 async def test_edit_program_aborts_when_no_device_has_a_program(hass, enable_custom_integrations):

@@ -58,8 +58,8 @@
       },
       "add_program_phases": {
         "title": "Program phases",
-        "description": "One phase per line, e.g. `20min@150W` or `1.5h@150W`. At least one phase is required.",
-        "data": { "phases": "Phases" }
+        "description": "One phase per line, e.g. `20min@150W` or `1.5h@150W`. At least one phase is required. Check the days this program may be scheduled automatically (leave all unchecked to only run it via manual mode).",
+        "data": { "phases": "Phases", "auto_days": "Auto-schedule on" }
       },
       "edit_program": {
         "title": "Edit a program",
@@ -72,8 +72,8 @@
       },
       "edit_program_phases": {
         "title": "Program phases",
-        "description": "One phase per line, e.g. `20min@150W` or `1.5h@150W`. This replaces the whole list of phases.",
-        "data": { "phases": "Phases" }
+        "description": "One phase per line, e.g. `20min@150W` or `1.5h@150W`. This replaces the whole list of phases. Check the days this program may be scheduled automatically (leave all unchecked to only run it via manual mode).",
+        "data": { "phases": "Phases", "auto_days": "Auto-schedule on" }
       },
       "remove_program": {
         "title": "Remove a program",

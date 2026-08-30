@@ -16,6 +16,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_AUTO_DAYS,
     CONF_CONSUMPTION_ENTITY,
     CONF_DEVICES,
     CONF_FIXED_LOADS,
@@ -34,6 +35,7 @@ from .const import (
     DEFAULT_MAX_SIMULTANEOUS_POWER,
     DOMAIN,
     NONE_PROGRAM,
+    WEEKDAYS,
 )
 
 
@@ -117,6 +119,22 @@ def _phases_schema(default_text: str = "") -> vol.Schema:
     )
 
 
+def _program_phases_schema(default_text: str = "", default_days: list[str] | None = None) -> vol.Schema:
+    # Unchecked by default: a new program only runs automatically once the user deliberately opts
+    # a day in, it doesn't inherit "every day" just for existing. Editing an existing program
+    # pre-fills whatever it already has (see the migration in __init__.py for pre-existing ones).
+    return vol.Schema(
+        {
+            vol.Required("phases", default=default_text): selector.TextSelector(
+                selector.TextSelectorConfig(multiline=True)
+            ),
+            vol.Optional(CONF_AUTO_DAYS, default=default_days or []): selector.SelectSelector(
+                selector.SelectSelectorConfig(options=WEEKDAYS, multiple=True, mode=selector.SelectSelectorMode.LIST)
+            ),
+        }
+    )
+
+
 def _fixed_load_meta_schema() -> vol.Schema:
     return vol.Schema(
         {
@@ -129,7 +147,7 @@ def _fixed_load_meta_schema() -> vol.Schema:
 class SolarPlannerSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Initial setup — base entities only."""
 
-    VERSION = 3
+    VERSION = 4
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
@@ -231,17 +249,21 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
             except _PhaseParseError as err:
                 return self.async_show_form(
                     step_id="add_program_phases",
-                    data_schema=_phases_schema(user_input["phases"]),
+                    data_schema=_program_phases_schema(user_input["phases"], user_input.get(CONF_AUTO_DAYS)),
                     errors={"phases": err.error_key},
                 )
             device_name = self._editing_device_name
-            new_program = {CONF_NAME: self._new_program_name, CONF_POWER_PROFILE: phases}
+            new_program = {
+                CONF_NAME: self._new_program_name,
+                CONF_POWER_PROFILE: phases,
+                CONF_AUTO_DAYS: user_input.get(CONF_AUTO_DAYS, []),
+            }
             self._devices = [
                 {**d, CONF_PROGRAMS: [*d.get(CONF_PROGRAMS, []), new_program]} if d[CONF_NAME] == device_name else d
                 for d in self._devices
             ]
             return await self._finish_step()
-        return self.async_show_form(step_id="add_program_phases", data_schema=_phases_schema())
+        return self.async_show_form(step_id="add_program_phases", data_schema=_program_phases_schema())
 
     async def async_step_edit_program(self, user_input: dict[str, Any] | None = None):
         """Pick which device's program to edit (step 1 of 3: device -> program -> phases)."""
@@ -275,16 +297,17 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
             except _PhaseParseError as err:
                 return self.async_show_form(
                     step_id="edit_program_phases",
-                    data_schema=_phases_schema(user_input["phases"]),
+                    data_schema=_program_phases_schema(user_input["phases"], user_input.get(CONF_AUTO_DAYS)),
                     errors={"phases": err.error_key},
                 )
             device_name = self._editing_device_name
             program_name = self._editing_program_name
+            auto_days = user_input.get(CONF_AUTO_DAYS, [])
             self._devices = [
                 {
                     **d,
                     CONF_PROGRAMS: [
-                        {**p, CONF_POWER_PROFILE: phases} if p[CONF_NAME] == program_name else p
+                        {**p, CONF_POWER_PROFILE: phases, CONF_AUTO_DAYS: auto_days} if p[CONF_NAME] == program_name else p
                         for p in d[CONF_PROGRAMS]
                     ],
                 }
@@ -294,7 +317,8 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
             ]
             return await self._finish_step()
         return self.async_show_form(
-            step_id="edit_program_phases", data_schema=_phases_schema(_phases_to_text(program[CONF_POWER_PROFILE]))
+            step_id="edit_program_phases",
+            data_schema=_program_phases_schema(_phases_to_text(program[CONF_POWER_PROFILE]), program.get(CONF_AUTO_DAYS, [])),
         )
 
     async def async_step_remove_program(self, user_input: dict[str, Any] | None = None):
