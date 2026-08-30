@@ -43,6 +43,13 @@ instead of the computed slot. When today is good enough but tomorrow could be be
 exposes a pending choice (`today_coverage_pct`/`tomorrow_coverage_pct`); resolve it with the
 `accept_today`/`accept_tomorrow` services.
 
+Only declared consumers (fixed loads, scheduled devices) are subtracted from available solar —
+there's no live "background consumption" estimate, since a single instantaneous reading spikes
+whenever any large load happens to be running right at update time and that spike would otherwise
+get stretched across the whole scheduling horizon.
+
+The config flow UI is available in English and French, following your Home Assistant language.
+
 ## Entities
 
 Per device: `sensor.<device>_next_start` (timestamp + `coverage_pct`), `binary_sensor.<device>_should_run`,
@@ -78,7 +85,7 @@ devices:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/pytest tests/      # Python (scheduling.py, config_flow.py via pytest-homeassistant-custom-component)
+.venv/bin/pytest tests/      # Python (scheduling.py, config_flow.py/coordinator.py via pytest-homeassistant-custom-component)
 cd frontend && node --test   # JS
 ```
 
