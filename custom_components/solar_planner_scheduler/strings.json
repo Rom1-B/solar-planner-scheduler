@@ -60,7 +60,7 @@
       },
       "add_program_phases": {
         "title": "Program phases",
-        "description": "One phase per line, e.g. `20min@150W` for 20 minutes at 150 W. At least one phase is required.",
+        "description": "One phase per line, e.g. `20min@150W` or `1.5h@150W`. At least one phase is required.",
         "data": { "phases": "Phases" }
       },
       "edit_program": {
@@ -74,7 +74,7 @@
       },
       "edit_program_phases": {
         "title": "Program phases",
-        "description": "One phase per line, e.g. `20min@150W` for 20 minutes at 150 W. This replaces the whole list of phases.",
+        "description": "One phase per line, e.g. `20min@150W` or `1.5h@150W`. This replaces the whole list of phases.",
         "data": { "phases": "Phases" }
       },
       "remove_program": {
@@ -91,7 +91,7 @@
       },
       "add_fixed_load_phases": {
         "title": "Fixed load phases",
-        "description": "One phase per line, e.g. `20min@150W` for 20 minutes at 150 W. At least one phase is required.",
+        "description": "One phase per line, e.g. `20min@150W` or `1.5h@150W`. At least one phase is required.",
         "data": { "phases": "Phases" }
       },
       "edit_fixed_load": {
@@ -101,7 +101,7 @@
       },
       "edit_fixed_load_phases": {
         "title": "Fixed load phases",
-        "description": "One phase per line, e.g. `20min@150W` for 20 minutes at 150 W. This replaces the whole list of phases.",
+        "description": "One phase per line, e.g. `20min@150W` or `1.5h@150W`. This replaces the whole list of phases.",
         "data": { "phases": "Phases" }
       },
       "remove_fixed_load": {
@@ -118,7 +118,7 @@
     "error": {
       "duplicate_program": "This device already has a program with that name.",
       "duplicate_device": "A device with that name already exists.",
-      "invalid_phase_line": "Each line must look like `20min@150W` (minutes, then min@, then watts, then W).",
+      "invalid_phase_line": "Each line must look like `20min@150W` or `1.5h@150W`.",
       "empty_phases": "Enter at least one phase."
     }
   }

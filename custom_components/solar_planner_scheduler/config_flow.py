@@ -79,11 +79,11 @@ def _device_schema() -> vol.Schema:
     )
 
 
-_PHASE_LINE_RE = re.compile(r"^\s*(\d+)\s*min\s*@\s*(\d+(?:\.\d+)?)\s*w\s*$", re.IGNORECASE)
+_PHASE_LINE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(min|h)\s*@\s*(\d+(?:\.\d+)?)\s*w\s*$", re.IGNORECASE)
 
 
 class _PhaseParseError(Exception):
-    """A line in the phases text field doesn't match `<minutes>min@<watts>W`."""
+    """A line in the phases text field doesn't match `<duration>min@<watts>W` or `<duration>h@<watts>W`."""
 
     def __init__(self, error_key: str) -> None:
         self.error_key = error_key
@@ -99,8 +99,9 @@ def _parse_phases(text: str) -> list[dict[str, Any]]:
         match = _PHASE_LINE_RE.match(line)
         if match is None:
             raise _PhaseParseError("invalid_phase_line")
-        minutes, power_w = match.groups()
-        phases.append({CONF_MINUTES: int(minutes), CONF_POWER_W: float(power_w)})
+        amount, unit, power_w = match.groups()
+        minutes = float(amount) * 60 if unit.lower() == "h" else float(amount)
+        phases.append({CONF_MINUTES: round(minutes), CONF_POWER_W: float(power_w)})
     if not phases:
         raise _PhaseParseError("empty_phases")
     return phases

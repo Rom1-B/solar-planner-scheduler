@@ -28,13 +28,16 @@ Or manually: copy `custom_components/solar_planner_scheduler/` into your HA `con
 
 Initial setup asks for the shared entities (forecast, forecast tomorrow, surplus, production,
 consumption, max simultaneous power). Devices, programs and fixed loads are then managed via
-"Configure":
+"Configure", which returns to its own menu after each action so several changes can be made in one
+session:
 
 - **Device**: name + optional power sensor.
-- **Program**: wizard to pick device, name it, add one or more phases (minutes + W). A device can
-  have several programs; `select.<device>_program` picks the active one ("None" disables it).
-- **Fixed load**: a recurring non-schedulable load (start time, power, duration), subtracted from
-  available solar capacity.
+- **Program**: pick a device, name it, then enter its phases, one per line, e.g. `20min@150W` or
+  `1.5h@800W` (multi-phase supported). A device can have several programs; `select.<device>_program`
+  picks the active one ("None" disables it). "Edit a program's phases" replaces them in place,
+  pre-filled with the current ones.
+- **Fixed load**: a recurring non-schedulable load (start time + phases, same syntax as programs),
+  subtracted from available solar capacity. Also editable in place.
 
 Manual mode (`switch.<device>_manual_mode`) pins the start time to `datetime.<device>_manual_start`
 instead of the computed slot. When today is good enough but tomorrow could be better, the sensor

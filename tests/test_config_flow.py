@@ -72,6 +72,24 @@ async def test_add_program_phases_parses_valid_multiline_text(hass, enable_custo
     ]
 
 
+async def test_add_program_phases_accepts_hours(hass, enable_custom_integrations):
+    entry = _entry(hass, [{CONF_NAME: "lave_linge", CONF_POWER_SENSOR: "", CONF_PROGRAMS: []}])
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_program"})
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_NAME: "lave_linge", "program_name": "Conso de base"}
+    )
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"phases": "24h@110W\n1.5h@800W"})
+
+    assert result["type"] == "menu"
+    program = entry.options[CONF_DEVICES][0][CONF_PROGRAMS][0]
+    assert program[CONF_POWER_PROFILE] == [
+        {"minutes": 1440, "power_w": 110.0},
+        {"minutes": 90, "power_w": 800.0},
+    ]
+
+
 async def test_add_program_phases_rejects_a_malformed_line(hass, enable_custom_integrations):
     entry = _entry(hass, [{CONF_NAME: "lave_linge", CONF_POWER_SENSOR: "", CONF_PROGRAMS: []}])
 
