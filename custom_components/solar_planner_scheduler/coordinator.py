@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -111,11 +112,24 @@ def _read_float_state(hass: HomeAssistant, entity_id: str | None) -> float | Non
         return None
 
 
+def _ceil_to_five_minutes(dt: datetime) -> datetime:
+    """Round dt up to the next 5-minute clock mark (never into the past relative to dt)."""
+    day_start = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    minutes_since_midnight = (dt - day_start).total_seconds() / 60
+    ceiled_minutes = math.ceil(minutes_since_midnight / 5) * 5
+    return day_start + timedelta(minutes=ceiled_minutes)
+
+
 def _day_buckets(now: datetime, day_offset: int) -> list[dict]:
     """5-minute-grid buckets for `now`'s day (day_offset=0, from now to 23:55) or a future day
-    (day_offset>=1, the full day from midnight to 23:55, mirroring _futureSurplusBuckets)."""
+    (day_offset>=1, the full day from midnight to 23:55, mirroring _futureSurplusBuckets).
+
+    Today's buckets start at the next 5-minute mark, not at `now` itself, so an auto-scheduled
+    start time always lands on a multiple of 5 (matching the card's drag-to-reschedule grid) —
+    same as future days, which are naturally aligned by starting at midnight.
+    """
     if day_offset == 0:
-        start = now
+        start = _ceil_to_five_minutes(now)
         day_end = now.replace(hour=23, minute=55, second=0, microsecond=0)
     else:
         day_start = (now + timedelta(days=day_offset)).replace(hour=0, minute=0, second=0, microsecond=0)
