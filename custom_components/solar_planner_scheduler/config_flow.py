@@ -40,16 +40,29 @@ from .const import (
 
 
 def _base_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
+    # Entity selectors use description={"suggested_value": ...} rather than default=... to
+    # pre-fill: a plain default="" round-trips back through the selector's own validation (which
+    # rejects "" as neither a valid entity ID nor a UUID) whenever the field is left blank,
+    # crashing the flow. suggested_value is a pure frontend pre-fill hint, never re-validated.
     defaults = defaults or {}
     return vol.Schema(
         {
-            vol.Required(CONF_FORECAST_ENTITY, default=defaults.get(CONF_FORECAST_ENTITY, "")): selector.EntitySelector(),
-            vol.Optional(
-                CONF_FORECAST_TOMORROW_ENTITY, default=defaults.get(CONF_FORECAST_TOMORROW_ENTITY, "")
+            vol.Required(
+                CONF_FORECAST_ENTITY, description={"suggested_value": defaults.get(CONF_FORECAST_ENTITY)}
             ): selector.EntitySelector(),
-            vol.Required(CONF_SURPLUS_ENTITY, default=defaults.get(CONF_SURPLUS_ENTITY, "")): selector.EntitySelector(),
-            vol.Optional(CONF_PRODUCTION_ENTITY, default=defaults.get(CONF_PRODUCTION_ENTITY, "")): selector.EntitySelector(),
-            vol.Optional(CONF_CONSUMPTION_ENTITY, default=defaults.get(CONF_CONSUMPTION_ENTITY, "")): selector.EntitySelector(),
+            vol.Optional(
+                CONF_FORECAST_TOMORROW_ENTITY,
+                description={"suggested_value": defaults.get(CONF_FORECAST_TOMORROW_ENTITY)},
+            ): selector.EntitySelector(),
+            vol.Required(
+                CONF_SURPLUS_ENTITY, description={"suggested_value": defaults.get(CONF_SURPLUS_ENTITY)}
+            ): selector.EntitySelector(),
+            vol.Optional(
+                CONF_PRODUCTION_ENTITY, description={"suggested_value": defaults.get(CONF_PRODUCTION_ENTITY)}
+            ): selector.EntitySelector(),
+            vol.Optional(
+                CONF_CONSUMPTION_ENTITY, description={"suggested_value": defaults.get(CONF_CONSUMPTION_ENTITY)}
+            ): selector.EntitySelector(),
             vol.Required(
                 CONF_MAX_SIMULTANEOUS_POWER,
                 default=defaults.get(CONF_MAX_SIMULTANEOUS_POWER, DEFAULT_MAX_SIMULTANEOUS_POWER),
@@ -62,7 +75,7 @@ def _device_schema() -> vol.Schema:
     return vol.Schema(
         {
             vol.Required(CONF_NAME): str,
-            vol.Optional(CONF_POWER_SENSOR, default=""): selector.EntitySelector(),
+            vol.Optional(CONF_POWER_SENSOR): selector.EntitySelector(),
         }
     )
 

@@ -149,14 +149,40 @@ async def test_add_device_rejects_a_duplicate_name(hass, enable_custom_integrati
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_device"})
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_NAME: "lave_linge", CONF_POWER_SENSOR: "sensor.dummy"}
-    )
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "lave_linge"})
 
     assert result["type"] == "form"
     assert result["step_id"] == "add_device"
     assert result["errors"] == {CONF_NAME: "duplicate_device"}
     assert len(entry.options[CONF_DEVICES]) == 1
+
+
+async def test_add_device_without_a_power_sensor_does_not_crash(hass, enable_custom_integrations):
+    """Regression test: an omitted optional EntitySelector used to fail its own validation."""
+    entry = _entry(hass, [])
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_device"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "lave_linge"})
+
+    assert result["type"] == "menu"
+    assert entry.options[CONF_DEVICES][0][CONF_POWER_SENSOR] == ""
+
+
+async def test_edit_base_accepts_omitted_optional_entities(hass, enable_custom_integrations):
+    """Regression test: same default="" bug as add_device, in the base-settings form."""
+    entry = _entry(hass, [])
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_base"})
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_FORECAST_ENTITY: "sensor.forecast", CONF_SURPLUS_ENTITY: "sensor.surplus", CONF_MAX_SIMULTANEOUS_POWER: 3000},
+    )
+
+    assert result["type"] == "menu"
+    assert entry.data[CONF_MAX_SIMULTANEOUS_POWER] == 3000
+    assert entry.data.get("production_entity") is None
 
 
 async def test_remove_program_allows_removing_a_devices_only_program_and_resets_selection(
