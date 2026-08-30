@@ -42,7 +42,7 @@
       },
       "add_device": {
         "title": "Add a device",
-        "description": "Creates the device with no program yet — use \"Add a program\" next to give it one (or several).",
+        "description": "Creates the device with no program yet, use \"Add a program\" next to give it one (or several).",
         "data": {
           "name": "Name",
           "power_sensor": "Power sensor (optional)"
@@ -84,7 +84,7 @@
         "title": "Add a fixed load",
         "data": {
           "name": "Name",
-          "start_time": "Daily start time (HH:MM)",
+          "start_time": "Daily start time",
           "power_w": "Power (W)",
           "duration_min": "Duration (minutes)"
         }
@@ -98,10 +98,11 @@
       "no_devices": "No devices configured yet.",
       "no_fixed_loads": "No fixed loads configured yet.",
       "no_programs": "No device has a program to edit yet.",
-      "no_removable_programs": "No device has more than one program to remove."
+      "no_removable_programs": "No device has a program to remove."
     },
     "error": {
       "duplicate_program": "This device already has a program with that name.",
+      "duplicate_device": "A device with that name already exists.",
       "invalid_phase_line": "Each line must look like `20min@150W` (minutes, then min@, then watts, then W).",
       "empty_phases": "Enter at least one phase."
     }

@@ -35,6 +35,7 @@ from .const import (
     CONF_SURPLUS_ENTITY,
     DEFAULT_MAX_SIMULTANEOUS_POWER,
     DOMAIN,
+    NONE_PROGRAM,
 )
 
 
@@ -111,7 +112,7 @@ def _fixed_load_schema() -> vol.Schema:
     return vol.Schema(
         {
             vol.Required(CONF_NAME): str,
-            vol.Required(CONF_START_TIME): str,
+            vol.Required(CONF_START_TIME): selector.TimeSelector(),
             vol.Required(CONF_POWER_W): vol.Coerce(float),
             vol.Required(CONF_DURATION_MIN): vol.Coerce(int),
         }
@@ -141,8 +142,8 @@ class SolarPlannerSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
     """Add/remove devices and fixed loads, or edit the base entities.
 
-    Each action finishes the flow (the user reopens "Configure" to do another) — a menu that loops
-    back to itself is a natural follow-up but not needed for a first working version.
+    Each action persists its change immediately and returns to the menu (`_finish_step`), so
+    several actions can be done in the same "Configure" session instead of reopening it each time.
     """
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
@@ -167,7 +168,7 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
     async def async_step_edit_base(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
             self.hass.config_entries.async_update_entry(self.config_entry, data=user_input)
-            return self.async_create_entry(title="", data=self._current_options())
+            return await self.async_step_init()
         return self.async_show_form(step_id="edit_base", data_schema=_base_schema(self.config_entry.data))
 
     async def async_step_add_device(self, user_input: dict[str, Any] | None = None):
@@ -176,6 +177,10 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
         # freshly added device starts with no programs at all (select entity offers just "None")
         # until one is added.
         if user_input is not None:
+            if user_input[CONF_NAME] in [d[CONF_NAME] for d in self._devices]:
+                return self.async_show_form(
+                    step_id="add_device", data_schema=_device_schema(), errors={CONF_NAME: "duplicate_device"}
+                )
             self._devices.append(
                 {
                     CONF_NAME: user_input[CONF_NAME],
@@ -183,7 +188,7 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
                     CONF_PROGRAMS: [],
                 }
             )
-            return self.async_create_entry(title="", data=self._current_options())
+            return await self._finish_step()
         return self.async_show_form(step_id="add_device", data_schema=_device_schema())
 
     async def async_step_remove_device(self, user_input: dict[str, Any] | None = None):
@@ -191,7 +196,7 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
             return self.async_abort(reason="no_devices")
         if user_input is not None:
             self._devices = [d for d in self._devices if d[CONF_NAME] != user_input[CONF_NAME]]
-            return self.async_create_entry(title="", data=self._current_options())
+            return await self._finish_step()
         names = [d[CONF_NAME] for d in self._devices]
         return self.async_show_form(step_id="remove_device", data_schema=vol.Schema({vol.Required(CONF_NAME): vol.In(names)}))
 
@@ -227,7 +232,7 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
                 {**d, CONF_PROGRAMS: [*d.get(CONF_PROGRAMS, []), new_program]} if d[CONF_NAME] == device_name else d
                 for d in self._devices
             ]
-            return self.async_create_entry(title="", data=self._current_options())
+            return await self._finish_step()
         return self.async_show_form(step_id="add_program_phases", data_schema=_phases_schema())
 
     async def async_step_edit_program(self, user_input: dict[str, Any] | None = None):
@@ -279,13 +284,13 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
                 else d
                 for d in self._devices
             ]
-            return self.async_create_entry(title="", data=self._current_options())
+            return await self._finish_step()
         return self.async_show_form(
             step_id="edit_program_phases", data_schema=_phases_schema(_phases_to_text(program[CONF_POWER_PROFILE]))
         )
 
     async def async_step_remove_program(self, user_input: dict[str, Any] | None = None):
-        devices_with_programs = [d for d in self._devices if len(d.get(CONF_PROGRAMS, [])) > 1]
+        devices_with_programs = [d for d in self._devices if d.get(CONF_PROGRAMS)]
         if not devices_with_programs:
             return self.async_abort(reason="no_removable_programs")
         device_names = [d[CONF_NAME] for d in devices_with_programs]
@@ -298,19 +303,24 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
             )
         if user_input is not None and "program_name" in user_input:
             device_name = self._removing_device_name
-            self._devices = [
-                {**d, CONF_PROGRAMS: [p for p in d[CONF_PROGRAMS] if p[CONF_NAME] != user_input["program_name"]]}
-                if d[CONF_NAME] == device_name
-                else d
-                for d in self._devices
-            ]
-            return self.async_create_entry(title="", data=self._current_options())
+            removed_name = user_input["program_name"]
+
+            def _update(d: dict[str, Any]) -> dict[str, Any]:
+                if d[CONF_NAME] != device_name:
+                    return d
+                updated = {**d, CONF_PROGRAMS: [p for p in d[CONF_PROGRAMS] if p[CONF_NAME] != removed_name]}
+                if d.get(CONF_SELECTED_PROGRAM) == removed_name:
+                    updated[CONF_SELECTED_PROGRAM] = NONE_PROGRAM
+                return updated
+
+            self._devices = [_update(d) for d in self._devices]
+            return await self._finish_step()
         return self.async_show_form(step_id="remove_program", data_schema=vol.Schema({vol.Required(CONF_NAME): vol.In(device_names)}))
 
     async def async_step_add_fixed_load(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
             self._fixed_loads.append(user_input)
-            return self.async_create_entry(title="", data=self._current_options())
+            return await self._finish_step()
         return self.async_show_form(step_id="add_fixed_load", data_schema=_fixed_load_schema())
 
     async def async_step_remove_fixed_load(self, user_input: dict[str, Any] | None = None):
@@ -318,9 +328,14 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
             return self.async_abort(reason="no_fixed_loads")
         if user_input is not None:
             self._fixed_loads = [f for f in self._fixed_loads if f[CONF_NAME] != user_input[CONF_NAME]]
-            return self.async_create_entry(title="", data=self._current_options())
+            return await self._finish_step()
         names = [f[CONF_NAME] for f in self._fixed_loads]
         return self.async_show_form(step_id="remove_fixed_load", data_schema=vol.Schema({vol.Required(CONF_NAME): vol.In(names)}))
+
+    async def _finish_step(self):
+        """Persist the pending change and return to the menu instead of closing the flow."""
+        self.hass.config_entries.async_update_entry(self.config_entry, options=self._current_options())
+        return await self.async_step_init()
 
     def _current_options(self) -> dict[str, Any]:
         return {CONF_DEVICES: self._devices, CONF_FIXED_LOADS: self._fixed_loads}

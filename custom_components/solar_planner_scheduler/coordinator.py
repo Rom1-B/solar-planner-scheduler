@@ -134,7 +134,8 @@ def _fixed_load_windows(fixed_loads: list[dict], now: datetime) -> list[dict]:
     windows = []
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     for load in fixed_loads:
-        hour, minute = (int(x) for x in load[CONF_START_TIME].split(":"))
+        # TimeSelector returns "HH:MM:SS"; only hour/minute matter here, seconds are ignored.
+        hour, minute = (int(x) for x in load[CONF_START_TIME].split(":")[:2])
         start = day_start.replace(hour=hour, minute=minute)
         end = start + timedelta(minutes=load[CONF_DURATION_MIN])
         windows.append({"start": start, "end": end, "power_w": load[CONF_POWER_W]})
