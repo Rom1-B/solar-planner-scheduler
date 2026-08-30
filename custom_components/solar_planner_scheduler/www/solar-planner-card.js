@@ -13,7 +13,6 @@ const DEVICE_COLORS = {
 
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
-export const BUCKET_MS = 30 * 60 * 1000;
 export const SMOOTH_BUCKET_MS = 5 * 60 * 1000;
 export const DRAG_SNAP_MS = 5 * 60 * 1000;
 
@@ -119,7 +118,7 @@ export function instantDeficitWh(itemSegments, otherSegments, points, baseLoad, 
 }
 
 // Deficit weighted by energy share while any shortfall exists (bounded 0-1); once fully covered, worst
-// ratio among above-average-power instants only (unbounded, see CLAUDE.local.md). Unrounded, for findBestPlacement.
+// ratio among above-average-power instants only (unbounded, see CLAUDE.local.md). Unrounded, for coveragePercent.
 function coverageRatio(itemSegments, otherSegments, points, baseLoad, start, end) {
   const deficitWh = instantDeficitWh(itemSegments, otherSegments, points, baseLoad, start, end);
   const totalEnergyWh = itemSegments.reduce((sum, seg) => sum + (seg.power * (seg.end.getTime() - seg.start.getTime())) / 3600000, 0);
@@ -144,76 +143,6 @@ export function coveragePercent(itemSegments, otherSegments, points, baseLoad, s
   return Math.round(coverageRatio(itemSegments, otherSegments, points, baseLoad, start, end) * 100);
 }
 
-// Exact max_simultaneous_power check: sweeps real phase boundaries, not 30-min buckets, so near-miss spikes aren't falsely summed (see findPeakConflicts).
-function fitsPeakCeiling(itemSegments, otherSegments, maxSimultaneousPower) {
-  const itemStart = itemSegments[0].start.getTime();
-  const itemEnd = itemSegments[itemSegments.length - 1].end.getTime();
-  const all = [...otherSegments, ...itemSegments];
-  const breakpoints = new Set([itemStart, itemEnd]);
-  for (const seg of all) {
-    const s = seg.start.getTime();
-    const e = seg.end.getTime();
-    if (s > itemStart && s < itemEnd) breakpoints.add(s);
-    if (e > itemStart && e < itemEnd) breakpoints.add(e);
-  }
-  const sorted = [...breakpoints].sort((a, b) => a - b);
-  for (let i = 0; i + 1 < sorted.length; i++) {
-    const t0 = sorted[i];
-    const t1 = sorted[i + 1];
-    let sum = 0;
-    for (const seg of all) {
-      if (seg.start.getTime() <= t0 && t1 <= seg.end.getTime()) sum += seg.power;
-    }
-    if (sum > maxSimultaneousPower) return false;
-  }
-  return true;
-}
-
-// Maximizes coverageRatio (unrounded — avoids ties from coveragePercent's rounding). max_simultaneous_power
-// stays a hard filter via fitsPeakCeiling; candidate step comes from `buckets` itself, not a hardcoded 30 min.
-// Kept here (though the card itself no longer calls it) as the JS half of the JS/Python mirrored pure-function
-// pair — scheduling.py's find_best_placement is verified against this exact function's test cases.
-export function findBestPlacement(buckets, item, maxSimultaneousPower, points, baseLoad, others) {
-  const stepMs = buckets.length > 1 ? buckets[1].start.getTime() - buckets[0].start.getTime() : DRAG_SNAP_MS;
-  const span = Math.max(1, Math.ceil(item.durationMin / (stepMs / 60000)));
-  const otherSegments = others.filter((o) => o.start && o.end).flatMap((o) => phaseSegments(o));
-  let best = null;
-  for (let i = 0; i + span <= buckets.length; i++) {
-    const start = buckets[i].start;
-    const end = new Date(start.getTime() + item.durationMin * 60000);
-    const candidate = { ...item, start, end };
-    const itemSegments = phaseSegments(candidate);
-    if (!fitsPeakCeiling(itemSegments, otherSegments, maxSimultaneousPower)) continue;
-
-    const ratio = coverageRatio(itemSegments, otherSegments, points, baseLoad, start, end);
-    if (!best || ratio > best.ratio) {
-      best = { index: i, ratio, coveragePct: Math.round(ratio * 100) };
-    }
-  }
-  return best;
-}
-
-// preCommitted seeds already-reserved items; each newly placed item is pushed onto it so later items in the batch see earlier placements.
-// Kept for the same JS/Python mirroring reason as findBestPlacement — not called by the card anymore.
-export function scheduleProposals(buckets, items, maxSimultaneousPower, points, baseLoad, preCommitted = []) {
-  const committed = [...preCommitted];
-  const sorted = [...items].sort((a, b) => b.powerW - a.powerW);
-  const proposals = [];
-  for (const item of sorted) {
-    const placement = findBestPlacement(buckets, item, maxSimultaneousPower, points, baseLoad, committed);
-    if (placement) {
-      const start = buckets[placement.index].start;
-      const end = new Date(start.getTime() + item.durationMin * 60000);
-      const placed = { ...item, start, end };
-      committed.push(placed);
-      proposals.push(placed);
-    } else {
-      proposals.push({ ...item, start: null, end: null });
-    }
-  }
-  return proposals;
-}
-
 // Breaks an item into absolute-time phase segments; no profile means one flat segment for the whole run.
 export function phaseSegments(item) {
   if (!item.profile) return [{ start: item.start, end: item.end, power: item.powerW }];
@@ -223,36 +152,6 @@ export function phaseSegments(item) {
     t = new Date(t.getTime() + phase.minutes * 60000);
     return { start, end: t, power: phase.power_w };
   });
-}
-
-// Exact conflict check: sweeps real phase boundaries and sums truly concurrent power, not a 30-min bucket approximation.
-// Kept for the same JS/Python mirroring reason as findBestPlacement — not called by the card anymore.
-export function findPeakConflicts(entries, maxSimultaneousPower) {
-  const withSegments = entries.filter((e) => e.start && e.end).map((e) => ({ entry: e, segments: phaseSegments(e) }));
-  const breakpoints = new Set();
-  for (const { segments } of withSegments) {
-    for (const seg of segments) {
-      breakpoints.add(seg.start.getTime());
-      breakpoints.add(seg.end.getTime());
-    }
-  }
-  const sorted = [...breakpoints].sort((a, b) => a - b);
-  const conflicted = new Set();
-  for (let i = 0; i + 1 < sorted.length; i++) {
-    const t0 = sorted[i];
-    const t1 = sorted[i + 1];
-    const involved = [];
-    let sum = 0;
-    for (const { entry, segments } of withSegments) {
-      const seg = segments.find((s) => s.start.getTime() <= t0 && t1 <= s.end.getTime());
-      if (seg) {
-        sum += seg.power;
-        involved.push(entry);
-      }
-    }
-    if (sum > maxSimultaneousPower) involved.forEach((e) => conflicted.add(e));
-  }
-  return conflicted;
 }
 
 class SolarPlannerCard extends HTMLElement {
