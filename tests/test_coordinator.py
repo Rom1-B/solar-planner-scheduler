@@ -65,6 +65,18 @@ async def test_read_forecast_points_handles_a_raw_datetime_period_start(hass):
     assert points == [{"time": period_start, "w": 1500.0}]
 
 
+def _seed_committed(coordinator, name, schedule):
+    """Populate the persisted-state dict directly, as if a previous cycle had committed to it —
+    mirrors what _set_committed() stores (ISO strings), since _locked_today_slot reads from
+    self._committed (the Store-backed dict), not self.data, so it survives a coordinator recreate.
+    """
+    coordinator._committed[name] = {
+        "start": schedule.start.isoformat(),
+        "end": schedule.end.isoformat(),
+        "coverage_pct": schedule.coverage_pct,
+    }
+
+
 def _coordinator(hass, previous_schedule=None):
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -74,7 +86,7 @@ def _coordinator(hass, previous_schedule=None):
     entry.add_to_hass(hass)
     coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
     if previous_schedule is not None:
-        coordinator.data = {"lave_linge": previous_schedule}
+        _seed_committed(coordinator, "lave_linge", previous_schedule)
     return coordinator
 
 
@@ -217,7 +229,7 @@ def test_locking_stops_a_committed_slot_from_flip_flopping_across_refresh_cycles
     now = datetime(2026, 8, 30, 8, 30, tzinfo=timezone.utc)
     slot = coordinator._locked_today_slot("lave_linge", device, duration_min, now) or coordinator._find_slot_for_day()
     assert slot == near
-    coordinator.data = {"lave_linge": DeviceSchedule("lave_linge", slot["start"], slot["end"], slot["coverage_pct"])}
+    _seed_committed(coordinator, "lave_linge", DeviceSchedule("lave_linge", slot["start"], slot["end"], slot["coverage_pct"]))
     assert call_count == 1
 
     # Cycle 2, now within DEFAULT_UPDATE_INTERVAL_MINUTES of "near"'s start: locks onto it — the
@@ -226,13 +238,45 @@ def test_locking_stops_a_committed_slot_from_flip_flopping_across_refresh_cycles
     slot = coordinator._locked_today_slot("lave_linge", device, duration_min, now) or coordinator._find_slot_for_day()
     assert slot == near, "expected the imminent slot to stay locked instead of jumping to the later one"
     assert call_count == 1, "the search must not be re-run once locked"
-    coordinator.data = {"lave_linge": DeviceSchedule("lave_linge", slot["start"], slot["end"], slot["coverage_pct"])}
+    _seed_committed(coordinator, "lave_linge", DeviceSchedule("lave_linge", slot["start"], slot["end"], slot["coverage_pct"]))
 
     # Cycle 3, now inside the committed window: still locked, still no re-search.
     now = datetime(2026, 8, 30, 9, 20, tzinfo=timezone.utc)
     slot = coordinator._locked_today_slot("lave_linge", device, duration_min, now) or coordinator._find_slot_for_day()
     assert slot == near
     assert call_count == 1
+
+
+async def test_committed_state_survives_a_coordinator_recreate(hass):
+    """Regression test: self.data (where the lock/ALREADY_RAN state used to live) is wiped by
+    anything that recreates the coordinator — a HA restart, or any options-flow change at all,
+    since every one triggers a full entry reload via the update listener. Committed state must
+    survive that, via the Store instead of self.data.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options={},
+    )
+    entry.add_to_hass(hass)
+
+    now = datetime(2026, 8, 30, 14, 0, tzinfo=timezone.utc)
+    start = now - timedelta(minutes=40)
+    end = start + timedelta(minutes=30)
+
+    coordinator_a = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator_a.async_load_state()
+    await coordinator_a._set_committed("lave_linge", start, end, 95)
+
+    # A brand new coordinator instance, as async_setup_entry creates on every reload — self.data
+    # starts empty, but async_load_state() must recover what was persisted above.
+    coordinator_b = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator_b.async_load_state()
+    assert coordinator_b.data is None  # confirms this genuinely isn't reading self.data
+
+    slot = coordinator_b._locked_today_slot("lave_linge", {}, duration_min=30, now=now)
+
+    assert slot is ALREADY_RAN
 
 
 def test_auto_day_allowed_true_when_todays_weekday_is_selected():

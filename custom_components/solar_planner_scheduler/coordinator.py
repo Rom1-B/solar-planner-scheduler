@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
@@ -65,6 +66,15 @@ _LOGGER = logging.getLogger(__name__)
 # itself treats a previous day's commitment as stale, so once today is an allowed day again, a
 # fresh search naturally resumes with no explicit reset needed.
 ALREADY_RAN = object()
+
+# Committed-slot state (what _locked_today_slot reads) is persisted in its own Store rather than
+# kept only on the coordinator's `self.data` — `self.data` is wiped by anything that recreates the
+# coordinator (a HA restart, or any options-flow change at all, since every one of them triggers a
+# full entry reload via the update listener), which used to silently undo the anti-flip-flop lock
+# and the "already ran today" guard the moment either happened. A dedicated Store survives both.
+# Keyed by name so other coordinator-internal state that needs to survive a reload can live here
+# too later, without needing its own Store.
+STORAGE_VERSION = 1
 
 
 @dataclass
@@ -162,6 +172,30 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES))
         self.entry = entry
+        self._store = Store(hass, STORAGE_VERSION, f"{DOMAIN}_{entry.entry_id}")
+        self._committed: dict[str, dict] = {}
+
+    async def async_load_state(self) -> None:
+        """Load persisted committed-slot state. Call once before the first refresh."""
+        self._committed = await self._store.async_load() or {}
+
+    def _get_committed(self, name: str) -> dict | None:
+        raw = self._committed.get(name)
+        if raw is None:
+            return None
+        start = dt_util.parse_datetime(raw["start"])
+        end = dt_util.parse_datetime(raw["end"])
+        if start is None or end is None:
+            return None
+        return {"start": start, "end": end, "coverage_pct": raw["coverage_pct"]}
+
+    async def _set_committed(self, name: str, start: datetime, end: datetime, coverage_pct: int | None) -> None:
+        self._committed[name] = {"start": start.isoformat(), "end": end.isoformat(), "coverage_pct": coverage_pct}
+        await self._store.async_save(self._committed)
+
+    async def _clear_committed(self, name: str) -> None:
+        if self._committed.pop(name, None) is not None:
+            await self._store.async_save(self._committed)
 
     async def _estimate_program_power(self, device: dict, program: dict) -> tuple[float | None, bool]:
         """Estimates a flat-power program's real power from power_sensor history.
@@ -232,6 +266,11 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         window has fully elapsed: a device is meant to run once per selection, not keep proposing
         a new slot for the rest of the day once it's already had its committed run.
 
+        Reads from the persisted Store (via _get_committed), not self.data — self.data is wiped by
+        anything that recreates the coordinator (a HA restart, or any options-flow change, since
+        every one triggers a full entry reload), which would otherwise silently undo this the
+        moment either happened.
+
         Without the "close" half of this, every refresh re-runs find_best_placement over the whole
         remaining day; a slot later in the day (typically near solar noon) can keep looking
         marginally better than an imminent one, so the "best" start keeps sliding forward and never
@@ -239,22 +278,22 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         reached. Without the ALREADY_RAN half, a device would get proposed a second slot the same
         day (or any day after) as soon as another good-enough window appears.
         """
-        previous = self.data.get(name) if self.data else None
-        if previous is None or previous.start is None or previous.end is None:
+        previous = self._get_committed(name)
+        if previous is None:
             return None
-        if previous.start.date() != now.date():
+        if previous["start"].date() != now.date():
             return None  # a previous day's commitment doesn't carry over — today gets a fresh look
-        locked_duration = (previous.end - previous.start).total_seconds() / 60
+        locked_duration = (previous["end"] - previous["start"]).total_seconds() / 60
         if abs(locked_duration - duration_min) > 0.01:
             return None  # the selected program changed since the slot was committed — fresh choice
-        if now >= previous.end:
+        if now >= previous["end"]:
             return ALREADY_RAN
-        if now >= previous.start:
+        if now >= previous["start"]:
             if self._failed_to_start(device, now):
                 return None  # unlock: recompute a fresh slot instead of waiting forever
-            return {"start": previous.start, "end": previous.end, "coverage_pct": previous.coverage_pct}
-        if previous.start - now <= timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES):
-            return {"start": previous.start, "end": previous.end, "coverage_pct": previous.coverage_pct}
+            return previous
+        if previous["start"] - now <= timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES):
+            return previous
         return None
 
     @staticmethod
@@ -363,10 +402,12 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
             name = device[CONF_NAME]
             selected = device.get(CONF_SELECTED_PROGRAM)
             if not selected or selected == NONE_PROGRAM:
+                await self._clear_committed(name)
                 results[name] = DeviceSchedule(name, None, None, None)
                 continue
             program = next((p for p in device.get(CONF_PROGRAMS, []) if p[CONF_NAME] == selected), None)
             if program is None:
+                await self._clear_committed(name)
                 results[name] = DeviceSchedule(name, None, None, None)
                 continue
 
@@ -413,9 +454,12 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
                 # well. Runs again only once the program selection itself changes.
                 results[name] = DeviceSchedule(name, None, None, None, approximate)
                 continue
-            today_slot = locked or self._find_slot_for_day(
-                item, duration_min, points, base_load, committed, max_power, 0
-            )
+            if locked is not None:
+                today_slot = locked
+            else:
+                today_slot = self._find_slot_for_day(item, duration_min, points, base_load, committed, max_power, 0)
+                if today_slot is not None:
+                    await self._set_committed(name, today_slot["start"], today_slot["end"], today_slot["coverage_pct"])
 
             if accepted == ACCEPTED_DAY_TODAY:
                 _append_committed(today_slot)
