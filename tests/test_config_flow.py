@@ -23,6 +23,7 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_POWER_SENSOR,
     CONF_PROGRAMS,
     CONF_SELECTED_PROGRAM,
+    CONF_START_TIME,
     CONF_SURPLUS_ENTITY,
     DOMAIN,
     NONE_PROGRAM,
@@ -35,12 +36,12 @@ BASE_DATA = {
 }
 
 
-def _entry(hass, devices):
+def _entry(hass, devices, fixed_loads=None):
     entry = MockConfigEntry(
         domain=DOMAIN,
-        version=2,
+        version=3,
         data=BASE_DATA,
-        options={CONF_DEVICES: devices, CONF_FIXED_LOADS: []},
+        options={CONF_DEVICES: devices, CONF_FIXED_LOADS: fixed_loads or []},
     )
     entry.add_to_hass(hass)
     return entry
@@ -207,3 +208,62 @@ async def test_remove_program_allows_removing_a_devices_only_program_and_resets_
     device = entry.options[CONF_DEVICES][0]
     assert device[CONF_PROGRAMS] == []
     assert device[CONF_SELECTED_PROGRAM] == NONE_PROGRAM
+
+
+async def test_add_fixed_load_parses_a_multi_phase_profile(hass, enable_custom_integrations):
+    entry = _entry(hass, [])
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_fixed_load"})
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_NAME: "PAC", CONF_START_TIME: "13:00:00"}
+    )
+    assert result["step_id"] == "add_fixed_load_phases"
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"phases": "60min@1500W\n30min@800W"}
+    )
+    assert result["type"] == "menu"
+
+    load = entry.options[CONF_FIXED_LOADS][0]
+    assert load[CONF_NAME] == "PAC"
+    assert load[CONF_START_TIME] == "13:00:00"
+    assert load[CONF_POWER_PROFILE] == [
+        {"minutes": 60, "power_w": 1500.0},
+        {"minutes": 30, "power_w": 800.0},
+    ]
+
+
+async def test_edit_fixed_load_prefills_and_replaces_phases_in_place(hass, enable_custom_integrations):
+    fixed_loads = [
+        {
+            CONF_NAME: "PAC",
+            CONF_START_TIME: "13:00:00",
+            CONF_POWER_PROFILE: [{"minutes": 60, "power_w": 1500.0}],
+        }
+    ]
+    entry = _entry(hass, [], fixed_loads=fixed_loads)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_fixed_load"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "PAC"})
+    assert result["step_id"] == "edit_fixed_load_phases"
+    assert result["data_schema"]({})["phases"] == "60min@1500W"
+
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"phases": "10min@300W"})
+    assert result["type"] == "menu"
+
+    load = entry.options[CONF_FIXED_LOADS][0]
+    assert load[CONF_NAME] == "PAC"
+    assert load[CONF_START_TIME] == "13:00:00"
+    assert load[CONF_POWER_PROFILE] == [{"minutes": 10, "power_w": 300.0}]
+
+
+async def test_edit_fixed_load_aborts_when_none_exist(hass, enable_custom_integrations):
+    entry = _entry(hass, [])
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_fixed_load"})
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "no_fixed_loads"

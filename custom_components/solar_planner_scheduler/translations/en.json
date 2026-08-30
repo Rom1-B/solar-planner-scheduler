@@ -26,6 +26,7 @@
           "edit_program": "Edit a program's phases",
           "remove_program": "Remove a program from a device",
           "add_fixed_load": "Add a fixed load",
+          "edit_fixed_load": "Edit a fixed load's phases",
           "remove_fixed_load": "Remove a fixed load"
         }
       },
@@ -82,12 +83,26 @@
       },
       "add_fixed_load": {
         "title": "Add a fixed load",
+        "description": "Name the load and set its daily start time. The next screen asks for its phases.",
         "data": {
           "name": "Name",
-          "start_time": "Daily start time",
-          "power_w": "Power (W)",
-          "duration_min": "Duration (minutes)"
+          "start_time": "Daily start time"
         }
+      },
+      "add_fixed_load_phases": {
+        "title": "Fixed load phases",
+        "description": "One phase per line, e.g. `20min@150W` for 20 minutes at 150 W. At least one phase is required.",
+        "data": { "phases": "Phases" }
+      },
+      "edit_fixed_load": {
+        "title": "Edit a fixed load",
+        "description": "Pick which fixed load's phases to edit.",
+        "data": { "name": "Fixed load" }
+      },
+      "edit_fixed_load_phases": {
+        "title": "Fixed load phases",
+        "description": "One phase per line, e.g. `20min@150W` for 20 minutes at 150 W. This replaces the whole list of phases.",
+        "data": { "phases": "Phases" }
       },
       "remove_fixed_load": {
         "title": "Remove a fixed load",

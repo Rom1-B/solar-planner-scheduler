@@ -29,6 +29,7 @@ from .const import (
     CONF_MANUAL,
     CONF_MANUAL_START,
     CONF_MAX_SIMULTANEOUS_POWER,
+    CONF_MINUTES,
     CONF_NAME,
     CONF_POWER_PROFILE,
     CONF_POWER_SENSOR,
@@ -144,15 +145,21 @@ def _day_buckets(now: datetime, day_offset: int) -> list[dict]:
 
 
 def _fixed_load_windows(fixed_loads: list[dict], now: datetime) -> list[dict]:
-    """One occurrence per fixed load, anchored on today — mirrors the card's daily recurrence."""
+    """One occurrence per fixed load, anchored on today — mirrors the card's daily recurrence.
+
+    Each window carries the whole multi-phase `profile`; phase_segments() (scheduling.py) already
+    knows how to walk a profile into per-phase segments from a single start time, so a single
+    window per fixed load is enough regardless of how many phases it has.
+    """
     windows = []
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     for load in fixed_loads:
         # TimeSelector returns "HH:MM:SS"; only hour/minute matter here, seconds are ignored.
         hour, minute = (int(x) for x in load[CONF_START_TIME].split(":")[:2])
         start = day_start.replace(hour=hour, minute=minute)
-        end = start + timedelta(minutes=load[CONF_DURATION_MIN])
-        windows.append({"start": start, "end": end, "power_w": load[CONF_POWER_W]})
+        profile = load[CONF_POWER_PROFILE]
+        end = start + timedelta(minutes=sum(p[CONF_MINUTES] for p in profile))
+        windows.append({"start": start, "end": end, "profile": profile})
     return windows
 
 

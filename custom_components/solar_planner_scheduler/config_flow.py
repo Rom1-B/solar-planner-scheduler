@@ -18,7 +18,6 @@ from homeassistant.helpers import selector
 from .const import (
     CONF_CONSUMPTION_ENTITY,
     CONF_DEVICES,
-    CONF_DURATION_MIN,
     CONF_FIXED_LOADS,
     CONF_FORECAST_ENTITY,
     CONF_FORECAST_TOMORROW_ENTITY,
@@ -121,13 +120,11 @@ def _phases_schema(default_text: str = "") -> vol.Schema:
     )
 
 
-def _fixed_load_schema() -> vol.Schema:
+def _fixed_load_meta_schema() -> vol.Schema:
     return vol.Schema(
         {
             vol.Required(CONF_NAME): str,
             vol.Required(CONF_START_TIME): selector.TimeSelector(),
-            vol.Required(CONF_POWER_W): vol.Coerce(float),
-            vol.Required(CONF_DURATION_MIN): vol.Coerce(int),
         }
     )
 
@@ -135,7 +132,7 @@ def _fixed_load_schema() -> vol.Schema:
 class SolarPlannerSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Initial setup — base entities only."""
 
-    VERSION = 2
+    VERSION = 3
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
@@ -174,6 +171,7 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
                 "edit_program",
                 "remove_program",
                 "add_fixed_load",
+                "edit_fixed_load",
                 "remove_fixed_load",
             ],
         )
@@ -331,10 +329,64 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(step_id="remove_program", data_schema=vol.Schema({vol.Required(CONF_NAME): vol.In(device_names)}))
 
     async def async_step_add_fixed_load(self, user_input: dict[str, Any] | None = None):
+        """Name and daily start time of the new fixed load (step 1 of 2: meta -> phases)."""
         if user_input is not None:
-            self._fixed_loads.append(user_input)
+            self._editing_fixed_load_name = user_input[CONF_NAME]
+            self._new_fixed_load_start_time = user_input[CONF_START_TIME]
+            return await self.async_step_add_fixed_load_phases()
+        return self.async_show_form(step_id="add_fixed_load", data_schema=_fixed_load_meta_schema())
+
+    async def async_step_add_fixed_load_phases(self, user_input: dict[str, Any] | None = None):
+        if user_input is not None:
+            try:
+                phases = _parse_phases(user_input["phases"])
+            except _PhaseParseError as err:
+                return self.async_show_form(
+                    step_id="add_fixed_load_phases",
+                    data_schema=_phases_schema(user_input["phases"]),
+                    errors={"phases": err.error_key},
+                )
+            self._fixed_loads.append(
+                {
+                    CONF_NAME: self._editing_fixed_load_name,
+                    CONF_START_TIME: self._new_fixed_load_start_time,
+                    CONF_POWER_PROFILE: phases,
+                }
+            )
             return await self._finish_step()
-        return self.async_show_form(step_id="add_fixed_load", data_schema=_fixed_load_schema())
+        return self.async_show_form(step_id="add_fixed_load_phases", data_schema=_phases_schema())
+
+    async def async_step_edit_fixed_load(self, user_input: dict[str, Any] | None = None):
+        """Pick which fixed load's phases to edit (step 1 of 2: pick -> phases)."""
+        if not self._fixed_loads:
+            return self.async_abort(reason="no_fixed_loads")
+        if user_input is not None:
+            self._editing_fixed_load_name = user_input[CONF_NAME]
+            return await self.async_step_edit_fixed_load_phases()
+        names = [f[CONF_NAME] for f in self._fixed_loads]
+        return self.async_show_form(
+            step_id="edit_fixed_load", data_schema=vol.Schema({vol.Required(CONF_NAME): vol.In(names)})
+        )
+
+    async def async_step_edit_fixed_load_phases(self, user_input: dict[str, Any] | None = None):
+        load_name = self._editing_fixed_load_name
+        load = next(f for f in self._fixed_loads if f[CONF_NAME] == load_name)
+        if user_input is not None:
+            try:
+                phases = _parse_phases(user_input["phases"])
+            except _PhaseParseError as err:
+                return self.async_show_form(
+                    step_id="edit_fixed_load_phases",
+                    data_schema=_phases_schema(user_input["phases"]),
+                    errors={"phases": err.error_key},
+                )
+            self._fixed_loads = [
+                {**f, CONF_POWER_PROFILE: phases} if f[CONF_NAME] == load_name else f for f in self._fixed_loads
+            ]
+            return await self._finish_step()
+        return self.async_show_form(
+            step_id="edit_fixed_load_phases", data_schema=_phases_schema(_phases_to_text(load[CONF_POWER_PROFILE]))
+        )
 
     async def async_step_remove_fixed_load(self, user_input: dict[str, Any] | None = None):
         if not self._fixed_loads:

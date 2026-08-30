@@ -19,14 +19,12 @@ from .const import (
     ATTR_TOMORROW_COVERAGE_PCT,
     CONF_CONSUMPTION_ENTITY,
     CONF_DEVICES,
-    CONF_DURATION_MIN,
     CONF_FIXED_LOADS,
     CONF_FORECAST_ENTITY,
     CONF_FORECAST_TOMORROW_ENTITY,
     CONF_MAX_SIMULTANEOUS_POWER,
-    CONF_MINUTES,
     CONF_NAME,
-    CONF_POWER_W,
+    CONF_POWER_PROFILE,
     CONF_PRODUCTION_ENTITY,
     CONF_START_TIME,
     CONF_SURPLUS_ENTITY,
@@ -69,10 +67,7 @@ class BaseConfigSensor(SensorEntity):
             {
                 CONF_NAME: load[CONF_NAME],
                 CONF_START_TIME: load[CONF_START_TIME],
-                # The integration only stores fixed loads as flat power_w/duration_min (no
-                # multi-phase editor for them yet); wrapped as a single-phase profile here since
-                # that's the shape the card's rendering already expects.
-                "power_profile": [{CONF_MINUTES: load[CONF_DURATION_MIN], CONF_POWER_W: load[CONF_POWER_W]}],
+                "power_profile": load[CONF_POWER_PROFILE],
             }
             for load in self._entry.options.get(CONF_FIXED_LOADS, [])
         ]

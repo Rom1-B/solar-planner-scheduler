@@ -17,11 +17,15 @@ from .const import (
     CONF_ACCEPTED_DAY,
     CONF_DEVICES,
     CONF_DURATION_MIN,
+    CONF_FIXED_LOADS,
+    CONF_MINUTES,
     CONF_NAME,
+    CONF_POWER_PROFILE,
     CONF_POWER_SENSOR,
     CONF_POWER_W,
     CONF_PROGRAMS,
     CONF_SELECTED_PROGRAM,
+    CONF_START_TIME,
     DOMAIN,
 )
 
@@ -116,7 +120,14 @@ def _async_register_services(hass: "HomeAssistant") -> None:
 
 
 async def async_migrate_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool:
-    """Convert v1 flat devices (power_w/duration_min at the device root) to v2's programs[]."""
+    """v1->v2: flat devices (power_w/duration_min at the device root) become v2's programs[].
+
+    v2->v3: flat fixed loads (power_w/duration_min at the load root) become v3's power_profile,
+    a single-phase list — same shape programs already use, so fixed loads can have several phases
+    too via the same "phases" editor in the options flow.
+
+    Both blocks use `if`, not `elif`, so an entry sitting at v1 falls through both in one call.
+    """
     if entry.version == 1:
         migrated_devices = []
         for device in entry.options.get(CONF_DEVICES, []):
@@ -140,6 +151,24 @@ async def async_migrate_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bo
         hass.config_entries.async_update_entry(
             entry, options={**entry.options, CONF_DEVICES: migrated_devices}, version=2
         )
+
+    if entry.version == 2:
+        migrated_fixed_loads = []
+        for load in entry.options.get(CONF_FIXED_LOADS, []):
+            if CONF_POWER_PROFILE in load:
+                migrated_fixed_loads.append(load)
+                continue
+            migrated_fixed_loads.append(
+                {
+                    CONF_NAME: load[CONF_NAME],
+                    CONF_START_TIME: load[CONF_START_TIME],
+                    CONF_POWER_PROFILE: [{CONF_MINUTES: load[CONF_DURATION_MIN], CONF_POWER_W: load[CONF_POWER_W]}],
+                }
+            )
+        hass.config_entries.async_update_entry(
+            entry, options={**entry.options, CONF_FIXED_LOADS: migrated_fixed_loads}, version=3
+        )
+
     return True
 
 
