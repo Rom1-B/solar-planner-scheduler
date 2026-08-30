@@ -75,8 +75,20 @@ devices:
 ## Development
 
 ```bash
-pytest tests/                # Python
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pytest tests/      # Python (scheduling.py, config_flow.py via pytest-homeassistant-custom-component)
 cd frontend && node --test   # JS
 ```
 
 CI runs both suites plus `hassfest` and HACS validation on every push/PR.
+
+For visually testing UI-facing changes (config flow forms, entities, the card) without pushing to
+a real Home Assistant instance, run a throwaway local one with Docker:
+
+```bash
+docker compose up -d
+```
+
+Open `http://localhost:8123`, finish onboarding, and add the integration. After each code change:
+`docker compose restart`, then reload the page (`.dev-config/` is gitignored, safe to delete to
+start over).
