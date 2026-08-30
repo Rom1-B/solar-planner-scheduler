@@ -9,9 +9,8 @@ line-for-line Python port of the card's own JS functions, tested against the sam
 ## Requirements
 
 A solar forecast entity already set up in Home Assistant (e.g. the
-[Solcast](https://github.com/BJReplay/ha-solcast-solar) integration) and a grid surplus/return
-entity. Solar Planner Scheduler doesn't produce forecasts itself, it schedules around one you
-already have.
+[Solcast](https://github.com/BJReplay/ha-solcast-solar) integration). Solar Planner Scheduler
+doesn't produce forecasts itself, it schedules around one you already have.
 
 ## Installation
 
@@ -26,8 +25,8 @@ Or manually: copy `custom_components/solar_planner_scheduler/` into your HA `con
 
 ## Configuration
 
-Initial setup asks for the shared entities (forecast, forecast tomorrow, surplus, production,
-consumption, max simultaneous power). Devices, programs and fixed loads are then managed via
+Initial setup asks for the shared entities (forecast, forecast tomorrow, production, consumption,
+max simultaneous power). Devices, programs and fixed loads are then managed via
 "Configure", which returns to its own menu after each action so several changes can be made in one
 session:
 

@@ -6,7 +6,6 @@
         "data": {
           "forecast_entity": "Forecast entity (e.g. Solcast today)",
           "forecast_tomorrow_entity": "Forecast entity for tomorrow (optional)",
-          "surplus_entity": "Grid surplus/return entity",
           "production_entity": "Solar production entity (optional)",
           "consumption_entity": "House consumption entity (optional)",
           "max_simultaneous_power": "Max simultaneous power (W, breaker safety ceiling)"
@@ -35,7 +34,6 @@
         "data": {
           "forecast_entity": "Forecast entity (e.g. Solcast today)",
           "forecast_tomorrow_entity": "Forecast entity for tomorrow (optional)",
-          "surplus_entity": "Grid surplus/return entity",
           "production_entity": "Solar production entity (optional)",
           "consumption_entity": "House consumption entity (optional)",
           "max_simultaneous_power": "Max simultaneous power (W, breaker safety ceiling)"

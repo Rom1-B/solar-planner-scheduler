@@ -18,13 +18,11 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_PROGRAMS,
     CONF_SELECTED_PROGRAM,
     CONF_START_TIME,
-    CONF_SURPLUS_ENTITY,
     DOMAIN,
 )
 
 BASE_DATA = {
     CONF_FORECAST_ENTITY: "sensor.forecast",
-    CONF_SURPLUS_ENTITY: "sensor.surplus",
     CONF_MAX_SIMULTANEOUS_POWER: 4000,
 }
 

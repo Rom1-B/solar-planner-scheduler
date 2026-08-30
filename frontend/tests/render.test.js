@@ -10,15 +10,14 @@ function pad(n) {
   return String(n).padStart(2, "0");
 }
 
-// The card reads forecast/surplus/production/consumption/max_simultaneous_power from this
-// sensor's attributes instead of its own config — spread into every test's `states` object.
+// The card reads forecast/production/consumption/max_simultaneous_power from this sensor's
+// attributes instead of its own config — spread into every test's `states` object.
 const BASE_CONFIG_ENTITY = {
   "sensor.solar_planner_scheduler_config": {
     state: "4000",
     attributes: {
       forecast_entity: "sensor.forecast",
       forecast_tomorrow_entity: null,
-      surplus_entity: "sensor.surplus",
       production_entity: null,
       consumption_entity: null,
       fixed_loads: [],
@@ -128,7 +127,6 @@ function buildCard({ withActiveSelections = true } = {}) {
     states: {
       ...BASE_CONFIG_ENTITY,
       "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(dayStart) } },
-      "sensor.surplus": { state: "500" },
       ...deviceEntities(
         "lave_linge",
         withActiveSelections
@@ -368,7 +366,6 @@ test("a full-day fixed load doesn't pull the default view back to midnight", () 
     states: {
       ...BASE_CONFIG_ENTITY,
       "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(dayStart) } },
-      "sensor.surplus": { state: "500" },
       ...deviceEntities("lave_linge", { name: "Lave-linge", program: "None" }),
     },
   };
@@ -441,7 +438,6 @@ test("stacked chart segments render at exact phase-boundary granularity, not a f
   const card = new Card();
   card.setConfig({
     forecast_entity: "sensor.forecast",
-    surplus_entity: "sensor.surplus",
     max_simultaneous_power: 4000,
     devices: ["lave_vaisselle"],
   });
@@ -459,7 +455,6 @@ test("stacked chart segments render at exact phase-boundary granularity, not a f
     states: {
       ...BASE_CONFIG_ENTITY,
       "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(dayStart) } },
-      "sensor.surplus": { state: "500" },
       ...deviceEntities("lave_vaisselle", {
         name: "Lave-vaisselle",
         start: slotStart,
@@ -485,7 +480,6 @@ test("a profile-based program's energy label sums its phases, not durationMin ti
   const card = new Card();
   card.setConfig({
     forecast_entity: "sensor.forecast",
-    surplus_entity: "sensor.surplus",
     max_simultaneous_power: 4000,
     devices: ["lave_vaisselle"],
   });
@@ -503,7 +497,6 @@ test("a profile-based program's energy label sums its phases, not durationMin ti
     states: {
       ...BASE_CONFIG_ENTITY,
       "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(dayStart) } },
-      "sensor.surplus": { state: "500" },
       ...deviceEntities("lave_vaisselle", {
         name: "Lave-vaisselle",
         start: slotStart,
@@ -525,7 +518,6 @@ test("a short power spike renders at its true peak, not diluted by a bucket aver
   const card = new Card();
   card.setConfig({
     forecast_entity: "sensor.forecast",
-    surplus_entity: "sensor.surplus",
     max_simultaneous_power: 4000,
     devices: ["lave_vaisselle"],
   });
@@ -541,7 +533,6 @@ test("a short power spike renders at its true peak, not diluted by a bucket aver
     states: {
       ...BASE_CONFIG_ENTITY,
       "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(dayStart) } },
-      "sensor.surplus": { state: "500" },
       ...deviceEntities("lave_vaisselle", {
         name: "Lave-vaisselle",
         start: slotStart,
@@ -566,7 +557,6 @@ test("fixed loads get distinct colors, not a shared gray", () => {
     states: {
       ...BASE_CONFIG_ENTITY,
       "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(new Date()) } },
-      "sensor.surplus": { state: "500" },
       ...deviceEntities("lave_linge", { name: "Lave-linge", program: "None" }),
     },
   };
@@ -676,7 +666,6 @@ test("stack order mirrors the gantt's top-to-bottom config order, not reversed",
   const card = new Card();
   card.setConfig({
     forecast_entity: "sensor.forecast",
-    surplus_entity: "sensor.surplus",
     max_simultaneous_power: 4000,
     devices: ["a", "b"],
   });
@@ -686,7 +675,6 @@ test("stack order mirrors the gantt's top-to-bottom config order, not reversed",
     states: {
       ...BASE_CONFIG_ENTITY,
       "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(dayStart) } },
-      "sensor.surplus": { state: "500" },
       ...deviceEntities("a", { name: "A", start: slotStart, end: new Date(slotStart.getTime() + 60 * 60000), powerW: 500, coveragePct: 90 }),
       ...deviceEntities("b", { name: "B", start: slotStart, end: new Date(slotStart.getTime() + 60 * 60000), powerW: 800, coveragePct: 90 }),
     },

@@ -24,14 +24,12 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_PROGRAMS,
     CONF_SELECTED_PROGRAM,
     CONF_START_TIME,
-    CONF_SURPLUS_ENTITY,
     DOMAIN,
     NONE_PROGRAM,
 )
 
 BASE_DATA = {
     CONF_FORECAST_ENTITY: "sensor.forecast",
-    CONF_SURPLUS_ENTITY: "sensor.surplus",
     CONF_MAX_SIMULTANEOUS_POWER: 4000,
 }
 
@@ -196,7 +194,7 @@ async def test_edit_base_accepts_omitted_optional_entities(hass, enable_custom_i
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_base"})
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {CONF_FORECAST_ENTITY: "sensor.forecast", CONF_SURPLUS_ENTITY: "sensor.surplus", CONF_MAX_SIMULTANEOUS_POWER: 3000},
+        {CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 3000},
     )
 
     assert result["type"] == "menu"

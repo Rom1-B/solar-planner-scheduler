@@ -17,7 +17,6 @@ from .const import (
     ACCEPTED_DAY_TOMORROW,
     CONF_ACCEPTED_DATE,
     CONF_ACCEPTED_DAY,
-    CONF_CONSUMPTION_ENTITY,  # noqa: F401 - reserved for a future baseLoad refinement, unused for now
     CONF_DEVICES,
     CONF_DURATION_MIN,
     CONF_DURATION_TOLERANCE_PERCENT,
@@ -34,12 +33,10 @@ from .const import (
     CONF_POWER_PROFILE,
     CONF_POWER_SENSOR,
     CONF_POWER_W,
-    CONF_PRODUCTION_ENTITY,
     CONF_PROGRAMS,
     CONF_RUN_GAP_TOLERANCE_MINUTES,
     CONF_SELECTED_PROGRAM,
     CONF_START_TIME,
-    CONF_SURPLUS_ENTITY,
     DEFAULT_DURATION_TOLERANCE_PERCENT,
     DEFAULT_HISTORY_LOOKBACK_DAYS,
     DEFAULT_IDLE_POWER_THRESHOLD,
@@ -55,7 +52,6 @@ from .scheduling import (
     coverage_percent,
     detect_runs,
     find_best_placement,
-    interpolate,
     phase_segments,
 )
 
@@ -101,18 +97,6 @@ def _read_forecast_points(hass: HomeAssistant, entity_id: str | None) -> list[di
     return sorted(points, key=lambda pt: pt["time"])
 
 
-def _read_float_state(hass: HomeAssistant, entity_id: str | None) -> float | None:
-    if not entity_id:
-        return None
-    state = hass.states.get(entity_id)
-    if state is None or state.state in ("unknown", "unavailable"):
-        return None
-    try:
-        return float(state.state)
-    except ValueError:
-        return None
-
-
 def _ceil_to_five_minutes(dt: datetime) -> datetime:
     """Round dt up to the next 5-minute clock mark (never into the past relative to dt)."""
     day_start = dt.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -123,7 +107,7 @@ def _ceil_to_five_minutes(dt: datetime) -> datetime:
 
 def _day_buckets(now: datetime, day_offset: int) -> list[dict]:
     """5-minute-grid buckets for `now`'s day (day_offset=0, from now to 23:55) or a future day
-    (day_offset>=1, the full day from midnight to 23:55, mirroring _futureSurplusBuckets).
+    (day_offset>=1, the full day from midnight to 23:55).
 
     Today's buckets start at the next 5-minute mark, not at `now` itself, so an auto-scheduled
     start time always lands on a multiple of 5 (matching the card's drag-to-reschedule grid) —
@@ -293,11 +277,11 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         points = sorted(points + tomorrow_points, key=lambda pt: pt["time"])
 
         now = dt_util.now()
-        surplus = _read_float_state(self.hass, data.get(CONF_SURPLUS_ENTITY)) or 0.0
-        production = _read_float_state(self.hass, data.get(CONF_PRODUCTION_ENTITY))
-        if production is None:
-            production = interpolate(points, now)
-        base_load = max(0.0, production - surplus)
+        # No live "background consumption" estimate: production - surplus at a single instant
+        # spikes whenever any large load happens to be running right at update time, and that
+        # spike used to get stretched across the whole scheduling horizon (today + tomorrow).
+        # Only declared consumers (fixed_loads, scheduled devices) are deducted from now on.
+        base_load = 0.0
 
         max_power = data.get(CONF_MAX_SIMULTANEOUS_POWER)
         fixed_loads = _fixed_load_windows(options.get(CONF_FIXED_LOADS, []), now)

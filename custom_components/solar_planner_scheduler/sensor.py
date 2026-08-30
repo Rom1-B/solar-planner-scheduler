@@ -27,7 +27,6 @@ from .const import (
     CONF_POWER_PROFILE,
     CONF_PRODUCTION_ENTITY,
     CONF_START_TIME,
-    CONF_SURPLUS_ENTITY,
     DOMAIN,
 )
 from .coordinator import SolarPlannerSchedulerCoordinator
@@ -42,10 +41,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 class BaseConfigSensor(SensorEntity):
     """Read-only mirror of this entry's base settings and fixed loads.
 
-    Lets the bundled Lovelace card read which entities to use (forecast/surplus/production/
-    consumption/max power) and which fixed loads exist directly from here, instead of requiring
-    the same values to be re-entered in the card's own YAML config — one source of truth instead
-    of two.
+    Lets the bundled Lovelace card read which entities to use (forecast/production/consumption/
+    max power) and which fixed loads exist directly from here, instead of requiring the same
+    values to be re-entered in the card's own YAML config — one source of truth instead of two.
     """
 
     _attr_native_unit_of_measurement = "W"
@@ -74,7 +72,6 @@ class BaseConfigSensor(SensorEntity):
         return {
             "forecast_entity": data.get(CONF_FORECAST_ENTITY),
             "forecast_tomorrow_entity": data.get(CONF_FORECAST_TOMORROW_ENTITY),
-            "surplus_entity": data.get(CONF_SURPLUS_ENTITY),
             "production_entity": data.get(CONF_PRODUCTION_ENTITY),
             "consumption_entity": data.get(CONF_CONSUMPTION_ENTITY),
             "fixed_loads": fixed_loads,

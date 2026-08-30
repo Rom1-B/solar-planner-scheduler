@@ -4,7 +4,6 @@ DOMAIN = "solar_planner_scheduler"
 
 CONF_FORECAST_ENTITY = "forecast_entity"
 CONF_FORECAST_TOMORROW_ENTITY = "forecast_tomorrow_entity"
-CONF_SURPLUS_ENTITY = "surplus_entity"
 CONF_PRODUCTION_ENTITY = "production_entity"
 CONF_CONSUMPTION_ENTITY = "consumption_entity"
 CONF_MAX_SIMULTANEOUS_POWER = "max_simultaneous_power"

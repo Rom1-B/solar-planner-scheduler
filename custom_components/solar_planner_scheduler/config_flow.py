@@ -1,6 +1,6 @@
 """Config flow for Solar Planner Scheduler.
 
-Base settings (forecast/surplus/etc entities) are set once at initial setup; devices and fixed
+Base settings (forecast/production/etc entities) are set once at initial setup; devices and fixed
 loads are managed afterwards through the options flow so they can be added/removed without
 recreating the whole config entry.
 """
@@ -31,7 +31,6 @@ from .const import (
     CONF_PROGRAMS,
     CONF_SELECTED_PROGRAM,
     CONF_START_TIME,
-    CONF_SURPLUS_ENTITY,
     DEFAULT_MAX_SIMULTANEOUS_POWER,
     DOMAIN,
     NONE_PROGRAM,
@@ -52,9 +51,6 @@ def _base_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
             vol.Optional(
                 CONF_FORECAST_TOMORROW_ENTITY,
                 description={"suggested_value": defaults.get(CONF_FORECAST_TOMORROW_ENTITY)},
-            ): selector.EntitySelector(),
-            vol.Required(
-                CONF_SURPLUS_ENTITY, description={"suggested_value": defaults.get(CONF_SURPLUS_ENTITY)}
             ): selector.EntitySelector(),
             vol.Optional(
                 CONF_PRODUCTION_ENTITY, description={"suggested_value": defaults.get(CONF_PRODUCTION_ENTITY)}

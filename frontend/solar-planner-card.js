@@ -288,7 +288,7 @@ class SolarPlannerCard extends HTMLElement {
     this._lastSignature = null;
   }
 
-  // Reads forecast/surplus/production/consumption/max_simultaneous_power/fixed_loads from the
+  // Reads forecast/production/consumption/max_simultaneous_power/fixed_loads from the
   // integration's own sensor.solar_planner_scheduler_config instead of requiring them in card
   // config — one source of truth instead of two.
   _baseConfig() {
@@ -302,7 +302,6 @@ class SolarPlannerCard extends HTMLElement {
     return {
       forecast_entity: attrs.forecast_entity,
       forecast_tomorrow_entity: attrs.forecast_tomorrow_entity,
-      surplus_entity: attrs.surplus_entity,
       production_entity: attrs.production_entity,
       consumption_entity: attrs.consumption_entity,
       max_simultaneous_power: state ? parseFloat(state.state) : null,
@@ -443,26 +442,6 @@ class SolarPlannerCard extends HTMLElement {
       .sort((a, b) => a.time - b.time);
   }
 
-  // Only baseLoad/surplusNow are still needed client-side (for the live drag preview's scorePct) —
-  // nothing searches candidate slots in the browser anymore, so no bucket grid is built here.
-  _futureSurplusBuckets(points) {
-    const base = this._baseConfig();
-    const now = new Date();
-    const surplusState = this._hass.states[base.surplus_entity];
-    const surplusNow =
-      surplusState && surplusState.state !== "unavailable" && surplusState.state !== "unknown"
-        ? Math.max(0, parseFloat(surplusState.state))
-        : 0;
-    const productionState = base.production_entity ? this._hass.states[base.production_entity] : null;
-    const measuredProdNow =
-      productionState && productionState.state !== "unavailable" && productionState.state !== "unknown"
-        ? parseFloat(productionState.state)
-        : NaN;
-    const prodNow = !Number.isNaN(measuredProdNow) ? measuredProdNow : interpolate(points || [], now);
-    const baseLoad = Math.max(0, prodNow - surplusNow);
-    return { baseLoad, surplusNow };
-  }
-
   // days: daily-occurrence offsets from today (e.g. [0, 1] for today + tomorrow) — fixed loads recur daily.
   _fixedLoadWindows(days = [0]) {
     const today = startOfDay(new Date());
@@ -584,7 +563,6 @@ class SolarPlannerCard extends HTMLElement {
       if (!fixedLoadsByIndex.has(load.loadIndex)) fixedLoadsByIndex.set(load.loadIndex, []);
       fixedLoadsByIndex.get(load.loadIndex).push(load);
     });
-    const { baseLoad } = this._futureSurplusBuckets(points);
 
     // Stacked layers: each device (config order, top-to-bottom), then fixed loads.
     const stackLayers = deviceStates
@@ -1064,7 +1042,8 @@ class SolarPlannerCard extends HTMLElement {
         rect.setPointerCapture?.(ev.pointerId);
         const grabOffsetMs = timeAt(ev.clientX, ev.clientY).getTime() - ds.start.getTime();
         const points = this._theoreticalPoints();
-        const { baseLoad } = this._futureSurplusBuckets(points);
+        // No live background-consumption estimate: only declared consumers count (see coordinator.py).
+        const baseLoad = 0;
         const otherDeviceBars = this._config.devices
           .filter((s) => s !== slug)
           .map((s) => this._readDeviceState(s))
