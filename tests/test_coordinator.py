@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.solar_planner_scheduler.const import (
@@ -364,3 +365,69 @@ async def test_switching_a_device_to_manual_clears_any_stale_auto_commitment(has
     await coordinator._async_update_data()
 
     assert coordinator._get_committed("lave_vaisselle") is None
+
+
+async def test_no_forecast_data_does_not_commit_a_guessed_now_slot(hass):
+    """Regression test: async_config_entry_first_refresh() runs immediately on a HA restart, which
+    can be before the forecast integration (e.g. Solcast) has populated its state, leaving `points`
+    empty. Every candidate then ties at 0% coverage, so find_best_placement would silently keep the
+    very first bucket — "now" — which used to get committed as if it were a real proposal. No
+    forecast data must mean no proposal at all, not a guessed one.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options={
+            CONF_DEVICES: [
+                {
+                    CONF_NAME: "lave_vaisselle",
+                    CONF_SELECTED_PROGRAM: "Eco",
+                    CONF_MANUAL: False,
+                    CONF_PROGRAMS: [{CONF_NAME: "Eco", CONF_POWER_W: 100, CONF_DURATION_MIN: 30, CONF_AUTO_DAYS: []}],
+                }
+            ]
+        },
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    # sensor.forecast is deliberately never set: _read_forecast_points() returns [] for a state
+    # that doesn't exist yet, exactly like a forecast integration still starting up.
+
+    results = await coordinator._async_update_data()
+
+    assert results["lave_vaisselle"].start is None
+    assert coordinator._get_committed("lave_vaisselle") is None
+
+
+async def test_no_forecast_data_still_honors_an_already_locked_slot(hass):
+    """A transient forecast blip (state briefly unknown/unavailable mid-day) must not strand an
+    already-committed, imminent slot — the empty-data guard only blocks fresh searches, not reuse
+    of an existing lock.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options={
+            CONF_DEVICES: [
+                {
+                    CONF_NAME: "lave_vaisselle",
+                    CONF_SELECTED_PROGRAM: "Eco",
+                    CONF_MANUAL: False,
+                    CONF_PROGRAMS: [{CONF_NAME: "Eco", CONF_POWER_W: 100, CONF_DURATION_MIN: 30, CONF_AUTO_DAYS: []}],
+                }
+            ]
+        },
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+
+    now = dt_util.now()
+    start = now + timedelta(minutes=2)
+    end = start + timedelta(minutes=30)
+    _seed_committed(coordinator, "lave_vaisselle", DeviceSchedule("lave_vaisselle", start, end, 95), program="Eco")
+
+    results = await coordinator._async_update_data()
+
+    assert results["lave_vaisselle"].start == start

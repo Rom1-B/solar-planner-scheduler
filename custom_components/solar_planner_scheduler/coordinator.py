@@ -451,7 +451,11 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
 
             accepted = self._resolve_accepted_day(device, now)
             if accepted == ACCEPTED_DAY_TOMORROW:
-                slot = self._find_slot_for_day(item, duration_min, points, base_load, committed, max_power, 1)
+                # Without forecast data every candidate ties at 0% coverage, so find_best_placement
+                # would silently keep the very first bucket — right after a HA restart, before the
+                # forecast integration has populated its state, that's "now" at 0%. Only ever reuse
+                # an already-committed slot in that case, never guess a fresh one.
+                slot = self._find_slot_for_day(item, duration_min, points, base_load, committed, max_power, 1) if points else None
                 _append_committed(slot)
                 results[name] = self._schedule_from_slot(name, slot, approximate, item)
                 continue
@@ -466,12 +470,16 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
                 continue
             if locked is not None:
                 today_slot = locked
-            else:
+            elif points:
                 today_slot = self._find_slot_for_day(item, duration_min, points, base_load, committed, max_power, 0)
                 if today_slot is not None:
                     await self._set_committed(
                         name, today_slot["start"], today_slot["end"], today_slot["coverage_pct"], selected
                     )
+            else:
+                # No forecast data yet and nothing locked to fall back on — wait for real data on
+                # the next refresh instead of committing to a guessed "now" slot at 0% coverage.
+                today_slot = None
 
             if accepted == ACCEPTED_DAY_TODAY:
                 _append_committed(today_slot)
@@ -484,7 +492,11 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
                 results[name] = self._schedule_from_slot(name, today_slot, approximate, item)
                 continue
 
-            tomorrow_slot = self._find_slot_for_day(item, duration_min, points, base_load, committed, max_power, 1)
+            tomorrow_slot = (
+                self._find_slot_for_day(item, duration_min, points, base_load, committed, max_power, 1)
+                if points
+                else None
+            )
             tomorrow_is_better = tomorrow_slot is not None and (
                 today_slot is None or tomorrow_slot["coverage_pct"] > today_slot["coverage_pct"]
             )
