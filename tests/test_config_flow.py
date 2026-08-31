@@ -23,10 +23,8 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_POWER_PROFILE,
     CONF_POWER_SENSOR,
     CONF_PROGRAMS,
-    CONF_SELECTED_PROGRAM,
     CONF_START_TIME,
     DOMAIN,
-    NONE_PROGRAM,
 )
 
 BASE_DATA = {
@@ -228,14 +226,15 @@ async def test_edit_base_accepts_omitted_optional_entities(hass, enable_custom_i
     assert entry.data.get("production_entity") is None
 
 
-async def test_remove_program_allows_removing_a_devices_only_program_and_resets_selection(
-    hass, enable_custom_integrations
-):
+async def test_remove_program_removes_it_from_the_devices_only_program_list(hass, enable_custom_integrations):
+    """The current selection itself lives in the coordinator's own store, not in these options
+    (see test_coordinator.py's test_forget_program_resets_the_selection_only_if_it_matches for the
+    store-reset behavior) — this test only covers the options-side removal.
+    """
     devices = [
         {
             CONF_NAME: "lave_linge",
             CONF_POWER_SENSOR: "",
-            CONF_SELECTED_PROGRAM: "Eco coton",
             CONF_PROGRAMS: [{CONF_NAME: "Eco coton", CONF_POWER_PROFILE: [{"minutes": 20, "power_w": 150.0}]}],
         }
     ]
@@ -249,7 +248,6 @@ async def test_remove_program_allows_removing_a_devices_only_program_and_resets_
     assert result["type"] == "menu"
     device = entry.options[CONF_DEVICES][0]
     assert device[CONF_PROGRAMS] == []
-    assert device[CONF_SELECTED_PROGRAM] == NONE_PROGRAM
 
 
 async def test_add_fixed_load_parses_a_multi_phase_profile(hass, enable_custom_integrations):

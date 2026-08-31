@@ -11,14 +11,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .const import (
-    ACCEPTED_DAY_TODAY,
-    ACCEPTED_DAY_TOMORROW,
     CONF_ACCEPTED_DATE,
     CONF_ACCEPTED_DAY,
     CONF_AUTO_DAYS,
     CONF_DEVICES,
     CONF_DURATION_MIN,
     CONF_FIXED_LOADS,
+    CONF_MANUAL,
+    CONF_MANUAL_START,
     CONF_MINUTES,
     CONF_NAME,
     CONF_POWER_PROFILE,
@@ -28,6 +28,7 @@ from .const import (
     CONF_SELECTED_PROGRAM,
     CONF_START_TIME,
     DOMAIN,
+    NONE_PROGRAM,
     WEEKDAYS,
 )
 
@@ -35,13 +36,13 @@ if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
-PLATFORMS = ["sensor", "binary_sensor", "select", "switch", "datetime"]
+PLATFORMS = ["sensor", "binary_sensor", "select", "datetime"]
 
 CARD_URL_BASE = f"/{DOMAIN}_files"
 CARD_FILENAME = "solar-planner-card.js"
 # Bump manually whenever solar-planner-card.js changes, so the Lovelace resource URL's
 # cache-busting query string actually changes and browsers don't keep serving a stale copy.
-CARD_VERSION = "7"
+CARD_VERSION = "8"
 
 
 async def async_setup(hass: "HomeAssistant", config: dict) -> bool:
@@ -85,11 +86,10 @@ def _async_register_services(hass: "HomeAssistant") -> None:
     import voluptuous as vol
     from homeassistant.helpers import config_validation as cv
     from homeassistant.helpers import entity_registry as er
-    from homeassistant.util import dt as dt_util
 
     schema = vol.Schema({vol.Required("entity_id"): cv.entity_id})
 
-    async def _handle_accept(call, accepted_day: str) -> None:
+    async def _reset_to_auto(call) -> None:
         entity_id = call.data["entity_id"]
         registry_entry = er.async_get(hass).async_get(entity_id)
         if registry_entry is None or registry_entry.config_entry_id is None:
@@ -97,28 +97,10 @@ def _async_register_services(hass: "HomeAssistant") -> None:
         entry = hass.config_entries.async_get_entry(registry_entry.config_entry_id)
         if entry is None:
             return
-        device_name = registry_entry.unique_id.removeprefix(f"{entry.entry_id}_").removesuffix("_next_start")
-        devices = [
-            {**d, CONF_ACCEPTED_DAY: accepted_day, CONF_ACCEPTED_DATE: dt_util.now().date().isoformat()}
-            if d[CONF_NAME] == device_name
-            else d
-            for d in entry.options.get(CONF_DEVICES, [])
-        ]
-        hass.config_entries.async_update_entry(entry, options={**entry.options, CONF_DEVICES: devices})
-        await hass.data[DOMAIN][entry.entry_id].async_request_refresh()
+        device_name = registry_entry.unique_id.removeprefix(f"{entry.entry_id}_").removesuffix("_start")
+        await hass.data[DOMAIN][entry.entry_id].async_clear_forced_start(device_name)
 
-    # Two plain async wrappers, not a lambda around _handle_accept — HA checks
-    # asyncio.iscoroutinefunction() on the registered handler itself to decide whether to await
-    # it directly or run it in an executor; a lambda returning a coroutine fails that check and
-    # would silently never run the coroutine's body.
-    async def _accept_today(call) -> None:
-        await _handle_accept(call, ACCEPTED_DAY_TODAY)
-
-    async def _accept_tomorrow(call) -> None:
-        await _handle_accept(call, ACCEPTED_DAY_TOMORROW)
-
-    hass.services.async_register(DOMAIN, "accept_today", _accept_today, schema=schema)
-    hass.services.async_register(DOMAIN, "accept_tomorrow", _accept_tomorrow, schema=schema)
+    hass.services.async_register(DOMAIN, "reset_to_auto", _reset_to_auto, schema=schema)
 
 
 async def async_migrate_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool:
@@ -134,8 +116,18 @@ async def async_migrate_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bo
     migration runs — so pre-existing programs are backfilled to all 7 days, preserving their
     current "runs every day" behavior instead of going dark on deploy.
 
-    All three blocks use `if`, not `elif`, so an entry sitting at v1 falls through all of them in
-    one call.
+    v4->v5: the mechanic rationalization — CONF_SELECTED_PROGRAM, CONF_MANUAL, CONF_MANUAL_START,
+    CONF_ACCEPTED_DAY, CONF_ACCEPTED_DATE move out of config entry options entirely, into the
+    coordinator's own internal store (see coordinator.py), so that picking a program or forcing a
+    start time never triggers a full entry reload again. The current program *selection* is
+    carried over into that store (losing it would silently stop scheduling every device on
+    upgrade); an active manual override (CONF_MANUAL on, with a CONF_MANUAL_START) is not carried
+    over and is simply dropped — accepted deliberately, see CLAUDE.local.md. Every program without
+    a power_profile yet (the flat power_w/duration_min shape, unreachable from the config UI since
+    the phases editor shipped, but still possible on a very old migrated config) becomes a
+    single-phase profile, so coordinator.py can assume power_profile is always present.
+
+    All blocks use `if`, not `elif`, so an entry sitting at v1 falls through all of them in one call.
     """
     if entry.version == 1:
         migrated_devices = []
@@ -193,10 +185,50 @@ async def async_migrate_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bo
             entry, options={**entry.options, CONF_DEVICES: migrated_devices}, version=4
         )
 
+    if entry.version == 4:
+        from homeassistant.helpers.storage import Store
+
+        from .coordinator import STORAGE_VERSION
+
+        store_updates: dict[str, dict] = {}
+        migrated_devices = []
+        for device in entry.options.get(CONF_DEVICES, []):
+            selected = device.get(CONF_SELECTED_PROGRAM, NONE_PROGRAM)
+            if selected != NONE_PROGRAM:
+                store_updates[device[CONF_NAME]] = {"selected": selected}
+            programs = [
+                {**p, CONF_POWER_PROFILE: [{CONF_MINUTES: p[CONF_DURATION_MIN], CONF_POWER_W: p[CONF_POWER_W]}]}
+                if CONF_POWER_PROFILE not in p
+                else p
+                for p in device.get(CONF_PROGRAMS, [])
+            ]
+            migrated_devices.append(
+                {
+                    key: value
+                    for key, value in {**device, CONF_PROGRAMS: programs}.items()
+                    if key not in (CONF_SELECTED_PROGRAM, CONF_MANUAL, CONF_MANUAL_START, CONF_ACCEPTED_DAY, CONF_ACCEPTED_DATE)
+                }
+            )
+
+        if store_updates:
+            store = Store(hass, STORAGE_VERSION, f"{DOMAIN}_{entry.entry_id}")
+            existing_state = await store.async_load() or {}
+            for name, patch in store_updates.items():
+                existing_state[name] = {**existing_state.get(name, {}), **patch}
+            await store.async_save(existing_state)
+
+        hass.config_entries.async_update_entry(
+            entry, options={**entry.options, CONF_DEVICES: migrated_devices}, version=5
+        )
+
     return True
 
 
 async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool:
+    from datetime import timedelta
+
+    from homeassistant.helpers.event import async_track_time_interval
+
     from .coordinator import SolarPlannerSchedulerCoordinator
 
     coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
@@ -205,6 +237,13 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+    # Pushes should_run/locked to their current value every minute without re-running the search —
+    # both are pure functions of "now" against the already-known committed start/end, so this only
+    # needs to prompt entities to re-read them, not recompute anything. The 15-minute coordinator
+    # poll stays the cadence for the actual search/decision.
+    entry.async_on_unload(
+        async_track_time_interval(hass, lambda _now: coordinator.async_update_listeners(), timedelta(minutes=1))
+    )
     return True
 
 

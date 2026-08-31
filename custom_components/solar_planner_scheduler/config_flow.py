@@ -30,11 +30,9 @@ from .const import (
     CONF_POWER_W,
     CONF_PRODUCTION_ENTITY,
     CONF_PROGRAMS,
-    CONF_SELECTED_PROGRAM,
     CONF_START_TIME,
     DEFAULT_MAX_SIMULTANEOUS_POWER,
     DOMAIN,
-    NONE_PROGRAM,
     WEEKDAYS,
 )
 
@@ -341,12 +339,16 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
             def _update(d: dict[str, Any]) -> dict[str, Any]:
                 if d[CONF_NAME] != device_name:
                     return d
-                updated = {**d, CONF_PROGRAMS: [p for p in d[CONF_PROGRAMS] if p[CONF_NAME] != removed_name]}
-                if d.get(CONF_SELECTED_PROGRAM) == removed_name:
-                    updated[CONF_SELECTED_PROGRAM] = NONE_PROGRAM
-                return updated
+                return {**d, CONF_PROGRAMS: [p for p in d[CONF_PROGRAMS] if p[CONF_NAME] != removed_name]}
 
             self._devices = [_update(d) for d in self._devices]
+            # The current selection lives in the coordinator's own store, not in these options —
+            # reset it there too if it pointed at the program just removed, so the select entity
+            # doesn't keep showing a program that no longer exists. The options flow can only be
+            # opened for a loaded entry in practice, but guard anyway rather than crash the step.
+            coordinator = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
+            if coordinator is not None:
+                await coordinator.async_forget_program(device_name, removed_name)
             return await self._finish_step()
         return self.async_show_form(step_id="remove_program", data_schema=vol.Schema({vol.Required(CONF_NAME): vol.In(device_names)}))
 

@@ -39,19 +39,21 @@ session:
 - **Fixed load**: a recurring non-schedulable load (start time + phases, same syntax as programs),
   subtracted from available solar capacity. Also editable in place.
 
-A device is scheduled once per program selection: picking a program (or switching a device from
-manual to auto) always searches for today's best slot immediately, regardless of auto-schedule
-days. Once that committed slot has run (its window has elapsed), it won't be proposed a second slot
-that day, and won't keep rescheduling itself on later days unless the auto-schedule days are checked
-for one of them — no separate "reset" needed, picking the program again (or a new day landing on an
-auto-schedule day) naturally triggers a fresh search. Leaving auto-schedule days unchecked is a
-legitimate choice for on-demand devices with no fixed rhythm (e.g. a dishwasher run whenever it's
-loaded): it just means the device won't repeat on its own, not that it can't be scheduled. Manual
-mode (`switch.<device>_manual_mode`) is a separate, unrestricted override: it pins the start time to
-`datetime.<device>_manual_start` regardless of the program's auto-schedule days. When today is good
-enough but tomorrow could be better, the sensor exposes a pending choice
-(`today_coverage_pct`/`tomorrow_coverage_pct`); resolve it with the `accept_today`/`accept_tomorrow`
-services.
+A device is scheduled once per program selection: picking a program always searches for today's
+best slot immediately, regardless of auto-schedule days. Once that committed slot has run (its
+window has elapsed), it won't be proposed a second slot that day, and won't keep rescheduling itself
+on later days unless the auto-schedule days are checked for one of them, no separate "reset"
+needed, picking the program again (or a new day landing on an auto-schedule day) naturally triggers
+a fresh search. Leaving auto-schedule days unchecked is a legitimate choice for on-demand devices
+with no fixed rhythm (e.g. a dishwasher run whenever it's loaded): it just means the device won't
+repeat on its own, not that it can't be scheduled.
+
+`datetime.<device>_start` shows the computed next start and doubles as a manual override: dragging
+the bar on the card, or editing the entity directly, forces that time (its `locked` attribute turns
+`true`). Click the "Auto" button (or call the `reset_to_auto` service) to cancel a forced time and
+let the coordinator search again immediately. The coordinator always commits the best slot it finds
+for today, however mediocre; if you'd rather wait for a better day, the forecast curve and
+drag-and-drop preview already show whether that's worth it, force a time yourself if so.
 
 Only declared consumers (fixed loads, scheduled devices) are subtracted from available solar —
 there's no live "background consumption" estimate, since a single instantaneous reading spikes
@@ -62,8 +64,8 @@ The config flow UI is available in English and French, following your Home Assis
 
 ## Entities
 
-Per device: `sensor.<device>_next_start` (timestamp + `coverage_pct`), `binary_sensor.<device>_should_run`,
-`select.<device>_program`, `switch.<device>_manual_mode`, `datetime.<device>_manual_start`.
+Per device: `datetime.<device>_start` (computed or forced start time, `coverage_pct`/`profile`/`locked`
+attributes), `binary_sensor.<device>_should_run`, `select.<device>_program`.
 
 The integration never turns a device on/off itself: react to `should_run` in an automation.
 

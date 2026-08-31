@@ -1,7 +1,6 @@
 {
   "domain": "solar_planner_scheduler",
   "name": "Solar Planner Scheduler",
-  "after_dependencies": ["recorder"],
   "codeowners": ["@Rom1-B"],
   "config_flow": true,
   "dependencies": ["frontend", "http"],
@@ -9,5 +8,5 @@
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/Rom1-B/solar-planner-scheduler/issues",
   "requirements": [],
-  "version": "0.1.0"
+  "version": "0.2.0"
 }

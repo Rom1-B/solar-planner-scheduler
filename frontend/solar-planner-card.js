@@ -169,10 +169,10 @@ class SolarPlannerCard extends HTMLElement {
   }
 
   // config.devices is a list of solar_planner_scheduler device slugs (the entity_id prefix shared
-  // by sensor.<slug>_next_start, binary_sensor.<slug>_should_run, select.<slug>_program,
-  // switch.<slug>_manual_mode, datetime.<slug>_manual_start) — the integration itself already
-  // validates device/program shape, so the card no longer needs to. fixed_loads is no longer
-  // read from here either — see _baseConfig(), sourced from the integration's own config entry.
+  // by datetime.<slug>_start, binary_sensor.<slug>_should_run, select.<slug>_program) — the
+  // integration itself already validates device/program shape, so the card no longer needs to.
+  // fixed_loads is no longer read from here either — see _baseConfig(), sourced from the
+  // integration's own config entry.
   setConfig(config) {
     if (!Array.isArray(config.devices) || !config.devices.length) {
       throw new Error("solar-planner-card: 'devices' must be a non-empty array of device slugs");
@@ -256,17 +256,11 @@ class SolarPlannerCard extends HTMLElement {
   _relevantSignature() {
     // Excludes fast-ticking entities (surplus/power/etc.) that only feed 5-min-refreshed values —
     // rendering on those would wipe focus/hover for nothing. Includes every per-device entity so a
-    // program selection, manual-mode toggle, or server-side recompute all trigger a re-render.
+    // program selection, a forced start, or a server-side recompute all trigger a re-render.
     const base = this._baseConfig();
     const ids = ["sensor.solar_planner_scheduler_config", base.forecast_entity, base.forecast_tomorrow_entity].filter(Boolean);
     for (const slug of this._config.devices) {
-      ids.push(
-        `sensor.${slug}_next_start`,
-        `binary_sensor.${slug}_should_run`,
-        `select.${slug}_program`,
-        `switch.${slug}_manual_mode`,
-        `datetime.${slug}_manual_start`
-      );
+      ids.push(`datetime.${slug}_start`, `binary_sensor.${slug}_should_run`, `select.${slug}_program`);
     }
     const dark = !!this._hass.themes?.darkMode;
     return `${dark}|${ids.map((id) => `${id}:${this._hass.states[id]?.state}`).join("|")}`;
@@ -366,7 +360,6 @@ class SolarPlannerCard extends HTMLElement {
           durationMin: load.duration_minutes,
           powerW,
           profile: load.power_profile,
-          approximate: false,
           fixed: true,
           loadIndex,
           start,
@@ -378,35 +371,28 @@ class SolarPlannerCard extends HTMLElement {
   }
 
   // One consolidated view of a device's server-computed state, read fresh every render from the
-  // five entities solar_planner_scheduler exposes for it. Nothing here is computed client-side —
+  // three entities solar_planner_scheduler exposes for it. Nothing here is computed client-side —
   // only the live drag preview in _bindGanttDrag still is (scorePct), for instant feedback before
   // the server has a chance to recompute.
   _readDeviceState(slug) {
-    const nextStart = this._hass.states[`sensor.${slug}_next_start`];
+    const start = this._hass.states[`datetime.${slug}_start`];
     const shouldRun = this._hass.states[`binary_sensor.${slug}_should_run`];
     const program = this._hass.states[`select.${slug}_program`];
-    const manualMode = this._hass.states[`switch.${slug}_manual_mode`];
-    const manualStart = this._hass.states[`datetime.${slug}_manual_start`];
     const parseTs = (state) =>
       state && state.state && state.state !== "unknown" && state.state !== "unavailable" ? new Date(state.state) : null;
-    const attrs = nextStart?.attributes || {};
+    const attrs = start?.attributes || {};
     return {
       slug,
-      name: (attrs.friendly_name || slug).replace(/ next start$/, ""),
-      start: parseTs(nextStart),
+      name: (attrs.friendly_name || slug).replace(/ start$/, ""),
+      start: parseTs(start),
       end: attrs.end ? new Date(attrs.end) : null,
       shouldRun: shouldRun?.state === "on",
       coveragePct: attrs.coverage_pct ?? null,
-      approximate: !!attrs.approximate,
-      pendingChoice: !!attrs.pending_choice,
-      todayCoveragePct: attrs.today_coverage_pct ?? null,
-      tomorrowCoveragePct: attrs.tomorrow_coverage_pct ?? null,
+      locked: !!attrs.locked,
       powerW: attrs.power_w ?? null,
       profile: attrs.profile ?? null,
       programOptions: program?.attributes?.options || [],
       programCurrent: program?.state ?? "None",
-      manualMode: manualMode?.state === "on",
-      manualStart: parseTs(manualStart),
     };
   }
 
@@ -414,12 +400,10 @@ class SolarPlannerCard extends HTMLElement {
     await this._hass.callService("select", "select_option", { entity_id: `select.${slug}_program`, option: programName });
   }
 
-  // Shared write path for the manual time input and gantt-bar drag. Sets the datetime first, then
-  // flips manual mode on — so a coordinator recompute triggered by the switch already sees the
-  // new value instead of racing it.
-  async _setManualStart(slug, date) {
-    await this._hass.callService("datetime", "set_value", { entity_id: `datetime.${slug}_manual_start`, datetime: date.toISOString() });
-    await this._hass.callService("switch", "turn_on", { entity_id: `switch.${slug}_manual_mode` });
+  // Shared write path for the manual time input and gantt-bar drag — forcing the start time is a
+  // single datetime.set_value call now, no separate mode switch to flip.
+  async _setForcedStart(slug, date) {
+    await this._hass.callService("datetime", "set_value", { entity_id: `datetime.${slug}_start`, datetime: date.toISOString() });
   }
 
   async _onManualTime(slug, timeValue) {
@@ -428,19 +412,11 @@ class SolarPlannerCard extends HTMLElement {
     const next = new Date(ds.start || new Date());
     const [h, m] = timeValue.split(":").map(Number);
     next.setHours(h, m, 0, 0);
-    await this._setManualStart(slug, next);
+    await this._setForcedStart(slug, next);
   }
 
   async _onAutoMode(slug) {
-    await this._hass.callService("switch", "turn_off", { entity_id: `switch.${slug}_manual_mode` });
-  }
-
-  async _onUseToday(slug) {
-    await this._hass.callService("solar_planner_scheduler", "accept_today", { entity_id: `sensor.${slug}_next_start` });
-  }
-
-  async _onUseTomorrow(slug) {
-    await this._hass.callService("solar_planner_scheduler", "accept_tomorrow", { entity_id: `sensor.${slug}_next_start` });
+    await this._hass.callService("solar_planner_scheduler", "reset_to_auto", { entity_id: `datetime.${slug}_start` });
   }
 
   _render() {
@@ -484,7 +460,6 @@ class SolarPlannerCard extends HTMLElement {
                 durationMin: (ds.end.getTime() - ds.start.getTime()) / 60000,
                 powerW: ds.powerW,
                 profile: ds.profile,
-                approximate: ds.approximate,
                 start: ds.start,
                 end: ds.end,
               }
@@ -672,7 +647,7 @@ class SolarPlannerCard extends HTMLElement {
         // minutes*power_w, not durationMin*powerW (powerW is null for profile-based programs).
         const energyWh = ds.profile ? ds.profile.reduce((s, p) => s + (p.minutes * p.power_w) / 60, 0) : (ds.powerW * durationMin) / 60;
         const powerLabel = ds.profile ? `${fmtWh(energyWh)} · peak ${fmtW(Math.max(...ds.profile.map((p) => p.power_w)))}` : fmtWh(energyWh);
-        const label = `${ds.programCurrent} · ${fmtTime(ds.start)}–${fmtTime(ds.end)} · ${powerLabel}${ds.approximate ? " ≈" : ""}`;
+        const label = `${ds.programCurrent} · ${fmtTime(ds.start)}–${fmtTime(ds.end)} · ${powerLabel}`;
         const bx = x(ds.start);
         const bw = Math.max(2, x(ds.end) - bx);
         bars.push(
@@ -699,7 +674,7 @@ class SolarPlannerCard extends HTMLElement {
       laneBars.push(rects);
     });
 
-    const unplaced = deviceStates.filter((ds) => ds.programCurrent !== "None" && !ds.start && !ds.pendingChoice);
+    const unplaced = deviceStates.filter((ds) => ds.programCurrent !== "None" && !ds.start);
 
     const deviceRows = deviceStates
       .map((ds, i) => {
@@ -713,7 +688,7 @@ class SolarPlannerCard extends HTMLElement {
           ds.programCurrent !== "None"
             ? `<div class="slot-row">
                 <input type="time" class="slot-time" data-device="${ds.slug}" value="${ds.start ? fmtTime(ds.start) : ""}">
-                ${ds.manualMode ? `<button class="auto-btn" data-device="${ds.slug}">Auto</button>` : ""}
+                ${ds.locked ? `<button class="auto-btn" data-device="${ds.slug}">Auto</button>` : ""}
                 ${
                   ds.coveragePct != null
                     ? `<span class="coverage-pct ${ds.coveragePct >= 100 ? "coverage-good" : "coverage-low"}">${ds.coveragePct}% solar</span>`
@@ -721,18 +696,12 @@ class SolarPlannerCard extends HTMLElement {
                 }
               </div>`
             : "";
-        const pendingRow = ds.pendingChoice
-          ? `<div class="warnings"><div><ha-icon icon="mdi:alert"></ha-icon>${ds.name}: today covers ${ds.todayCoveragePct ?? 0}% from solar — tomorrow covers ${ds.tomorrowCoveragePct}%.
-              <button class="use-today-btn" data-device="${ds.slug}">Use today</button>
-              <button class="use-tomorrow-btn" data-device="${ds.slug}">Use tomorrow</button></div></div>`
-          : "";
         return `<div class="device-select">
           <div class="device-select-header"><span class="swatch" style="background:${deviceColor(i)}"></span><span class="device-name">${ds.name}</span>${
           ds.shouldRun ? `<ha-icon class="running-icon" icon="mdi:play-circle" title="Currently running"></ha-icon>` : ""
         }</div>
           <div class="program-buttons">${buttons}</div>
           ${slotRow}
-          ${pendingRow}
         </div>`;
       })
       .join("");
@@ -756,7 +725,6 @@ class SolarPlannerCard extends HTMLElement {
           end: ds.end,
           // A profile has no single flat powerW — sum each phase's own minutes*power_w instead.
           energyWh: ds.profile ? ds.profile.reduce((s, p) => s + (p.minutes * p.power_w) / 60, 0) : (ds.powerW * durationMin) / 60,
-          approximate: ds.approximate,
         };
       });
     // "Tomorrow " distinguishes today's/tomorrow's occurrence of a recurring fixed load — same HH:MM otherwise reads as an unexplained duplicate.
@@ -769,7 +737,7 @@ class SolarPlannerCard extends HTMLElement {
         return `<tr>
           <td>${p.deviceName}${p.fixed ? " (external)" : ""}</td><td>${p.fixed ? "-" : p.programName}</td>
           <td>${p.start ? `${dayLabel}${fmtTime(p.start)} – ${fmtTime(p.end)}` : "no window"}</td>
-          <td>${fmtWh(p.energyWh)}${p.approximate ? " (rough estimate)" : ""}</td>
+          <td>${fmtWh(p.energyWh)}</td>
         </tr>`;
       })
       .join("");
@@ -827,7 +795,7 @@ class SolarPlannerCard extends HTMLElement {
         .program-btn.active { background: var(--primary-color); color: var(--text-primary-color, #fff); border-color: var(--primary-color); }
         .slot-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 0.85em; }
         .slot-time { border: 1px solid var(--divider-color); border-radius: 4px; background: none; color: var(--primary-text-color); }
-        .auto-btn, .use-today-btn, .use-tomorrow-btn { background: none; border: none; color: var(--primary-color); cursor: pointer; font-size: 0.85em; padding: 0; margin-left: 8px; text-decoration: underline; }
+        .auto-btn { background: none; border: none; color: var(--primary-color); cursor: pointer; font-size: 0.85em; padding: 0; margin-left: 8px; text-decoration: underline; }
         .coverage-pct { font-size: 0.8em; font-weight: 500; }
         .coverage-pct.coverage-good { color: var(--success-color, #4caf50); }
         .coverage-pct.coverage-low { color: var(--warning-color, #fab219); }
@@ -909,12 +877,6 @@ class SolarPlannerCard extends HTMLElement {
     });
     this.shadowRoot.querySelectorAll(".auto-btn").forEach((btn) => {
       btn.addEventListener("click", () => this._onAutoMode(btn.dataset.device));
-    });
-    this.shadowRoot.querySelectorAll(".use-tomorrow-btn").forEach((btn) => {
-      btn.addEventListener("click", () => this._onUseTomorrow(btn.dataset.device));
-    });
-    this.shadowRoot.querySelectorAll(".use-today-btn").forEach((btn) => {
-      btn.addEventListener("click", () => this._onUseToday(btn.dataset.device));
     });
 
     this._bindGanttDrag({ viewStart, viewSpanMs, marginLeft, marginRight, width });
@@ -1007,7 +969,7 @@ class SolarPlannerCard extends HTMLElement {
         if (!drag || drag.pointerId !== ev.pointerId || drag.slug !== slug) return;
         this._drag = null;
         pctGroup.style.opacity = "0";
-        await this._setManualStart(slug, drag.currentStart);
+        await this._setForcedStart(slug, drag.currentStart);
       };
       rect.addEventListener("pointerup", commit);
       rect.addEventListener("pointercancel", (ev) => {

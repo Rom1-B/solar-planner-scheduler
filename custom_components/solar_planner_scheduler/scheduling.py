@@ -19,9 +19,6 @@ from typing import Optional, Sequence
 SMOOTH_BUCKET_MS = 5 * 60 * 1000
 DRAG_SNAP_MS = 5 * 60 * 1000
 BUCKET_MS = 30 * 60 * 1000
-# At/above this, a slot is "good enough" to stop comparing against another day. Not 100 —
-# coverage_percent is unbounded above.
-GOOD_ENOUGH_COVERAGE_PCT = 99
 
 _SMOOTH_BUCKET = timedelta(milliseconds=SMOOTH_BUCKET_MS)
 
@@ -52,57 +49,6 @@ def interpolate(points: Sequence[dict], t: datetime) -> float:
             ratio = (t - a["time"]).total_seconds() / span if span else 0.0
             return a["w"] + (b["w"] - a["w"]) * ratio
     return 0.0
-
-
-def detect_runs(samples: Sequence[dict], idle_threshold: float, gap_tolerance_min: float) -> list[dict]:
-    """Groups samples above idle_threshold into runs, merging runs separated by less than
-    gap_tolerance_min (ported from solar-planner-card.js's detectRuns, same semantics).
-    """
-    raw: list[dict] = []
-    run: Optional[dict] = None
-    for sample in samples:
-        if sample["value"] > idle_threshold:
-            if run is None:
-                run = {"start": sample["time"], "end": sample["time"], "points": [sample]}
-            else:
-                run["end"] = sample["time"]
-                run["points"].append(sample)
-        elif run is not None:
-            raw.append(run)
-            run = None
-    if run is not None:
-        raw.append(run)
-
-    merged: list[dict] = []
-    for r in raw:
-        prev = merged[-1] if merged else None
-        if prev and (r["start"] - prev["end"]).total_seconds() / 60 <= gap_tolerance_min:
-            # Mark the idle gap at 0 W, otherwise the weighted average charges it at the run's last reading.
-            prev["points"].append({"time": prev["end"], "value": 0.0})
-            prev["end"] = r["end"]
-            prev["points"].extend(r["points"])
-        else:
-            merged.append({"start": r["start"], "end": r["end"], "points": list(r["points"])})
-
-    def _weighted_avg(points: Sequence[dict], run_end: datetime) -> float:
-        total_sec = 0.0
-        total_wv = 0.0
-        for i, point in enumerate(points):
-            next_time = points[i + 1]["time"] if i + 1 < len(points) else run_end
-            dt = (next_time - point["time"]).total_seconds()
-            total_sec += dt
-            total_wv += dt * point["value"]
-        if total_sec > 0:
-            return total_wv / total_sec
-        return sum(p["value"] for p in points) / len(points)
-
-    result = []
-    for r in merged:
-        duration_min = (r["end"] - r["start"]).total_seconds() / 60
-        if duration_min < 1:
-            continue
-        result.append({"duration_min": duration_min, "avg_w": _weighted_avg(r["points"], r["end"])})
-    return result
 
 
 def phase_segments(item: dict) -> list[dict]:

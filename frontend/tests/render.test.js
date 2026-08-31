@@ -65,7 +65,7 @@ function buildForecast(dayStart, peakKw = 3, withConfidence = false) {
   return detailedForecast;
 }
 
-// The 5 entities solar_planner_scheduler exposes for one device, matching what _readDeviceState reads.
+// The 3 entities solar_planner_scheduler exposes for one device, matching what _readDeviceState reads.
 function deviceEntities(
   slug,
   {
@@ -75,36 +75,26 @@ function deviceEntities(
     start = null,
     end = null,
     coveragePct = null,
-    approximate = false,
     powerW = null,
     profile = null,
     shouldRun = false,
-    manualMode = false,
-    manualStart = null,
-    pendingChoice = false,
-    todayCoveragePct = null,
-    tomorrowCoveragePct = null,
+    locked = false,
   } = {}
 ) {
   return {
-    [`sensor.${slug}_next_start`]: {
+    [`datetime.${slug}_start`]: {
       state: start ? start.toISOString() : "unknown",
       attributes: {
-        friendly_name: `${name} next start`,
+        friendly_name: `${name} start`,
         coverage_pct: coveragePct,
-        approximate,
         end: end ? end.toISOString() : null,
         power_w: powerW,
         profile,
-        pending_choice: pendingChoice,
-        today_coverage_pct: todayCoveragePct,
-        tomorrow_coverage_pct: tomorrowCoveragePct,
+        locked,
       },
     },
     [`binary_sensor.${slug}_should_run`]: { state: shouldRun ? "on" : "off" },
     [`select.${slug}_program`]: { state: program, attributes: { options } },
-    [`switch.${slug}_manual_mode`]: { state: manualMode ? "on" : "off" },
-    [`datetime.${slug}_manual_start`]: { state: manualStart ? manualStart.toISOString() : "unknown" },
   };
 }
 
@@ -577,33 +567,6 @@ test("fixed loads get distinct colors, not a shared gray", () => {
   assert.notEqual(styleMatches[0], styleMatches[1], "the two fixed loads must not share the same color");
 });
 
-test("a pending choice renders Use today/Use tomorrow buttons with the reported percentages", () => {
-  const card = buildCard({ withActiveSelections: false });
-  card._hass.states = {
-    ...card._hass.states,
-    ...deviceEntities("lave_linge", {
-      name: "Lave-linge",
-      pendingChoice: true,
-      todayCoveragePct: 0,
-      tomorrowCoveragePct: 130,
-    }),
-  };
-  card._render();
-  const html = card.shadowRoot.innerHTML;
-  assert.ok(html.includes('class="use-today-btn"'), "expected a 'Use today' button to render");
-  assert.ok(html.includes('class="use-tomorrow-btn"'), "expected a 'Use tomorrow' button to render");
-  assert.ok(html.includes("today covers 0%"), "expected today's percentage in the message");
-  assert.ok(html.includes("tomorrow covers 130%"), "expected tomorrow's percentage in the message");
-});
-
-test("no pending choice means no Use today/Use tomorrow buttons", () => {
-  const card = buildCard();
-  card._render();
-  const html = card.shadowRoot.innerHTML;
-  assert.ok(!html.includes('class="use-today-btn"'));
-  assert.ok(!html.includes('class="use-tomorrow-btn"'));
-});
-
 test("selecting a program calls select.select_option with the right entity and option", async () => {
   const card = buildCard({ withActiveSelections: false });
   const calls = [];
@@ -613,43 +576,40 @@ test("selecting a program calls select.select_option with the right entity and o
   assert.deepEqual(calls[0], { domain: "select", service: "select_option", data: { entity_id: "select.lave_linge_program", option: "Eco" } });
 });
 
-test("setting a manual time writes the datetime then turns manual mode on, in that order", async () => {
+test("setting a manual time writes a single forced datetime.set_value call", async () => {
   const card = buildCard();
   const calls = [];
   card._hass.callService = async (domain, service, data) => calls.push({ domain, service, data });
   await card._onManualTime("lave_linge", "14:30");
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 1);
   assert.equal(calls[0].domain, "datetime");
   assert.equal(calls[0].service, "set_value");
-  assert.equal(calls[0].data.entity_id, "datetime.lave_linge_manual_start");
-  assert.equal(calls[1].domain, "switch");
-  assert.equal(calls[1].service, "turn_on");
-  assert.equal(calls[1].data.entity_id, "switch.lave_linge_manual_mode");
+  assert.equal(calls[0].data.entity_id, "datetime.lave_linge_start");
 });
 
-test("manual mode on renders an Auto button that turns manual mode off when clicked", async () => {
+test("a locked slot renders an Auto button that calls reset_to_auto when clicked", async () => {
   const card = buildCard();
-  card._hass.states["switch.lave_linge_manual_mode"] = { state: "on" };
+  card._hass.states["datetime.lave_linge_start"] = {
+    ...card._hass.states["datetime.lave_linge_start"],
+    attributes: { ...card._hass.states["datetime.lave_linge_start"].attributes, locked: true },
+  };
   card._render();
   const html = card.shadowRoot.innerHTML;
-  assert.ok(html.includes('class="auto-btn"'), "expected an Auto button when manual mode is on");
+  assert.ok(html.includes('class="auto-btn"'), "expected an Auto button when the slot is locked");
 
   const calls = [];
   card._hass.callService = async (domain, service, data) => calls.push({ domain, service, data });
   await card._onAutoMode("lave_linge");
-  assert.deepEqual(calls, [{ domain: "switch", service: "turn_off", data: { entity_id: "switch.lave_linge_manual_mode" } }]);
+  assert.deepEqual(calls, [
+    { domain: "solar_planner_scheduler", service: "reset_to_auto", data: { entity_id: "datetime.lave_linge_start" } },
+  ]);
 });
 
-test("accepting today/tomorrow calls the matching solar_planner_scheduler service", async () => {
+test("an unlocked slot renders no Auto button", () => {
   const card = buildCard();
-  const calls = [];
-  card._hass.callService = async (domain, service, data) => calls.push({ domain, service, data });
-  await card._onUseToday("lave_linge");
-  await card._onUseTomorrow("lave_vaisselle");
-  assert.deepEqual(calls, [
-    { domain: "solar_planner_scheduler", service: "accept_today", data: { entity_id: "sensor.lave_linge_next_start" } },
-    { domain: "solar_planner_scheduler", service: "accept_tomorrow", data: { entity_id: "sensor.lave_vaisselle_next_start" } },
-  ]);
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  assert.ok(!html.includes('class="auto-btn"'), "expected no Auto button when the slot isn't locked");
 });
 
 test("gantt markup includes a hidden live-percentage label for drag feedback", () => {

@@ -10,7 +10,6 @@ import pytest
 from custom_components.solar_planner_scheduler.scheduling import (
     BUCKET_MS,
     DRAG_SNAP_MS,
-    detect_runs,
     find_best_placement,
     find_peak_conflicts,
     instant_deficit_wh,
@@ -321,27 +320,3 @@ def test_snap_to_grid_rounds_to_nearest_5_minute_mark():
     assert snap_to_grid(base + timedelta(minutes=3)) == base + timedelta(minutes=5)
     assert snap_to_grid(base - timedelta(minutes=3)) == base - timedelta(minutes=5)
     assert snap_to_grid(base + timedelta(minutes=7), DRAG_SNAP_MS) == base + timedelta(minutes=5)
-
-
-def test_detect_runs_reports_one_simple_run():
-    anchor = datetime(2026, 8, 29, 0, 0, tzinfo=timezone.utc)
-    samples = [{"time": anchor + timedelta(minutes=i), "value": 100.0} for i in range(4)]
-    runs = detect_runs(samples, idle_threshold=10, gap_tolerance_min=3)
-    assert len(runs) == 1
-    assert runs[0]["duration_min"] == pytest.approx(3.0)
-    assert runs[0]["avg_w"] == pytest.approx(100.0)
-
-
-def test_detect_runs_merges_two_runs_within_gap_tolerance():
-    anchor = datetime(2026, 8, 29, 0, 0, tzinfo=timezone.utc)
-    samples = [
-        {"time": anchor, "value": 100.0},
-        {"time": anchor + timedelta(minutes=1), "value": 100.0},
-        {"time": anchor + timedelta(minutes=1, seconds=30), "value": 0.0},  # idle sample closes run 1
-        {"time": anchor + timedelta(minutes=3), "value": 200.0},  # 2 min gap, within the 3 min tolerance
-        {"time": anchor + timedelta(minutes=4), "value": 200.0},
-    ]
-    runs = detect_runs(samples, idle_threshold=10, gap_tolerance_min=3)
-    assert len(runs) == 1
-    assert runs[0]["duration_min"] == pytest.approx(4.0)
-    assert runs[0]["avg_w"] == pytest.approx(75.0)

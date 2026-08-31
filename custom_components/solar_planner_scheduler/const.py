@@ -26,16 +26,14 @@ CONF_AUTO_DAYS = "auto_days"
 # auto_days.
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
-CONF_HISTORY_LOOKBACK_DAYS = "history_lookback_days"
 CONF_IDLE_POWER_THRESHOLD = "idle_power_threshold"
-CONF_DURATION_TOLERANCE_PERCENT = "duration_tolerance_percent"
-CONF_RUN_GAP_TOLERANCE_MINUTES = "run_gap_tolerance_minutes"
 
+# Kept only for the v4->v5 migration to read and strip: CONF_MANUAL/CONF_MANUAL_START are gone from
+# the runtime model (superseded by the coordinator's internal "forced start" store), and
+# CONF_ACCEPTED_DAY/CONF_ACCEPTED_DATE are gone entirely (the today/tomorrow accept mechanism was
+# removed).
 CONF_ACCEPTED_DAY = "accepted_day"
 CONF_ACCEPTED_DATE = "accepted_date"
-ACCEPTED_DAY_TODAY = "today"
-ACCEPTED_DAY_TOMORROW = "tomorrow"
-
 CONF_MANUAL = "manual"
 CONF_MANUAL_START = "manual_start"
 
@@ -43,17 +41,11 @@ NONE_PROGRAM = "None"
 
 DEFAULT_MAX_SIMULTANEOUS_POWER = 4000
 DEFAULT_UPDATE_INTERVAL_MINUTES = 15
-DEFAULT_HISTORY_LOOKBACK_DAYS = 30
 DEFAULT_IDLE_POWER_THRESHOLD = 10
-DEFAULT_DURATION_TOLERANCE_PERCENT = 20
-DEFAULT_RUN_GAP_TOLERANCE_MINUTES = 5
 
 ATTR_END = "end"
 ATTR_COVERAGE_PCT = "coverage_pct"
 ATTR_DURATION_MIN = "duration_min"
 ATTR_POWER_W = "power_w"
 ATTR_PROFILE = "profile"
-ATTR_APPROXIMATE = "approximate"
-ATTR_PENDING_CHOICE = "pending_choice"
-ATTR_TODAY_COVERAGE_PCT = "today_coverage_pct"
-ATTR_TOMORROW_COVERAGE_PCT = "tomorrow_coverage_pct"
+ATTR_LOCKED = "locked"

@@ -8,7 +8,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_DEVICES, CONF_NAME, CONF_PROGRAMS, CONF_SELECTED_PROGRAM, DOMAIN, NONE_PROGRAM
+from .const import CONF_DEVICES, CONF_NAME, CONF_PROGRAMS, DOMAIN, NONE_PROGRAM
 from .coordinator import SolarPlannerSchedulerCoordinator
 
 
@@ -19,7 +19,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
 
 class ProgramSelectEntity(CoordinatorEntity[SolarPlannerSchedulerCoordinator], SelectEntity):
-    """Chooses which program (if any) solar_planner_scheduler should plan for this device."""
+    """Chooses which program (if any) solar_planner_scheduler should plan for this device.
+
+    The current selection lives in the coordinator's own internal store, not the config entry's
+    options — writing it never reloads the whole integration (see coordinator.py's store docstring).
+    """
 
     _attr_has_entity_name = True
 
@@ -41,13 +45,7 @@ class ProgramSelectEntity(CoordinatorEntity[SolarPlannerSchedulerCoordinator], S
 
     @property
     def current_option(self) -> str | None:
-        device = self._find_device()
-        return device.get(CONF_SELECTED_PROGRAM, NONE_PROGRAM) if device else NONE_PROGRAM
+        return self.coordinator.get_selected_program(self._device_name)
 
     async def async_select_option(self, option: str) -> None:
-        devices = [
-            {**d, CONF_SELECTED_PROGRAM: option} if d[CONF_NAME] == self._device_name else d
-            for d in self._entry.options.get(CONF_DEVICES, [])
-        ]
-        self.hass.config_entries.async_update_entry(self._entry, options={**self._entry.options, CONF_DEVICES: devices})
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_set_selected_program(self._device_name, option)
