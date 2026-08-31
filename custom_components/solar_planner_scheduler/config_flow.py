@@ -120,9 +120,10 @@ def _phases_schema(default_text: str = "") -> vol.Schema:
 
 
 def _program_phases_schema(default_text: str = "", default_days: list[str] | None = None) -> vol.Schema:
-    # Unchecked by default: a new program only runs automatically once the user deliberately opts
-    # a day in, it doesn't inherit "every day" just for existing. Editing an existing program
-    # pre-fills whatever it already has (see the migration in __init__.py for pre-existing ones).
+    # Unchecked by default: a new program doesn't inherit "every day" for free — nothing checked
+    # means on-demand (runs when picked, doesn't repeat on its own), not "never runs". Editing an
+    # existing program pre-fills whatever it already has (see the migration in __init__.py for
+    # pre-existing ones).
     return vol.Schema(
         {
             vol.Required("phases", default=default_text): selector.TextSelector(

@@ -13,10 +13,17 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.solar_planner_scheduler.const import (
     CONF_AUTO_DAYS,
+    CONF_DEVICES,
+    CONF_DURATION_MIN,
     CONF_FORECAST_ENTITY,
     CONF_IDLE_POWER_THRESHOLD,
+    CONF_MANUAL,
     CONF_MAX_SIMULTANEOUS_POWER,
+    CONF_NAME,
     CONF_POWER_SENSOR,
+    CONF_POWER_W,
+    CONF_PROGRAMS,
+    CONF_SELECTED_PROGRAM,
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
 )
@@ -65,7 +72,7 @@ async def test_read_forecast_points_handles_a_raw_datetime_period_start(hass):
     assert points == [{"time": period_start, "w": 1500.0}]
 
 
-def _seed_committed(coordinator, name, schedule):
+def _seed_committed(coordinator, name, schedule, program="Eco"):
     """Populate the persisted-state dict directly, as if a previous cycle had committed to it —
     mirrors what _set_committed() stores (ISO strings), since _locked_today_slot reads from
     self._committed (the Store-backed dict), not self.data, so it survives a coordinator recreate.
@@ -74,10 +81,11 @@ def _seed_committed(coordinator, name, schedule):
         "start": schedule.start.isoformat(),
         "end": schedule.end.isoformat(),
         "coverage_pct": schedule.coverage_pct,
+        "program": program,
     }
 
 
-def _coordinator(hass, previous_schedule=None):
+def _coordinator(hass, previous_schedule=None, program="Eco"):
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
@@ -86,7 +94,7 @@ def _coordinator(hass, previous_schedule=None):
     entry.add_to_hass(hass)
     coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
     if previous_schedule is not None:
-        _seed_committed(coordinator, "lave_linge", previous_schedule)
+        _seed_committed(coordinator, "lave_linge", previous_schedule, program)
     return coordinator
 
 
@@ -96,9 +104,9 @@ def test_locked_today_slot_reuses_an_imminent_slot_without_recomputing(hass):
     end = start + timedelta(minutes=30)
     coordinator = _coordinator(hass, DeviceSchedule("lave_linge", start, end, 95))
 
-    slot = coordinator._locked_today_slot("lave_linge", {}, duration_min=30, now=now)
+    slot = coordinator._locked_today_slot("lave_linge", {}, duration_min=30, now=now, selected_program="Eco", auto_days=[])
 
-    assert slot == {"start": start, "end": end, "coverage_pct": 95}
+    assert slot == {"start": start, "end": end, "coverage_pct": 95, "program": "Eco"}
 
 
 def test_locked_today_slot_returns_none_when_the_target_is_far_off(hass):
@@ -107,7 +115,7 @@ def test_locked_today_slot_returns_none_when_the_target_is_far_off(hass):
     end = start + timedelta(minutes=30)
     coordinator = _coordinator(hass, DeviceSchedule("lave_linge", start, end, 95))
 
-    slot = coordinator._locked_today_slot("lave_linge", {}, duration_min=30, now=now)
+    slot = coordinator._locked_today_slot("lave_linge", {}, duration_min=30, now=now, selected_program="Eco", auto_days=[])
 
     assert slot is None
 
@@ -118,9 +126,9 @@ def test_locked_today_slot_keeps_a_slot_in_progress_without_a_power_sensor(hass)
     end = start + timedelta(minutes=30)
     coordinator = _coordinator(hass, DeviceSchedule("lave_linge", start, end, 95))
 
-    slot = coordinator._locked_today_slot("lave_linge", {}, duration_min=30, now=now)
+    slot = coordinator._locked_today_slot("lave_linge", {}, duration_min=30, now=now, selected_program="Eco", auto_days=[])
 
-    assert slot == {"start": start, "end": end, "coverage_pct": 95}
+    assert slot == {"start": start, "end": end, "coverage_pct": 95, "program": "Eco"}
 
 
 def test_locked_today_slot_unlocks_when_a_power_sensor_shows_it_never_started(hass):
@@ -131,7 +139,9 @@ def test_locked_today_slot_unlocks_when_a_power_sensor_shows_it_never_started(ha
     hass.states.async_set("sensor.lave_linge_power", "0")
 
     device = {CONF_POWER_SENSOR: "sensor.lave_linge_power"}
-    slot = coordinator._locked_today_slot("lave_linge", device, duration_min=30, now=now)
+    slot = coordinator._locked_today_slot(
+        "lave_linge", device, duration_min=30, now=now, selected_program="Eco", auto_days=[]
+    )
 
     assert slot is None
 
@@ -144,18 +154,39 @@ def test_locked_today_slot_stays_locked_when_the_power_sensor_shows_it_running(h
     hass.states.async_set("sensor.lave_linge_power", "1800")
 
     device = {CONF_POWER_SENSOR: "sensor.lave_linge_power", CONF_IDLE_POWER_THRESHOLD: 10}
-    slot = coordinator._locked_today_slot("lave_linge", device, duration_min=30, now=now)
+    slot = coordinator._locked_today_slot(
+        "lave_linge", device, duration_min=30, now=now, selected_program="Eco", auto_days=[]
+    )
 
-    assert slot == {"start": start, "end": end, "coverage_pct": 95}
+    assert slot == {"start": start, "end": end, "coverage_pct": 95, "program": "Eco"}
 
 
-def test_locked_today_slot_ignores_a_stale_slot_after_the_program_changed(hass):
+def test_locked_today_slot_searches_immediately_when_a_different_program_is_selected(hass):
+    """Picking a program is always an explicit user action: it must get a fresh proposal right
+    away, regardless of auto_days — auto_days only governs whether an *unchanged* selection keeps
+    getting rescheduled automatically once the calendar day rolls over (see the two tests below).
+    """
     now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
     start = now + timedelta(minutes=2)
     end = start + timedelta(minutes=30)
+    coordinator = _coordinator(hass, DeviceSchedule("lave_linge", start, end, 95), program="Eco")
+
+    slot = coordinator._locked_today_slot(
+        "lave_linge", {}, duration_min=30, now=now, selected_program="Intense", auto_days=[]
+    )
+
+    assert slot is None
+
+
+def test_locked_today_slot_reschedules_once_the_program_duration_changes_after_a_run(hass):
+    start = datetime(2026, 8, 29, 13, 0, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=30)
     coordinator = _coordinator(hass, DeviceSchedule("lave_linge", start, end, 95))
 
-    slot = coordinator._locked_today_slot("lave_linge", {}, duration_min=60, now=now)
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    slot = coordinator._locked_today_slot(
+        "lave_linge", {}, duration_min=60, now=now, selected_program="Eco", auto_days=[]
+    )
 
     assert slot is None
 
@@ -169,34 +200,43 @@ def test_locked_today_slot_flags_already_ran_once_the_window_has_fully_elapsed(h
     end = start + timedelta(minutes=30)
     coordinator = _coordinator(hass, DeviceSchedule("lave_linge", start, end, 95))
 
-    slot = coordinator._locked_today_slot("lave_linge", {}, duration_min=30, now=now)
+    slot = coordinator._locked_today_slot("lave_linge", {}, duration_min=30, now=now, selected_program="Eco", auto_days=[])
 
     assert slot is ALREADY_RAN
 
 
-def test_locked_today_slot_treats_yesterdays_commitment_as_stale(hass):
-    """A previous day's run doesn't keep blocking today — daily repetition is gated separately by
-    _auto_day_allowed()/auto_days before _locked_today_slot is even called, not by this function.
+def test_locked_today_slot_continues_the_recurring_schedule_on_an_auto_day(hass):
+    """A previous day's run for the same, still-selected program doesn't keep blocking today, as
+    long as today is one of the program's auto_days — that's the recurring-schedule case (e.g. the
+    washing machine's Friday/Sunday routine).
+    """
+    start = datetime(2026, 8, 29, 13, 0, tzinfo=timezone.utc)  # Saturday
+    end = start + timedelta(minutes=30)
+    coordinator = _coordinator(hass, DeviceSchedule("lave_linge", start, end, 95))
+
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)  # Sunday
+    slot = coordinator._locked_today_slot(
+        "lave_linge", {}, duration_min=30, now=now, selected_program="Eco", auto_days=["fri", "sun"]
+    )
+
+    assert slot is None
+
+
+def test_locked_today_slot_stays_dormant_on_a_non_auto_day_for_the_same_selection(hass):
+    """Without an auto_day match, an unchanged selection doesn't keep proposing a new slot every
+    day on its own — this is the on-demand case (e.g. a dishwasher run whenever it's loaded): it
+    stays dormant until the user picks the program again, rather than auto-repeating daily.
     """
     start = datetime(2026, 8, 29, 13, 0, tzinfo=timezone.utc)
     end = start + timedelta(minutes=30)
     coordinator = _coordinator(hass, DeviceSchedule("lave_linge", start, end, 95))
 
-    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)  # the next day
-    slot = coordinator._locked_today_slot("lave_linge", {}, duration_min=30, now=now)
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)  # the next day, not an auto_day
+    slot = coordinator._locked_today_slot(
+        "lave_linge", {}, duration_min=30, now=now, selected_program="Eco", auto_days=[]
+    )
 
-    assert slot is None
-
-
-def test_locked_today_slot_reschedules_once_the_program_duration_changes_after_a_run(hass):
-    start = datetime(2026, 8, 29, 13, 0, tzinfo=timezone.utc)
-    end = start + timedelta(minutes=30)
-    coordinator = _coordinator(hass, DeviceSchedule("lave_linge", start, end, 95))
-
-    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
-    slot = coordinator._locked_today_slot("lave_linge", {}, duration_min=60, now=now)
-
-    assert slot is None
+    assert slot is ALREADY_RAN
 
 
 def test_locking_stops_a_committed_slot_from_flip_flopping_across_refresh_cycles(hass):
@@ -209,6 +249,10 @@ def test_locking_stops_a_committed_slot_from_flip_flopping_across_refresh_cycles
     """
     near = {"start": datetime(2026, 8, 30, 9, 15, tzinfo=timezone.utc), "end": datetime(2026, 8, 30, 9, 45, tzinfo=timezone.utc), "coverage_pct": 95}
     far = {"start": datetime(2026, 8, 30, 12, 5, tzinfo=timezone.utc), "end": datetime(2026, 8, 30, 12, 35, tzinfo=timezone.utc), "coverage_pct": 180}
+    # find_slot_for_day() itself never returns a "program" key (only _set_committed/_get_committed
+    # attach one) — locked() below returns a committed slot instead once seeded, which does carry
+    # one, so the searched-for reference must too for the equality checks to hold in later cycles.
+    near_committed = {**near, "program": "Eco"}
 
     call_count = 0
 
@@ -225,9 +269,14 @@ def test_locking_stops_a_committed_slot_from_flip_flopping_across_refresh_cycles
     device = {}
     duration_min = 30
 
+    def locked(now):
+        return coordinator._locked_today_slot(
+            "lave_linge", device, duration_min, now, selected_program="Eco", auto_days=[]
+        )
+
     # Cycle 1, far from "near"'s start: nothing to lock onto yet, falls through to the search.
     now = datetime(2026, 8, 30, 8, 30, tzinfo=timezone.utc)
-    slot = coordinator._locked_today_slot("lave_linge", device, duration_min, now) or coordinator._find_slot_for_day()
+    slot = locked(now) or coordinator._find_slot_for_day()
     assert slot == near
     _seed_committed(coordinator, "lave_linge", DeviceSchedule("lave_linge", slot["start"], slot["end"], slot["coverage_pct"]))
     assert call_count == 1
@@ -235,15 +284,15 @@ def test_locking_stops_a_committed_slot_from_flip_flopping_across_refresh_cycles
     # Cycle 2, now within DEFAULT_UPDATE_INTERVAL_MINUTES of "near"'s start: locks onto it — the
     # search (which would have flip-flopped to "far") is never even invoked.
     now = datetime(2026, 8, 30, 9, 5, tzinfo=timezone.utc)
-    slot = coordinator._locked_today_slot("lave_linge", device, duration_min, now) or coordinator._find_slot_for_day()
-    assert slot == near, "expected the imminent slot to stay locked instead of jumping to the later one"
+    slot = locked(now) or coordinator._find_slot_for_day()
+    assert slot == near_committed, "expected the imminent slot to stay locked instead of jumping to the later one"
     assert call_count == 1, "the search must not be re-run once locked"
     _seed_committed(coordinator, "lave_linge", DeviceSchedule("lave_linge", slot["start"], slot["end"], slot["coverage_pct"]))
 
     # Cycle 3, now inside the committed window: still locked, still no re-search.
     now = datetime(2026, 8, 30, 9, 20, tzinfo=timezone.utc)
-    slot = coordinator._locked_today_slot("lave_linge", device, duration_min, now) or coordinator._find_slot_for_day()
-    assert slot == near
+    slot = locked(now) or coordinator._find_slot_for_day()
+    assert slot == near_committed
     assert call_count == 1
 
 
@@ -266,7 +315,7 @@ async def test_committed_state_survives_a_coordinator_recreate(hass):
 
     coordinator_a = SolarPlannerSchedulerCoordinator(hass, entry)
     await coordinator_a.async_load_state()
-    await coordinator_a._set_committed("lave_linge", start, end, 95)
+    await coordinator_a._set_committed("lave_linge", start, end, 95, "Eco")
 
     # A brand new coordinator instance, as async_setup_entry creates on every reload — self.data
     # starts empty, but async_load_state() must recover what was persisted above.
@@ -274,25 +323,44 @@ async def test_committed_state_survives_a_coordinator_recreate(hass):
     await coordinator_b.async_load_state()
     assert coordinator_b.data is None  # confirms this genuinely isn't reading self.data
 
-    slot = coordinator_b._locked_today_slot("lave_linge", {}, duration_min=30, now=now)
+    slot = coordinator_b._locked_today_slot(
+        "lave_linge", {}, duration_min=30, now=now, selected_program="Eco", auto_days=[]
+    )
 
     assert slot is ALREADY_RAN
 
 
-def test_auto_day_allowed_true_when_todays_weekday_is_selected():
-    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)  # Monday
-    program = {CONF_AUTO_DAYS: ["mon", "wed", "fri"]}
-    assert SolarPlannerSchedulerCoordinator._auto_day_allowed(program, now) is True
+async def test_switching_a_device_to_manual_clears_any_stale_auto_commitment(hass):
+    """Regression test for the reported bug: a device left in manual mode for a while can carry a
+    stale auto commitment from days earlier (auto mode never got a chance to overwrite it). When
+    the user later switches back to auto, that stale entry must not silently apply — the manual
+    branch drops it unconditionally, so the very next auto refresh treats the selection as brand
+    new and searches immediately, regardless of auto_days.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options={
+            CONF_DEVICES: [
+                {
+                    CONF_NAME: "lave_vaisselle",
+                    CONF_SELECTED_PROGRAM: "Eco",
+                    CONF_MANUAL: True,
+                    CONF_PROGRAMS: [{CONF_NAME: "Eco", CONF_POWER_W: 100, CONF_DURATION_MIN: 30, CONF_AUTO_DAYS: []}],
+                }
+            ]
+        },
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    _seed_committed(
+        coordinator,
+        "lave_vaisselle",
+        DeviceSchedule("lave_vaisselle", datetime(2026, 8, 25, 13, 0, tzinfo=timezone.utc), datetime(2026, 8, 25, 13, 30, tzinfo=timezone.utc), 95),
+        program="Eco",
+    )
 
+    await coordinator._async_update_data()
 
-def test_auto_day_allowed_false_when_todays_weekday_is_not_selected():
-    now = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)  # Sunday
-    program = {CONF_AUTO_DAYS: ["mon", "wed", "fri"]}
-    assert SolarPlannerSchedulerCoordinator._auto_day_allowed(program, now) is False
-
-
-def test_auto_day_allowed_false_when_nothing_is_selected():
-    """Matches the config_flow's default for a newly created program: nothing checked = the user
-    must opt in explicitly, it doesn't inherit "every day" for free."""
-    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
-    assert SolarPlannerSchedulerCoordinator._auto_day_allowed({}, now) is False
+    assert coordinator._get_committed("lave_vaisselle") is None

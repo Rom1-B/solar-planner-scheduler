@@ -60,11 +60,11 @@ from .scheduling import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# Sentinel returned by _locked_today_slot(): the committed slot already ran (its window elapsed) —
-# don't search for a new one today. Distinct from None ("nothing locked, go search fresh"). Daily
-# repetition is driven by the program's own auto_days (see _auto_day_allowed): _locked_today_slot
-# itself treats a previous day's commitment as stale, so once today is an allowed day again, a
-# fresh search naturally resumes with no explicit reset needed.
+# Sentinel returned by _locked_today_slot(): the committed slot already ran (its window elapsed),
+# or a calendar day has rolled over past it on a day not in the program's auto_days — don't search
+# for a new one. Distinct from None ("nothing locked, go search fresh"), which _locked_today_slot
+# returns instead once auto_days allows today again, or once the selected program itself changes
+# (always an immediate fresh search, regardless of auto_days).
 ALREADY_RAN = object()
 
 # Committed-slot state (what _locked_today_slot reads) is persisted in its own Store rather than
@@ -187,10 +187,17 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         end = dt_util.parse_datetime(raw["end"])
         if start is None or end is None:
             return None
-        return {"start": start, "end": end, "coverage_pct": raw["coverage_pct"]}
+        return {"start": start, "end": end, "coverage_pct": raw["coverage_pct"], "program": raw.get("program")}
 
-    async def _set_committed(self, name: str, start: datetime, end: datetime, coverage_pct: int | None) -> None:
-        self._committed[name] = {"start": start.isoformat(), "end": end.isoformat(), "coverage_pct": coverage_pct}
+    async def _set_committed(
+        self, name: str, start: datetime, end: datetime, coverage_pct: int | None, program: str
+    ) -> None:
+        self._committed[name] = {
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "coverage_pct": coverage_pct,
+            "program": program,
+        }
         await self._store.async_save(self._committed)
 
     async def _clear_committed(self, name: str) -> None:
@@ -259,7 +266,9 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         idle_threshold = self.entry.data.get(CONF_IDLE_POWER_THRESHOLD, DEFAULT_IDLE_POWER_THRESHOLD)
         return power < idle_threshold
 
-    def _locked_today_slot(self, name: str, device: dict, duration_min: float, now: datetime):
+    def _locked_today_slot(
+        self, name: str, device: dict, duration_min: float, now: datetime, selected_program: str, auto_days: list[str]
+    ):
         """Reuse the already-committed slot instead of re-searching from scratch, once it's close
         (within one update_interval — the same constant the coordinator itself polls on, so the
         lock can never be a cycle late) or already under way. Returns ALREADY_RAN once that slot's
@@ -277,15 +286,24 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         actually arrives — the device's target time is perpetually a few minutes away but never
         reached. Without the ALREADY_RAN half, a device would get proposed a second slot the same
         day (or any day after) as soon as another good-enough window appears.
+
+        Picking a program is always an explicit user action, so a program (or duration) change
+        always forces a fresh search regardless of auto_days — auto_days only decides whether an
+        *unchanged* selection keeps getting a new slot proposed automatically once the calendar day
+        rolls over, without the user touching anything.
         """
         previous = self._get_committed(name)
         if previous is None:
             return None
-        if previous["start"].date() != now.date():
-            return None  # a previous day's commitment doesn't carry over — today gets a fresh look
+        if previous.get("program") != selected_program:
+            return None  # a different program was picked — always a fresh, immediate search
         locked_duration = (previous["end"] - previous["start"]).total_seconds() / 60
         if abs(locked_duration - duration_min) > 0.01:
-            return None  # the selected program changed since the slot was committed — fresh choice
+            return None  # the program's own definition changed since committed — fresh choice
+        if previous["start"].date() != now.date():
+            if WEEKDAYS[now.weekday()] in auto_days:
+                return None  # an auto-day: keep the recurring schedule going automatically
+            return ALREADY_RAN  # not an auto-day — stay dormant until the selection changes again
         if now >= previous["end"]:
             return ALREADY_RAN
         if now >= previous["start"]:
@@ -295,15 +313,6 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         if previous["start"] - now <= timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES):
             return previous
         return None
-
-    @staticmethod
-    def _auto_day_allowed(program: dict, now: datetime) -> bool:
-        """Whether the coordinator may auto-schedule this program today at all.
-
-        Manual mode bypasses this entirely (an explicit pinned start is always honored regardless
-        of auto_days) — this only gates the automatic search path.
-        """
-        return WEEKDAYS[now.weekday()] in program.get(CONF_AUTO_DAYS, [])
 
     def _find_slot_for_day(
         self,
@@ -431,13 +440,13 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
                     committed.append({**item, "start": slot["start"], "end": slot["end"]})
 
             if device.get(CONF_MANUAL, False):
+                # Manual mode fully owns scheduling while active — drop any leftover auto
+                # commitment so that switching back to auto is always treated as a fresh
+                # selection (an immediate search), not as a stale prior-day auto commitment.
+                await self._clear_committed(name)
                 slot = self._manual_slot(device, item, duration_min, points, base_load, committed)
                 _append_committed(slot)
                 results[name] = self._schedule_from_slot(name, slot, approximate, item)
-                continue
-
-            if not self._auto_day_allowed(program, now):
-                results[name] = DeviceSchedule(name, None, None, None, approximate)
                 continue
 
             accepted = self._resolve_accepted_day(device, now)
@@ -447,7 +456,8 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
                 results[name] = self._schedule_from_slot(name, slot, approximate, item)
                 continue
 
-            locked = self._locked_today_slot(name, device, duration_min, now)
+            auto_days = program.get(CONF_AUTO_DAYS, [])
+            locked = self._locked_today_slot(name, device, duration_min, now, selected, auto_days)
             if locked is ALREADY_RAN:
                 # Already had its committed run: stop here, don't even look at tomorrow — a device
                 # is scheduled once per selection, not re-proposed as soon as another window scores
@@ -459,7 +469,9 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
             else:
                 today_slot = self._find_slot_for_day(item, duration_min, points, base_load, committed, max_power, 0)
                 if today_slot is not None:
-                    await self._set_committed(name, today_slot["start"], today_slot["end"], today_slot["coverage_pct"])
+                    await self._set_committed(
+                        name, today_slot["start"], today_slot["end"], today_slot["coverage_pct"], selected
+                    )
 
             if accepted == ACCEPTED_DAY_TODAY:
                 _append_committed(today_slot)
