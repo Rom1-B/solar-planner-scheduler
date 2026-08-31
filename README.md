@@ -106,6 +106,14 @@ CI runs both suites plus `hassfest` and HACS validation on every push/PR. `./scr
 reproduces all four locally (same Docker images CI uses) if you want to check before pushing; it's
 slow, so it's opt-in, not part of the regular loop.
 
+## Releasing
+
+Bump `version` in `custom_components/solar_planner_scheduler/manifest.json` and push to `main`.
+Once `Tests`, `Hassfest` and `HACS` have all passed on that commit, `.github/workflows/release.yml`
+creates a matching GitHub release (tag + auto-generated notes) if one doesn't already exist for that
+version — HACS needs a release to track (otherwise it falls back to a commit SHA, which fails to
+download; see the project's CLAUDE.local.md for why).
+
 For visually testing UI-facing changes (config flow forms, entities, the card) without pushing to
 a real Home Assistant instance, run a throwaway local one with Docker:
 
