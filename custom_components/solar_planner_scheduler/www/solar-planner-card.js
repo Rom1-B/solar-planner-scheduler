@@ -336,8 +336,18 @@ class SolarPlannerCard extends HTMLElement {
     if (!Array.isArray(detailed)) return null;
     const tomorrowState = base.forecast_tomorrow_entity ? this._hass.states[base.forecast_tomorrow_entity] : null;
     const tomorrowDetailed = Array.isArray(tomorrowState?.attributes?.detailedForecast) ? tomorrowState.attributes.detailedForecast : [];
+    // w10/w90 default to w (Solcast's P10/P90 percentiles) — a source without them collapses the
+    // confidence band to zero width instead of drawing a misleading gap.
     return [...detailed, ...tomorrowDetailed]
-      .map((p) => ({ time: new Date(p.period_start), w: (p.pv_estimate || 0) * 1000 }))
+      .map((p) => {
+        const w = (p.pv_estimate || 0) * 1000;
+        return {
+          time: new Date(p.period_start),
+          w,
+          w10: p.pv_estimate10 != null ? p.pv_estimate10 * 1000 : w,
+          w90: p.pv_estimate90 != null ? p.pv_estimate90 * 1000 : w,
+        };
+      })
       .sort((a, b) => a.time - b.time);
   }
 
@@ -562,6 +572,7 @@ class SolarPlannerCard extends HTMLElement {
     const maxW =
       [
         ...points.filter((p) => p.time < todayEnd).map((p) => p.w),
+        ...points.filter((p) => p.time < todayEnd).map((p) => p.w90),
         base.max_simultaneous_power,
         ...this._actualPoints.map((p) => p.value),
         ...this._consumptionPoints.map((p) => p.value),
@@ -575,6 +586,16 @@ class SolarPlannerCard extends HTMLElement {
     const visiblePoints = points.filter((p) => p.time >= viewStart && p.time <= viewEnd);
     const visibleActualPoints = this._actualPoints.filter((p) => p.time >= viewStart && p.time <= viewEnd);
     const visibleConsumptionPoints = this._consumptionPoints.filter((p) => p.time >= viewStart && p.time <= viewEnd);
+    // Closed polygon: P90 left-to-right, then P10 back right-to-left. Zero width (P10 === P90 === w
+    // when a source has no percentiles) draws a degenerate, invisible sliver rather than a gap.
+    const hasConfidenceBand = visiblePoints.some((p) => p.w90 > p.w10);
+    const confidenceBandPath = hasConfidenceBand
+      ? [
+          ...visiblePoints.map((p, i) => `${i === 0 ? "M" : "L"}${x(p.time).toFixed(1)},${y(p.w90).toFixed(1)}`),
+          ...[...visiblePoints].reverse().map((p) => `L${x(p.time).toFixed(1)},${y(p.w10).toFixed(1)}`),
+          "Z",
+        ].join(" ")
+      : "";
     const forecastPath = visiblePoints.map((p, i) => `${i === 0 ? "M" : "L"}${x(p.time).toFixed(1)},${y(p.w).toFixed(1)}`).join(" ");
     const actualPath = visibleActualPoints
       .map((p, i) => `${i === 0 ? "M" : "L"}${x(p.time).toFixed(1)},${y(p.value).toFixed(1)}`)
@@ -768,6 +789,8 @@ class SolarPlannerCard extends HTMLElement {
         .grid { stroke: var(--divider-color); stroke-width: 1; }
         .axis-label { fill: var(--secondary-text-color); font-size: 11px; }
         .forecast-line { fill: none; stroke: ${colors.forecast}; stroke-width: 2; }
+        .confidence-band { stroke: none; opacity: 0.15; }
+        .confidence-swatch { opacity: 0.35; }
         .actual-line { fill: none; stroke: ${colors.actual}; stroke-width: 2; }
         .consumption-line { fill: none; stroke: ${colors.consumption}; stroke-width: 2; }
         .stack-segment.stack-confirmed { opacity: 0.55; }
@@ -819,6 +842,7 @@ class SolarPlannerCard extends HTMLElement {
           <span class="title">Solar Planner</span>
           <span class="legend">
             <span><span class="swatch" style="background:${colors.forecast}"></span>Forecast</span>
+            ${hasConfidenceBand ? `<span><span class="swatch confidence-swatch" style="background:${colors.forecast}"></span>Confidence (P10-P90)</span>` : ""}
             ${this._actualPoints.length ? `<span><span class="swatch" style="background:${colors.actual}"></span>Real production</span>` : ""}
             ${this._consumptionPoints.length ? `<span><span class="swatch" style="background:${colors.consumption}"></span>Consumption</span>` : ""}
           </span>
@@ -831,6 +855,7 @@ class SolarPlannerCard extends HTMLElement {
             ${stackedRects}
             <line x1="${marginLeft}" y1="${maxLineY}" x2="${width - marginRight}" y2="${maxLineY}" class="max-line"/>
             <line x1="${nowX}" y1="${marginTop}" x2="${nowX}" y2="${height - marginBottom}" class="now-line"/>
+            ${confidenceBandPath ? `<path d="${confidenceBandPath}" class="confidence-band" style="fill:${colors.forecast}"/>` : ""}
             <path d="${forecastPath}" class="forecast-line"/>
             ${actualPath ? `<path d="${actualPath}" class="actual-line"/>` : ""}
             ${consumptionPath ? `<path d="${consumptionPath}" class="consumption-line"/>` : ""}
@@ -839,7 +864,7 @@ class SolarPlannerCard extends HTMLElement {
               <circle class="hover-dot" style="fill:${colors.forecast}"/>
               <circle class="hover-dot" style="fill:${colors.actual}"/>
               <circle class="hover-dot" style="fill:${colors.consumption}"/>
-              <g class="hover-box"><rect width="140" height="62" rx="3"/><text class="hover-time" x="8" y="16"></text><text class="hover-forecast" x="8" y="30"></text><text class="hover-actual" x="8" y="44"></text><text class="hover-consumption" x="8" y="58"></text></g>
+              <g class="hover-box"><rect width="140" height="76" rx="3"/><text class="hover-time" x="8" y="16"></text><text class="hover-forecast" x="8" y="30"></text><text class="hover-confidence" x="8" y="44"></text><text class="hover-actual" x="8" y="58"></text><text class="hover-consumption" x="8" y="72"></text></g>
             </g>
             <rect id="hover-catch" class="hover-catch" x="${marginLeft}" y="${marginTop}" width="${innerW}" height="${innerH}"/>
           </svg>
@@ -893,7 +918,10 @@ class SolarPlannerCard extends HTMLElement {
     });
 
     this._bindGanttDrag({ viewStart, viewSpanMs, marginLeft, marginRight, width });
-    this._bindHover({ points, viewStart, viewSpanMs, x, y, marginLeft, marginRight, marginTop, height, width, todayEnd });
+    // Remapped to interpolate()'s {time, w} shape so the mirrored helper (see CLAUDE.local.md) stays untouched.
+    const w10Curve = points.map((p) => ({ time: p.time, w: p.w10 }));
+    const w90Curve = points.map((p) => ({ time: p.time, w: p.w90 }));
+    this._bindHover({ points, w10Curve, w90Curve, viewStart, viewSpanMs, x, y, marginLeft, marginRight, marginTop, height, width, todayEnd });
   }
 
   // pointermove moves the bar's `x` directly (not via _render(), which would drop pointer capture mid-drag); the live % is the one thing computed fresh each move.
@@ -990,7 +1018,7 @@ class SolarPlannerCard extends HTMLElement {
     });
   }
 
-  _bindHover({ points, viewStart, viewSpanMs, x, y, marginLeft, marginRight, marginTop, height, width, todayEnd }) {
+  _bindHover({ points, w10Curve, w90Curve, viewStart, viewSpanMs, x, y, marginLeft, marginRight, marginTop, height, width, todayEnd }) {
     const svg = this.shadowRoot.querySelector("svg.chart");
     const catch_ = this.shadowRoot.getElementById("hover-catch");
     const scrollEl = this.shadowRoot.querySelector(".chart-scroll");
@@ -1001,6 +1029,7 @@ class SolarPlannerCard extends HTMLElement {
     const box = group.querySelector(".hover-box");
     const timeText = box.querySelector(".hover-time");
     const forecastText = box.querySelector(".hover-forecast");
+    const confidenceText = box.querySelector(".hover-confidence");
     const actualText = box.querySelector(".hover-actual");
     const consumptionText = box.querySelector(".hover-consumption");
 
@@ -1025,7 +1054,10 @@ class SolarPlannerCard extends HTMLElement {
       const t = new Date(viewStart.getTime() + ((clampedX - marginLeft) / (width - marginLeft - marginRight)) * viewSpanMs);
       // interpolate() clamps past a curve's end instead of returning null — blank each series past its own real end, or hovering past it shows a stale value.
       const inToday = t < todayEnd;
-      const wForecast = points.length && t <= points[points.length - 1].time ? interpolate(points, t) : null;
+      const inForecastRange = points.length && t <= points[points.length - 1].time;
+      const wForecast = inForecastRange ? interpolate(points, t) : null;
+      const w10 = inForecastRange ? interpolate(w10Curve, t) : null;
+      const w90 = inForecastRange ? interpolate(w90Curve, t) : null;
       const wActual = this._actualCurve.length && inToday ? interpolate(this._actualCurve, t) : null;
       const wConsumption = this._consumptionCurve.length && inToday ? interpolate(this._consumptionCurve, t) : null;
 
@@ -1048,6 +1080,7 @@ class SolarPlannerCard extends HTMLElement {
       }
       timeText.textContent = fmtTime(t);
       forecastText.textContent = wForecast != null ? `Forecast: ${fmtW(wForecast)}` : "";
+      confidenceText.textContent = w10 != null && w90 != null && w90 > w10 ? `Confidence: ${fmtW(w10)} – ${fmtW(w90)}` : "";
       actualText.textContent = wActual != null ? `Real production: ${fmtW(wActual)}` : "";
       consumptionText.textContent = wConsumption != null ? `Consumption: ${fmtW(wConsumption)}` : "";
       // Flips against the visible (scrolled) viewport's right edge, not the total SVG width, so the tooltip can't render into the clipped-away region.

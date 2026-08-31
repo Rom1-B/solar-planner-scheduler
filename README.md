@@ -88,6 +88,12 @@ devices:
   - lave_vaisselle
 ```
 
+When the forecast entity's `detailedForecast` includes Solcast's `pv_estimate10`/`pv_estimate90`
+percentiles, the chart also shows a shaded confidence band around the forecast line (and the
+P10-P90 range on hover) — a narrow band means a stable sky (predictable forecast), a wide one means
+variable cloud cover (the actual solar window may shift). Absent on forecast sources without these
+percentiles.
+
 ## Development
 
 ```bash

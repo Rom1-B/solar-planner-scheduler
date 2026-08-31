@@ -46,14 +46,20 @@ function setFixedLoads(card, fixedLoads) {
   };
 }
 
-function buildForecast(dayStart, peakKw = 3) {
+function buildForecast(dayStart, peakKw = 3, withConfidence = false) {
   const detailedForecast = [];
   for (let h = 6; h <= 20; h++) {
     for (const m of [0, 30]) {
       const t = new Date(dayStart);
       t.setHours(h, m, 0, 0);
       const sunFactor = Math.max(0, Math.sin(((h + m / 60 - 6) / 14) * Math.PI));
-      detailedForecast.push({ period_start: t.toISOString(), pv_estimate: sunFactor * peakKw });
+      const pvEstimate = sunFactor * peakKw;
+      const point = { period_start: t.toISOString(), pv_estimate: pvEstimate };
+      if (withConfidence) {
+        point.pv_estimate10 = pvEstimate * 0.7;
+        point.pv_estimate90 = pvEstimate * 1.3;
+      }
+      detailedForecast.push(point);
     }
   }
   return detailedForecast;
@@ -694,4 +700,23 @@ test("stack order mirrors the gantt's top-to-bottom config order, not reversed",
   const yA = parseFloat(/ y="([^"]*)"/.exec(rectA)?.[1] ?? "NaN");
   const yB = parseFloat(/ y="([^"]*)"/.exec(rectB)?.[1] ?? "NaN");
   assert.ok(yA < yB, `expected A (first in config, gantt's top lane) drawn above B in the stack, got yA=${yA} vs yB=${yB}`);
+});
+
+test("a forecast entity with P10/P90 percentiles renders a confidence band and its legend", () => {
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const card = buildCard();
+  card._hass.states["sensor.forecast"] = { state: "3", attributes: { detailedForecast: buildForecast(dayStart, 3, true) } };
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  assert.ok(/<path d="M[^"]+Z" class="confidence-band"/.test(html), "expected a closed confidence-band path");
+  assert.ok(html.includes("Confidence (P10-P90)"), "expected a confidence legend entry");
+});
+
+test("a forecast entity without P10/P90 draws no confidence band or legend", () => {
+  const card = buildCard();
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  assert.ok(!html.includes('class="confidence-band"'), "expected no confidence-band path without percentiles");
+  assert.ok(!html.includes("Confidence (P10-P90)"), "expected no confidence legend entry without percentiles");
 });
