@@ -391,8 +391,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
                 results[name] = DeviceSchedule(name, None, None, None)
                 continue
 
-            # Every program has phases (power_profile) — the flat power_w/duration_min shape is
-            # migrated away on load (see async_migrate_entry's v4->v5 step).
+            # Every program has phases (power_profile), the config UI has never produced anything else.
             profile = program[CONF_POWER_PROFILE]
             duration_min = program.get(CONF_DURATION_MIN)
             if duration_min is None:

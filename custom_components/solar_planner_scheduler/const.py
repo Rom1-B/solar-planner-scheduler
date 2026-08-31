@@ -17,7 +17,6 @@ CONF_DURATION_MIN = "duration_min"
 CONF_START_TIME = "start_time"
 CONF_PROGRAMS = "programs"
 CONF_POWER_PROFILE = "power_profile"
-CONF_SELECTED_PROGRAM = "selected_program"
 CONF_MINUTES = "minutes"
 CONF_AUTO_DAYS = "auto_days"
 
@@ -27,15 +26,6 @@ CONF_AUTO_DAYS = "auto_days"
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 CONF_IDLE_POWER_THRESHOLD = "idle_power_threshold"
-
-# Kept only for the v4->v5 migration to read and strip: CONF_MANUAL/CONF_MANUAL_START are gone from
-# the runtime model (superseded by the coordinator's internal "forced start" store), and
-# CONF_ACCEPTED_DAY/CONF_ACCEPTED_DATE are gone entirely (the today/tomorrow accept mechanism was
-# removed).
-CONF_ACCEPTED_DAY = "accepted_day"
-CONF_ACCEPTED_DATE = "accepted_date"
-CONF_MANUAL = "manual"
-CONF_MANUAL_START = "manual_start"
 
 NONE_PROGRAM = "None"
 
