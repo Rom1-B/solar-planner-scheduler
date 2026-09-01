@@ -227,7 +227,7 @@ test("an inactive program renders no gantt bar or stack segment", () => {
   card._render();
   const html = card.shadowRoot.innerHTML;
   assert.equal(rectsWithClass(html, "stack-confirmed").length, 0, "nothing should be scheduled without an active program");
-  assert.ok(html.includes('class="active-toggle "'), "expected an inactive toggle button to render");
+  assert.ok(html.includes('class="program-toggle "'), "expected an inactive toggle button to render");
 });
 
 test("a slot scheduled after sunset still renders within the chart (view widens beyond daylight)", () => {

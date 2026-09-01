@@ -699,25 +699,40 @@ class SolarPlannerCard extends HTMLElement {
 
     const unplaced = deviceStates.filter((ds) => ds.active && !ds.start);
 
-    const deviceRows = deviceStates
-      .map((ds, i) => {
-        const slotRow = ds.active
-          ? `<div class="slot-row">
-                <input type="time" class="slot-time" data-device="${ds.slug}" value="${ds.start ? fmtTime(ds.start) : ""}">
+    // Grouped by device (consecutive rows share a device, _programRows() already orders them that
+    // way) so the device name is shown once instead of repeated on every one of its programs' rows.
+    // Color identity stays per-program (deviceColor(i) on the original flat index), matching each
+    // program's own gantt lane/stack segment — grouping is purely a text/layout change.
+    const deviceGroups = [];
+    deviceStates.forEach((ds, i) => {
+      const lastGroup = deviceGroups[deviceGroups.length - 1];
+      if (lastGroup && lastGroup.name === ds.name) lastGroup.rows.push({ ds, i });
+      else deviceGroups.push({ name: ds.name, rows: [{ ds, i }] });
+    });
+    const deviceRows = deviceGroups
+      .map((group) => {
+        const rows = group.rows
+          .map(({ ds, i }) => {
+            const slot = ds.active
+              ? `<input type="time" class="slot-time" data-device="${ds.slug}" value="${ds.start ? fmtTime(ds.start) : ""}">
                 ${ds.locked ? `<button class="auto-btn" data-device="${ds.slug}">Auto</button>` : ""}
                 ${
                   ds.coveragePct != null
                     ? `<span class="coverage-pct ${ds.coveragePct >= 100 ? "coverage-good" : "coverage-low"}">${ds.coveragePct}% solar</span>`
                     : ""
-                }
-              </div>`
-          : "";
+                }`
+              : "";
+            return `<div class="program-row">
+              <span class="swatch" style="background:${deviceColor(i)}"></span>
+              <button class="program-toggle ${ds.active ? "active" : ""}" data-row="${ds.slug}" data-active="${ds.active}">${ds.programName}</button>
+              ${ds.shouldRun ? `<ha-icon class="running-icon" icon="mdi:play-circle" title="Currently running"></ha-icon>` : ""}
+              ${slot}
+            </div>`;
+          })
+          .join("");
         return `<div class="device-select">
-          <div class="device-select-header"><span class="swatch" style="background:${deviceColor(i)}"></span><span class="device-name">${ds.name} · ${ds.programName}</span>${
-          ds.shouldRun ? `<ha-icon class="running-icon" icon="mdi:play-circle" title="Currently running"></ha-icon>` : ""
-        }</div>
-          <button class="active-toggle ${ds.active ? "active" : ""}" data-row="${ds.slug}" data-active="${ds.active}">${ds.active ? "Active" : "Inactive"}</button>
-          ${slotRow}
+          <div class="device-select-header">${group.name}</div>
+          ${rows}
         </div>`;
       })
       .join("");
@@ -803,14 +818,15 @@ class SolarPlannerCard extends HTMLElement {
         .drag-pct-bg { fill: var(--card-background-color, #1c1c1c); opacity: 0.92; }
         .drag-pct { font-size: 9px; fill: var(--primary-text-color); }
         .device-select { margin-top: 12px; }
-        .device-select-header { font-size: 0.85em; color: var(--secondary-text-color); margin-bottom: 4px; }
+        .device-select-header { font-size: 0.95em; font-weight: 500; color: var(--primary-text-color); margin-bottom: 4px; }
         .device-select-header .swatch { margin-right: 5px; vertical-align: middle; }
-        .running-icon { --mdc-icon-size: 14px; color: var(--success-color, #4caf50); margin-left: 5px; vertical-align: middle; }
-        .active-toggle { border: 1px solid var(--divider-color); background: none; border-radius: 12px; padding: 3px 10px; font-size: 0.8em; cursor: pointer; color: var(--primary-text-color); }
-        .active-toggle.active { background: var(--primary-color); color: var(--text-primary-color, #fff); border-color: var(--primary-color); }
-        .slot-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 0.85em; }
+        .program-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 0.85em; flex-wrap: wrap; }
+        .program-row .swatch { flex-shrink: 0; }
+        .running-icon { --mdc-icon-size: 14px; color: var(--success-color, #4caf50); vertical-align: middle; }
+        .program-toggle { border: 1px solid var(--divider-color); background: none; border-radius: 12px; padding: 3px 10px; font-size: 0.95em; cursor: pointer; color: var(--primary-text-color); font-family: inherit; }
+        .program-toggle.active { background: var(--primary-color); color: var(--text-primary-color, #fff); border-color: var(--primary-color); }
         .slot-time { border: 1px solid var(--divider-color); border-radius: 4px; background: none; color: var(--primary-text-color); }
-        .auto-btn { background: none; border: none; color: var(--primary-color); cursor: pointer; font-size: 0.85em; padding: 0; margin-left: 8px; text-decoration: underline; }
+        .auto-btn { background: none; border: none; color: var(--primary-color); cursor: pointer; font-size: 0.85em; padding: 0; text-decoration: underline; }
         .coverage-pct { font-size: 0.8em; font-weight: 500; }
         .coverage-pct.coverage-good { color: var(--success-color, #4caf50); }
         .coverage-pct.coverage-low { color: var(--warning-color, #fab219); }
@@ -884,7 +900,7 @@ class SolarPlannerCard extends HTMLElement {
       this._showTable = !this._showTable;
       this._render();
     });
-    this.shadowRoot.querySelectorAll(".active-toggle").forEach((btn) => {
+    this.shadowRoot.querySelectorAll(".program-toggle").forEach((btn) => {
       btn.addEventListener("click", () => this._onToggleActive(btn.dataset.row, btn.dataset.active !== "true"));
     });
     this.shadowRoot.querySelectorAll(".slot-time").forEach((input) => {
