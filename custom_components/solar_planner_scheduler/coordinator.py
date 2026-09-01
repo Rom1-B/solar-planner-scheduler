@@ -185,8 +185,21 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
     def _device_state(self, name: str) -> dict:
         return self._state.get(name, {})
 
-    def get_selected_program(self, name: str) -> str:
-        return self._device_state(name).get("selected", NONE_PROGRAM)
+    def get_selected_program(self, name: str, programs: list[dict] | None = None) -> str:
+        """Return the stored selection, or a program with non-empty auto_days if never chosen.
+
+        A program declaring auto_days already says "run me on these days" — requiring a manual
+        pick on top of that (e.g. after a Store reset) would defeat auto_days' own purpose. Only
+        applies when nothing was ever stored; an explicit NONE_PROGRAM selection is left as-is.
+        """
+        stored = self._device_state(name).get("selected")
+        if stored is not None:
+            return stored
+        if programs:
+            auto = next((p[CONF_NAME] for p in programs if p.get(CONF_AUTO_DAYS)), None)
+            if auto is not None:
+                return auto
+        return NONE_PROGRAM
 
     async def async_set_selected_program(self, name: str, program: str) -> None:
         state = {**self._device_state(name), "selected": program}
@@ -382,7 +395,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         committed = list(fixed_loads)
         for device in options.get(CONF_DEVICES, []):
             name = device[CONF_NAME]
-            selected = self.get_selected_program(name)
+            selected = self.get_selected_program(name, device.get(CONF_PROGRAMS, []))
             if selected == NONE_PROGRAM:
                 results[name] = DeviceSchedule(name, None, None, None)
                 continue

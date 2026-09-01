@@ -45,7 +45,9 @@ class ProgramSelectEntity(CoordinatorEntity[SolarPlannerSchedulerCoordinator], S
 
     @property
     def current_option(self) -> str | None:
-        return self.coordinator.get_selected_program(self._device_name)
+        device = self._find_device()
+        programs = device.get(CONF_PROGRAMS, []) if device else []
+        return self.coordinator.get_selected_program(self._device_name, programs)
 
     async def async_select_option(self, option: str) -> None:
         await self.coordinator.async_set_selected_program(self._device_name, option)

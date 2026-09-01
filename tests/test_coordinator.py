@@ -196,6 +196,37 @@ async def test_forget_program_resets_the_selection_only_if_it_matches(hass):
     assert coordinator.get_selected_program("lave_linge") == NONE_PROGRAM
 
 
+def test_get_selected_program_defaults_to_the_auto_days_program_when_never_chosen(hass):
+    """A program declaring auto_days already means "run me on these days" — a Store reset (e.g.
+    after a HA restart with nothing persisted yet) must not silently disable that until the user
+    re-picks it by hand."""
+    coordinator = _coordinator(hass)
+    programs = [
+        {CONF_NAME: "Eco", CONF_AUTO_DAYS: []},
+        {CONF_NAME: "Chauffe", CONF_AUTO_DAYS: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]},
+    ]
+
+    assert coordinator.get_selected_program("ballon", programs) == "Chauffe"
+
+
+def test_get_selected_program_ignores_auto_days_default_with_no_auto_program(hass):
+    coordinator = _coordinator(hass)
+    programs = [{CONF_NAME: "Eco", CONF_AUTO_DAYS: []}]
+
+    assert coordinator.get_selected_program("lave_vaisselle", programs) == NONE_PROGRAM
+
+
+async def test_get_selected_program_honors_an_explicit_none_over_the_auto_days_default(hass):
+    """The user turning a program off on purpose (e.g. "no wash today") must stick, even though a
+    program with auto_days exists — the default only applies when nothing was ever stored."""
+    coordinator = _coordinator(hass)
+    programs = [{CONF_NAME: "Chauffe", CONF_AUTO_DAYS: ["mon"]}]
+    await coordinator.async_set_selected_program("ballon", NONE_PROGRAM)
+    await _flush(coordinator)
+
+    assert coordinator.get_selected_program("ballon", programs) == NONE_PROGRAM
+
+
 async def test_set_forced_start_is_readable_before_a_refresh_folds_it_in(hass):
     coordinator = _coordinator(hass)
     start = datetime(2026, 8, 30, 13, 0, tzinfo=timezone.utc)
