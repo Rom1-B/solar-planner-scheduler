@@ -588,3 +588,66 @@ async def test_two_active_programs_of_the_same_device_never_get_overlapping_slot
     chemises = results[("lave_linge", "5 chemises")]
     assert eco.start is not None and chemises.start is not None
     assert eco.end <= chemises.start or chemises.end <= eco.start
+
+
+async def test_activating_a_program_avoids_a_sibling_committed_in_an_earlier_cycle(hass):
+    """Regression: hit live on 2026-09-01. Activating "5 chemises" alone first (its own
+    `_async_update_data()` cycle, "Eco coton" still inactive) commits it to a slot. Activating
+    "Eco coton" afterward, in a *separate* later cycle, must still avoid that already-committed
+    slot — the accumulate-as-you-go `blocked` list used to start empty every cycle and only grow
+    as each program was visited that same pass, so "Eco coton" (first in CONF_PROGRAMS order)
+    never saw "5 chemises"'s pre-existing commitment and could land right on top of it.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options={
+            CONF_DEVICES: [
+                {
+                    CONF_NAME: "lave_linge",
+                    CONF_PROGRAMS: [
+                        {
+                            CONF_NAME: "Eco coton",
+                            CONF_POWER_PROFILE: [{"minutes": 30, "power_w": 100}],
+                            CONF_DURATION_MIN: 30,
+                            CONF_AUTO_DAYS: [],
+                        },
+                        {
+                            CONF_NAME: "5 chemises",
+                            CONF_POWER_PROFILE: [{"minutes": 30, "power_w": 100}],
+                            CONF_DURATION_MIN: 30,
+                            CONF_AUTO_DAYS: [],
+                        },
+                    ],
+                }
+            ]
+        },
+    )
+    entry.add_to_hass(hass)
+    now = dt_util.now()
+    hass.states.async_set(
+        "sensor.forecast",
+        "3",
+        {
+            "detailedForecast": [
+                {"period_start": now + timedelta(minutes=i * 5), "pv_estimate": 1.0} for i in range(24 * 12)
+            ]
+        },
+    )
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+
+    # Cycle 1: only "5 chemises" active — commits it to a slot.
+    await coordinator.async_set_program_active("lave_linge", "5 chemises", True)
+    await _flush(coordinator)
+    await coordinator._async_update_data()
+
+    # Cycle 2: "Eco coton" activated afterward, in a separate refresh.
+    await coordinator.async_set_program_active("lave_linge", "Eco coton", True)
+    await _flush(coordinator)
+    results = await coordinator._async_update_data()
+
+    eco = results[("lave_linge", "Eco coton")]
+    chemises = results[("lave_linge", "5 chemises")]
+    assert eco.start is not None and chemises.start is not None
+    assert eco.end <= chemises.start or chemises.end <= eco.start

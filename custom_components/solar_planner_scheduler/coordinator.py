@@ -433,14 +433,27 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         committed = list(fixed_loads)
         for device in options.get(CONF_DEVICES, []):
             device_name = device[CONF_NAME]
-            # Own committed slots of this device's other programs, resolved so far this cycle —
-            # a hard exclusion zone (regardless of power) for the remaining programs of the same
-            # device, on top of `committed`'s cross-device power-budget sharing.
-            device_committed: list[dict] = []
-            for program in device.get(CONF_PROGRAMS, []):
+            programs = device.get(CONF_PROGRAMS, [])
+            # Each sibling program's currently-known slot for *today*, used as this device's hard
+            # exclusion zone. Pre-seeded from the Store (not built up empty and only as programs
+            # are visited this pass) so a program earlier in CONF_PROGRAMS order still avoids a
+            # sibling that already has a slot committed from an earlier refresh cycle and isn't
+            # being re-resolved this cycle (reused, dormant, or not yet visited) — the previous
+            # accumulate-as-you-go approach missed exactly this case: activating program A while
+            # program B (later in config order) was already committed let A's search ignore B
+            # entirely, since B's slot only entered the exclusion list once B itself was visited.
+            # Filtered to today: a stale multi-day-old commitment (e.g. a dormant on-demand
+            # program that hasn't rolled over its Store entry) must not block a fresh search.
+            device_slots: dict[str, dict | None] = {}
+            for p in programs:
+                existing = self._get_committed(device_name, p[CONF_NAME])
+                device_slots[p[CONF_NAME]] = existing if existing and existing["start"].date() == now.date() else None
+
+            for program in programs:
                 program_name = program[CONF_NAME]
                 key = (device_name, program_name)
                 if not self.is_program_active(device_name, program_name, program):
+                    device_slots[program_name] = None
                     results[key] = DeviceSchedule(device_name, None, None, None)
                     continue
 
@@ -450,12 +463,16 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                 if duration_min is None:
                     duration_min = sum(phase[CONF_MINUTES] for phase in profile)
                 item = {"profile": profile, "duration_min": duration_min}
+                blocked = [
+                    {"start": slot["start"], "end": slot["end"]}
+                    for name, slot in device_slots.items()
+                    if name != program_name and slot is not None
+                ]
 
-                def _append_committed(slot: dict | None) -> None:
+                def _finalize(slot: dict | None) -> None:
+                    device_slots[program_name] = slot
                     if slot is not None:
-                        entry = {**item, "start": slot["start"], "end": slot["end"]}
-                        committed.append(entry)
-                        device_committed.append(entry)
+                        committed.append({**item, "start": slot["start"], "end": slot["end"]})
 
                 pending_start = self._pending_forced_start(device_name, program_name)
                 if pending_start is not None:
@@ -463,7 +480,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                     await self._set_committed(
                         device_name, program_name, slot["start"], slot["end"], slot["coverage_pct"], True
                     )
-                    _append_committed(slot)
+                    _finalize(slot)
                     results[key] = self._schedule_from_slot(device_name, slot, item, True)
                     continue
 
@@ -472,12 +489,13 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                     device_name, program_name, device, duration_min, now, auto_days
                 )
                 if dormant:
+                    device_slots[program_name] = None
                     results[key] = DeviceSchedule(device_name, None, None, None)
                     continue
                 if should_search:
                     if points:
                         slot = self._find_slot_for_day(
-                            item, duration_min, points, base_load, committed, max_power, 0, blocked=device_committed
+                            item, duration_min, points, base_load, committed, max_power, 0, blocked=blocked
                         )
                         forced = False
                         if slot is not None:
@@ -490,6 +508,6 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                         # data on the next refresh instead of committing to a guessed slot.
                         slot = None
 
-                _append_committed(slot)
+                _finalize(slot)
                 results[key] = self._schedule_from_slot(device_name, slot, item, forced)
         return results
