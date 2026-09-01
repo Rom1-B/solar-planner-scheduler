@@ -16,13 +16,13 @@ if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
-PLATFORMS = ["sensor", "binary_sensor", "select", "datetime"]
+PLATFORMS = ["sensor", "binary_sensor", "switch", "datetime"]
 
 CARD_URL_BASE = f"/{DOMAIN}_files"
 CARD_FILENAME = "solar-planner-card.js"
 # Bump manually whenever solar-planner-card.js changes, so the Lovelace resource URL's
 # cache-busting query string actually changes and browsers don't keep serving a stale copy.
-CARD_VERSION = "8"
+CARD_VERSION = "9"
 
 
 async def async_setup(hass: "HomeAssistant", config: dict) -> bool:
@@ -70,6 +70,8 @@ def _async_register_services(hass: "HomeAssistant") -> None:
     schema = vol.Schema({vol.Required("entity_id"): cv.entity_id})
 
     async def _reset_to_auto(call) -> None:
+        from .const import CONF_DEVICES, CONF_NAME, CONF_PROGRAMS
+
         entity_id = call.data["entity_id"]
         registry_entry = er.async_get(hass).async_get(entity_id)
         if registry_entry is None or registry_entry.config_entry_id is None:
@@ -77,8 +79,16 @@ def _async_register_services(hass: "HomeAssistant") -> None:
         entry = hass.config_entries.async_get_entry(registry_entry.config_entry_id)
         if entry is None:
             return
-        device_name = registry_entry.unique_id.removeprefix(f"{entry.entry_id}_").removesuffix("_start")
-        await hass.data[DOMAIN][entry.entry_id].async_clear_forced_start(device_name)
+        # Resolve (device, program) by reconstructing each candidate's unique_id and matching it,
+        # rather than splitting the string apart — device/program names are free text and may
+        # themselves contain "_", which would make a split ambiguous.
+        for device in entry.options.get(CONF_DEVICES, []):
+            device_name = device[CONF_NAME]
+            for program in device.get(CONF_PROGRAMS, []):
+                program_name = program[CONF_NAME]
+                if registry_entry.unique_id == f"{entry.entry_id}_{device_name}_{program_name}_start":
+                    await hass.data[DOMAIN][entry.entry_id].async_clear_forced_start(device_name, program_name)
+                    return
 
     hass.services.async_register(DOMAIN, "reset_to_auto", _reset_to_auto, schema=schema)
 

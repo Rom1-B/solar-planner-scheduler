@@ -168,9 +168,12 @@ class SolarPlannerCard extends HTMLElement {
     this._drag = null;
   }
 
-  // config.devices is a list of solar_planner_scheduler device slugs (the entity_id prefix shared
-  // by datetime.<slug>_start, binary_sensor.<slug>_should_run, select.<slug>_program) — the
-  // integration itself already validates device/program shape, so the card no longer needs to.
+  // config.devices is a list of solar_planner_scheduler device slugs (matching each device's
+  // "slug" in sensor.solar_planner_scheduler_config's devices attribute — see _baseConfig()).
+  // One gantt/legend row is rendered per (device, program) pair, entity_ids built from that
+  // program's own "slug" (datetime.<slug>_start, binary_sensor.<slug>_should_run,
+  // switch.<slug>_active) — the integration computes these slugs server-side (real slugify(),
+  // matching entity_id generation exactly) so the card never approximates one itself.
   // fixed_loads is no longer read from here either — see _baseConfig(), sourced from the
   // integration's own config entry.
   setConfig(config) {
@@ -205,7 +208,25 @@ class SolarPlannerCard extends HTMLElement {
       consumption_entity: attrs.consumption_entity,
       max_simultaneous_power: state ? parseFloat(state.state) : null,
       fixed_loads: fixedLoads,
+      devices: attrs.devices || [],
     };
+  }
+
+  // One row per (device, program) pair, in config.devices order then each device's own program
+  // order — a device not found in the config sensor's devices attribute (e.g. removed from
+  // integration config but still listed in the card's own YAML) is silently skipped.
+  _programRows() {
+    if (!this._hass || !this._config) return [];
+    const byDeviceSlug = new Map(this._baseConfig().devices.map((d) => [d.slug, d]));
+    const rows = [];
+    for (const deviceSlug of this._config.devices) {
+      const device = byDeviceSlug.get(deviceSlug);
+      if (!device) continue;
+      for (const program of device.programs) {
+        rows.push({ slug: program.slug, deviceName: device.name, programName: program.name });
+      }
+    }
+    return rows;
   }
 
   set hass(hass) {
@@ -250,17 +271,17 @@ class SolarPlannerCard extends HTMLElement {
   }
 
   getCardSize() {
-    return 4 + (this._config?.devices?.length || 0) + this._baseConfig().fixed_loads.length;
+    return 4 + this._programRows().length + this._baseConfig().fixed_loads.length;
   }
 
   _relevantSignature() {
     // Excludes fast-ticking entities (surplus/power/etc.) that only feed 5-min-refreshed values —
-    // rendering on those would wipe focus/hover for nothing. Includes every per-device entity so a
-    // program selection, a forced start, or a server-side recompute all trigger a re-render.
+    // rendering on those would wipe focus/hover for nothing. Includes every per-program entity so
+    // an activation toggle, a forced start, or a server-side recompute all trigger a re-render.
     const base = this._baseConfig();
     const ids = ["sensor.solar_planner_scheduler_config", base.forecast_entity, base.forecast_tomorrow_entity].filter(Boolean);
-    for (const slug of this._config.devices) {
-      ids.push(`datetime.${slug}_start`, `binary_sensor.${slug}_should_run`, `select.${slug}_program`);
+    for (const row of this._programRows()) {
+      ids.push(`datetime.${row.slug}_start`, `binary_sensor.${row.slug}_should_run`, `switch.${row.slug}_active`);
     }
     const dark = !!this._hass.themes?.darkMode;
     return `${dark}|${ids.map((id) => `${id}:${this._hass.states[id]?.state}`).join("|")}`;
@@ -370,20 +391,21 @@ class SolarPlannerCard extends HTMLElement {
     return result;
   }
 
-  // One consolidated view of a device's server-computed state, read fresh every render from the
+  // One consolidated view of a program's server-computed state, read fresh every render from the
   // three entities solar_planner_scheduler exposes for it. Nothing here is computed client-side —
   // only the live drag preview in _bindGanttDrag still is (scorePct), for instant feedback before
   // the server has a chance to recompute.
-  _readDeviceState(slug) {
-    const start = this._hass.states[`datetime.${slug}_start`];
-    const shouldRun = this._hass.states[`binary_sensor.${slug}_should_run`];
-    const program = this._hass.states[`select.${slug}_program`];
+  _readProgramState(row) {
+    const start = this._hass.states[`datetime.${row.slug}_start`];
+    const shouldRun = this._hass.states[`binary_sensor.${row.slug}_should_run`];
+    const active = this._hass.states[`switch.${row.slug}_active`];
     const parseTs = (state) =>
       state && state.state && state.state !== "unknown" && state.state !== "unavailable" ? new Date(state.state) : null;
     const attrs = start?.attributes || {};
     return {
-      slug,
-      name: (attrs.friendly_name || slug).replace(/ start$/, ""),
+      slug: row.slug,
+      name: row.deviceName,
+      programName: row.programName,
       start: parseTs(start),
       end: attrs.end ? new Date(attrs.end) : null,
       shouldRun: shouldRun?.state === "on",
@@ -391,13 +413,12 @@ class SolarPlannerCard extends HTMLElement {
       locked: !!attrs.locked,
       powerW: attrs.power_w ?? null,
       profile: attrs.profile ?? null,
-      programOptions: program?.attributes?.options || [],
-      programCurrent: program?.state ?? "None",
+      active: active?.state === "on",
     };
   }
 
-  async _onSelectProgram(slug, programName) {
-    await this._hass.callService("select", "select_option", { entity_id: `select.${slug}_program`, option: programName });
+  async _onToggleActive(slug, nextActive) {
+    await this._hass.callService("switch", nextActive ? "turn_on" : "turn_off", { entity_id: `switch.${slug}_active` });
   }
 
   // Shared write path for the manual time input and gantt-bar drag — forcing the start time is a
@@ -408,7 +429,8 @@ class SolarPlannerCard extends HTMLElement {
 
   async _onManualTime(slug, timeValue) {
     if (!timeValue) return;
-    const ds = this._readDeviceState(slug);
+    const row = this._programRows().find((r) => r.slug === slug);
+    const ds = row ? this._readProgramState(row) : {};
     const next = new Date(ds.start || new Date());
     const [h, m] = timeValue.split(":").map(Number);
     next.setHours(h, m, 0, 0);
@@ -430,8 +452,6 @@ class SolarPlannerCard extends HTMLElement {
     const colors = dark ? COLORS.dark : COLORS.light;
     const deviceColorList = dark ? DEVICE_COLORS.dark : DEVICE_COLORS.light;
     const deviceColor = (index) => deviceColorList[index % deviceColorList.length];
-    // Fixed loads continue the same categorical sequence right after devices, not a shared gray.
-    const fixedLoadColor = (index) => deviceColorList[(this._config.devices.length + index) % deviceColorList.length];
 
     if (!points) {
       this.shadowRoot.innerHTML = `<ha-card><div style="padding:16px;color:var(--error-color)">
@@ -440,7 +460,10 @@ class SolarPlannerCard extends HTMLElement {
       return;
     }
 
-    const deviceStates = this._config.devices.map((slug) => this._readDeviceState(slug));
+    const programRows = this._programRows();
+    const deviceStates = programRows.map((row) => this._readProgramState(row));
+    // Fixed loads continue the same categorical sequence right after program rows, not a shared gray.
+    const fixedLoadColor = (index) => deviceColorList[(deviceStates.length + index) % deviceColorList.length];
     // Fixed loads recur daily — generate tomorrow's occurrence too once the view extends there.
     const fixedLoads = this._fixedLoadWindows(base.forecast_tomorrow_entity ? [0, 1] : [0]);
     const fixedLoadsByIndex = new Map();
@@ -456,7 +479,7 @@ class SolarPlannerCard extends HTMLElement {
           ds.start && ds.end
             ? {
                 deviceName: ds.name,
-                programName: ds.programCurrent,
+                programName: ds.programName,
                 durationMin: (ds.end.getTime() - ds.start.getTime()) / 60000,
                 powerW: ds.powerW,
                 profile: ds.profile,
@@ -647,7 +670,7 @@ class SolarPlannerCard extends HTMLElement {
         // minutes*power_w, not durationMin*powerW (powerW is null for profile-based programs).
         const energyWh = ds.profile ? ds.profile.reduce((s, p) => s + (p.minutes * p.power_w) / 60, 0) : (ds.powerW * durationMin) / 60;
         const powerLabel = ds.profile ? `${fmtWh(energyWh)} · peak ${fmtW(Math.max(...ds.profile.map((p) => p.power_w)))}` : fmtWh(energyWh);
-        const label = `${ds.programCurrent} · ${fmtTime(ds.start)}–${fmtTime(ds.end)} · ${powerLabel}`;
+        const label = `${ds.name} · ${ds.programName} · ${fmtTime(ds.start)}–${fmtTime(ds.end)} · ${powerLabel}`;
         const bx = x(ds.start);
         const bw = Math.max(2, x(ds.end) - bx);
         bars.push(
@@ -674,19 +697,12 @@ class SolarPlannerCard extends HTMLElement {
       laneBars.push(rects);
     });
 
-    const unplaced = deviceStates.filter((ds) => ds.programCurrent !== "None" && !ds.start);
+    const unplaced = deviceStates.filter((ds) => ds.active && !ds.start);
 
     const deviceRows = deviceStates
       .map((ds, i) => {
-        const buttons = [...ds.programOptions.filter((o) => o !== "None"), "None"]
-          .map(
-            (opt) =>
-              `<button class="program-btn ${ds.programCurrent === opt ? "active" : ""}" data-device="${ds.slug}" data-program="${opt}">${opt}</button>`
-          )
-          .join("");
-        const slotRow =
-          ds.programCurrent !== "None"
-            ? `<div class="slot-row">
+        const slotRow = ds.active
+          ? `<div class="slot-row">
                 <input type="time" class="slot-time" data-device="${ds.slug}" value="${ds.start ? fmtTime(ds.start) : ""}">
                 ${ds.locked ? `<button class="auto-btn" data-device="${ds.slug}">Auto</button>` : ""}
                 ${
@@ -695,12 +711,12 @@ class SolarPlannerCard extends HTMLElement {
                     : ""
                 }
               </div>`
-            : "";
+          : "";
         return `<div class="device-select">
-          <div class="device-select-header"><span class="swatch" style="background:${deviceColor(i)}"></span><span class="device-name">${ds.name}</span>${
+          <div class="device-select-header"><span class="swatch" style="background:${deviceColor(i)}"></span><span class="device-name">${ds.name} · ${ds.programName}</span>${
           ds.shouldRun ? `<ha-icon class="running-icon" icon="mdi:play-circle" title="Currently running"></ha-icon>` : ""
         }</div>
-          <div class="program-buttons">${buttons}</div>
+          <button class="active-toggle ${ds.active ? "active" : ""}" data-row="${ds.slug}" data-active="${ds.active}">${ds.active ? "Active" : "Inactive"}</button>
           ${slotRow}
         </div>`;
       })
@@ -720,7 +736,7 @@ class SolarPlannerCard extends HTMLElement {
         const durationMin = (ds.end.getTime() - ds.start.getTime()) / 60000;
         return {
           deviceName: ds.name,
-          programName: ds.programCurrent,
+          programName: ds.programName,
           start: ds.start,
           end: ds.end,
           // A profile has no single flat powerW — sum each phase's own minutes*power_w instead.
@@ -790,9 +806,8 @@ class SolarPlannerCard extends HTMLElement {
         .device-select-header { font-size: 0.85em; color: var(--secondary-text-color); margin-bottom: 4px; }
         .device-select-header .swatch { margin-right: 5px; vertical-align: middle; }
         .running-icon { --mdc-icon-size: 14px; color: var(--success-color, #4caf50); margin-left: 5px; vertical-align: middle; }
-        .program-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
-        .program-btn { border: 1px solid var(--divider-color); background: none; border-radius: 12px; padding: 3px 10px; font-size: 0.8em; cursor: pointer; color: var(--primary-text-color); }
-        .program-btn.active { background: var(--primary-color); color: var(--text-primary-color, #fff); border-color: var(--primary-color); }
+        .active-toggle { border: 1px solid var(--divider-color); background: none; border-radius: 12px; padding: 3px 10px; font-size: 0.8em; cursor: pointer; color: var(--primary-text-color); }
+        .active-toggle.active { background: var(--primary-color); color: var(--text-primary-color, #fff); border-color: var(--primary-color); }
         .slot-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 0.85em; }
         .slot-time { border: 1px solid var(--divider-color); border-radius: 4px; background: none; color: var(--primary-text-color); }
         .auto-btn { background: none; border: none; color: var(--primary-color); cursor: pointer; font-size: 0.85em; padding: 0; margin-left: 8px; text-decoration: underline; }
@@ -869,8 +884,8 @@ class SolarPlannerCard extends HTMLElement {
       this._showTable = !this._showTable;
       this._render();
     });
-    this.shadowRoot.querySelectorAll(".program-btn").forEach((btn) => {
-      btn.addEventListener("click", () => this._onSelectProgram(btn.dataset.device, btn.dataset.program));
+    this.shadowRoot.querySelectorAll(".active-toggle").forEach((btn) => {
+      btn.addEventListener("click", () => this._onToggleActive(btn.dataset.row, btn.dataset.active !== "true"));
     });
     this.shadowRoot.querySelectorAll(".slot-time").forEach((input) => {
       input.addEventListener("change", () => this._onManualTime(input.dataset.device, input.value));
@@ -926,16 +941,18 @@ class SolarPlannerCard extends HTMLElement {
       const slug = rect.dataset.device;
 
       rect.addEventListener("pointerdown", (ev) => {
-        const ds = this._readDeviceState(slug);
+        const row = this._programRows().find((r) => r.slug === slug);
+        if (!row) return;
+        const ds = this._readProgramState(row);
         if (!ds.start || !ds.end) return;
         rect.setPointerCapture?.(ev.pointerId);
         const grabOffsetMs = timeAt(ev.clientX, ev.clientY).getTime() - ds.start.getTime();
         const points = this._theoreticalPoints();
         // No live background-consumption estimate: only declared consumers count (see coordinator.py).
         const baseLoad = 0;
-        const otherDeviceBars = this._config.devices
-          .filter((s) => s !== slug)
-          .map((s) => this._readDeviceState(s))
+        const otherDeviceBars = this._programRows()
+          .filter((r) => r.slug !== slug)
+          .map((r) => this._readProgramState(r))
           .filter((o) => o.start && o.end)
           .map((o) => ({ start: o.start, end: o.end, powerW: o.powerW, profile: o.profile }));
         const fixedLoads = this._fixedLoadWindows(this._baseConfig().forecast_tomorrow_entity ? [0, 1] : [0]);

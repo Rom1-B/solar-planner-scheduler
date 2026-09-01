@@ -10,9 +10,11 @@ from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import slugify
 
 from .const import (
     CONF_CONSUMPTION_ENTITY,
+    CONF_DEVICES,
     CONF_FIXED_LOADS,
     CONF_FORECAST_ENTITY,
     CONF_FORECAST_TOMORROW_ENTITY,
@@ -20,6 +22,7 @@ from .const import (
     CONF_NAME,
     CONF_POWER_PROFILE,
     CONF_PRODUCTION_ENTITY,
+    CONF_PROGRAMS,
     CONF_START_TIME,
 )
 
@@ -59,10 +62,27 @@ class BaseConfigSensor(SensorEntity):
             }
             for load in self._entry.options.get(CONF_FIXED_LOADS, [])
         ]
+        # Lets the card discover each device's programs, and the entity_id prefix shared by their
+        # switch/datetime/binary_sensor entities, from here instead of requiring them to be
+        # re-listed in the card's own YAML config. `slug` is computed with HA's own slugify() —
+        # the exact function entity_id generation itself uses — rather than left for the card to
+        # approximate from the display name.
+        devices = [
+            {
+                "name": device[CONF_NAME],
+                "slug": slugify(device[CONF_NAME]),
+                "programs": [
+                    {"name": program[CONF_NAME], "slug": slugify(f"{device[CONF_NAME]} {program[CONF_NAME]}")}
+                    for program in device.get(CONF_PROGRAMS, [])
+                ],
+            }
+            for device in self._entry.options.get(CONF_DEVICES, [])
+        ]
         return {
             "forecast_entity": data.get(CONF_FORECAST_ENTITY),
             "forecast_tomorrow_entity": data.get(CONF_FORECAST_TOMORROW_ENTITY),
             "production_entity": data.get(CONF_PRODUCTION_ENTITY),
             "consumption_entity": data.get(CONF_CONSUMPTION_ENTITY),
             "fixed_loads": fixed_loads,
+            "devices": devices,
         }

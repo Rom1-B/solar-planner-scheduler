@@ -44,14 +44,18 @@ from .scheduling import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# Store schema, per device name:
+# Store schema, per device name then per program name (each program of a device is independently
+# schedulable — the device itself is only a mutual-exclusion group, see _async_update_data):
 # {
-#   "selected": "Eco",                      # currently selected program, or NONE_PROGRAM
-#   "pending_forced_start": "2026-...",      # a just-set forced start not yet folded into "committed"
-#   "committed": {
-#       "start": "2026-...", "end": "2026-...", "coverage_pct": 95,
-#       "program": "Eco",                   # which program this committed slot was computed for
-#       "forced": False,                    # user-forced vs auto-computed
+#   "<device_name>": {
+#     "<program_name>": {
+#       "active": True,                       # whether this program is currently scheduled at all
+#       "pending_forced_start": "2026-...",   # a just-set forced start not yet folded into "committed"
+#       "committed": {
+#           "start": "2026-...", "end": "2026-...", "coverage_pct": 95,
+#           "forced": False,                  # user-forced vs auto-computed
+#       },
+#     },
 #   },
 # }
 #
@@ -62,6 +66,34 @@ _LOGGER = logging.getLogger(__name__)
 # never goes through `hass.config_entries.async_update_entry`, so routine actions (picking a
 # program, forcing a start time) never reload the entry or flicker every device's entities.
 STORAGE_VERSION = 1
+
+
+def _migrate_legacy_state(raw: dict) -> dict:
+    """Convert the pre-2026-09-01 schema ({device: {selected, pending_forced_start, committed}})
+    to the current one ({device: {program: {active, pending_forced_start, committed}}}).
+
+    Detection: a legacy device entry always has a "selected" key at that level; the current
+    schema never does (its keys are program names). Runs once, right after async_load() — the
+    result is saved back immediately (see async_load_state), so this heuristic never needs to
+    fire again in practice. Idempotent: a device already in the new shape passes through as-is.
+    """
+    migrated: dict[str, dict] = {}
+    for device_name, device_state in raw.items():
+        if "selected" not in device_state:
+            migrated[device_name] = device_state
+            continue
+        selected = device_state.get("selected", NONE_PROGRAM)
+        migrated[device_name] = {}
+        if selected != NONE_PROGRAM:
+            program_state: dict = {"active": True}
+            if "pending_forced_start" in device_state:
+                program_state["pending_forced_start"] = device_state["pending_forced_start"]
+            if "committed" in device_state:
+                committed = {**device_state["committed"]}
+                committed.pop("program", None)
+                program_state["committed"] = committed
+            migrated[device_name][selected] = program_state
+    return migrated
 
 
 @dataclass
@@ -169,8 +201,8 @@ def _fixed_load_windows(fixed_loads: list[dict], now: datetime) -> list[dict]:
     return windows
 
 
-class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSchedule]]):
-    """Polls the configured entities and recomputes each device's best slot for today."""
+class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str], DeviceSchedule]]):
+    """Polls the configured entities and recomputes each active program's best slot for today."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES))
@@ -179,65 +211,69 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         self._state: dict[str, dict] = {}
 
     async def async_load_state(self) -> None:
-        """Load persisted per-device state. Call once before the first refresh."""
-        self._state = await self._store.async_load() or {}
+        """Load persisted per-device-per-program state. Call once before the first refresh."""
+        raw = await self._store.async_load() or {}
+        self._state = _migrate_legacy_state(raw)
+        if self._state != raw:
+            await self._store.async_save(self._state)
 
-    def _device_state(self, name: str) -> dict:
-        return self._state.get(name, {})
+    def _program_state(self, device_name: str, program_name: str) -> dict:
+        return self._state.get(device_name, {}).get(program_name, {})
 
-    def get_selected_program(self, name: str, programs: list[dict] | None = None) -> str:
-        """Return the stored selection, or a program with non-empty auto_days if never chosen.
+    def is_program_active(self, device_name: str, program_name: str, program: dict) -> bool:
+        """Return the stored activation, or True if the program has non-empty auto_days and was
+        never toggled.
 
         A program declaring auto_days already says "run me on these days" — requiring a manual
-        pick on top of that (e.g. after a Store reset) would defeat auto_days' own purpose. Only
-        applies when nothing was ever stored; an explicit NONE_PROGRAM selection is left as-is.
+        toggle on top of that (e.g. after a Store reset) would defeat auto_days' own purpose. Only
+        applies when nothing was ever stored; an explicit False is left as-is.
         """
-        stored = self._device_state(name).get("selected")
+        stored = self._program_state(device_name, program_name).get("active")
         if stored is not None:
             return stored
-        if programs:
-            auto = next((p[CONF_NAME] for p in programs if p.get(CONF_AUTO_DAYS)), None)
-            if auto is not None:
-                return auto
-        return NONE_PROGRAM
+        return bool(program.get(CONF_AUTO_DAYS))
 
-    async def async_set_selected_program(self, name: str, program: str) -> None:
-        state = {**self._device_state(name), "selected": program}
-        if program == NONE_PROGRAM:
+    async def async_set_program_active(self, device_name: str, program_name: str, active: bool) -> None:
+        state = {**self._program_state(device_name, program_name), "active": active}
+        if not active:
             state.pop("committed", None)
             state.pop("pending_forced_start", None)
-        self._state[name] = state
+        self._state.setdefault(device_name, {})[program_name] = state
         await self._store.async_save(self._state)
         await self.async_request_refresh()
 
-    async def async_forget_program(self, name: str, program_name: str) -> None:
-        """Reset the stored selection to NONE_PROGRAM if it currently matches program_name.
+    async def async_forget_program(self, device_name: str, program_name: str) -> None:
+        """Drop this program's stored state entirely.
 
-        Called from config_flow's "remove program" step so the select entity doesn't keep
-        pointing at a program that no longer exists.
+        Called from config_flow's "remove program" step so no stale switch/datetime/binary_sensor
+        keeps pointing at a program that no longer exists.
         """
-        if self.get_selected_program(name) == program_name:
-            await self.async_set_selected_program(name, NONE_PROGRAM)
+        device_state = self._state.get(device_name)
+        if device_state is None or program_name not in device_state:
+            return
+        del device_state[program_name]
+        await self._store.async_save(self._state)
 
-    async def async_set_forced_start(self, name: str, start: datetime) -> None:
-        self._state[name] = {**self._device_state(name), "pending_forced_start": start.isoformat()}
+    async def async_set_forced_start(self, device_name: str, program_name: str, start: datetime) -> None:
+        state = {**self._program_state(device_name, program_name), "pending_forced_start": start.isoformat()}
+        self._state.setdefault(device_name, {})[program_name] = state
         await self._store.async_save(self._state)
         await self.async_request_refresh()
 
-    async def async_clear_forced_start(self, name: str) -> None:
-        state = {**self._device_state(name)}
+    async def async_clear_forced_start(self, device_name: str, program_name: str) -> None:
+        state = {**self._program_state(device_name, program_name)}
         state.pop("pending_forced_start", None)
         state.pop("committed", None)
-        self._state[name] = state
+        self._state.setdefault(device_name, {})[program_name] = state
         await self._store.async_save(self._state)
         await self.async_request_refresh()
 
-    def _pending_forced_start(self, name: str) -> datetime | None:
-        raw = self._device_state(name).get("pending_forced_start")
+    def _pending_forced_start(self, device_name: str, program_name: str) -> datetime | None:
+        raw = self._program_state(device_name, program_name).get("pending_forced_start")
         return dt_util.parse_datetime(raw) if raw else None
 
-    def _get_committed(self, name: str) -> dict | None:
-        raw = self._device_state(name).get("committed")
+    def _get_committed(self, device_name: str, program_name: str) -> dict | None:
+        raw = self._program_state(device_name, program_name).get("committed")
         if raw is None:
             return None
         start = dt_util.parse_datetime(raw["start"])
@@ -248,23 +284,21 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
             "start": start,
             "end": end,
             "coverage_pct": raw["coverage_pct"],
-            "program": raw["program"],
             "forced": raw.get("forced", False),
         }
 
     async def _set_committed(
-        self, name: str, start: datetime, end: datetime, coverage_pct: int | None, program: str, forced: bool
+        self, device_name: str, program_name: str, start: datetime, end: datetime, coverage_pct: int | None, forced: bool
     ) -> None:
-        state = {**self._device_state(name)}
+        state = {**self._program_state(device_name, program_name)}
         state["committed"] = {
             "start": start.isoformat(),
             "end": end.isoformat(),
             "coverage_pct": coverage_pct,
-            "program": program,
             "forced": forced,
         }
         state.pop("pending_forced_start", None)
-        self._state[name] = state
+        self._state.setdefault(device_name, {})[program_name] = state
         await self._store.async_save(self._state)
 
     def _failed_to_start(self, device: dict, now: datetime) -> bool:
@@ -287,7 +321,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         return power < idle_threshold
 
     def _reusable_committed(
-        self, name: str, device: dict, selected_program: str, duration_min: float, now: datetime, auto_days: list[str]
+        self, device_name: str, program_name: str, device: dict, duration_min: float, now: datetime, auto_days: list[str]
     ) -> tuple[dict | None, bool, bool, bool]:
         """Decide whether to reuse the already-committed slot instead of searching fresh.
 
@@ -295,20 +329,21 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         - should_search=True means the caller must run a fresh search (or apply a pending forced
           start, handled separately before this is even called).
         - dormant=True means show no schedule at all this cycle, without searching — the "not an
-          auto_day, selection unchanged" case.
+          auto_day" case.
 
-        Picking a program is always an explicit user action: a different program (or a changed
-        program duration) always forces should_search=True, regardless of auto_days. An unchanged
-        selection whose committed day has rolled over only searches again if today is one of
-        auto_days; otherwise it goes dormant until the selection changes.
+        A changed program duration always forces should_search=True, regardless of auto_days. A
+        committed day that has rolled over only searches again if today is one of auto_days;
+        otherwise it goes dormant until the program is toggled again (activation is scoped per
+        program, so there's no "different program selected" case to check here — a committed
+        entry is already scoped to this exact program).
 
         Without the "close" half of this, every refresh re-runs the search over the whole
         remaining day; a slot later in the day (typically near solar noon) can keep looking
         marginally better than an imminent one, so the "best" start keeps sliding forward and
         never actually arrives.
         """
-        committed = self._get_committed(name)
-        if committed is None or committed["program"] != selected_program:
+        committed = self._get_committed(device_name, program_name)
+        if committed is None:
             return None, False, True, False
         locked_duration = (committed["end"] - committed["start"]).total_seconds() / 60
         if abs(locked_duration - duration_min) > 0.01:
@@ -338,11 +373,14 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         committed: list[dict],
         max_power: float,
         day_offset: int,
+        blocked: list[dict] | None = None,
     ) -> dict | None:
         buckets = _day_buckets(dt_util.now(), day_offset)
         if not buckets:
             return None
-        placement: Placement | None = find_best_placement(buckets, item, max_power, points, base_load, committed)
+        placement: Placement | None = find_best_placement(
+            buckets, item, max_power, points, base_load, committed, blocked or ()
+        )
         if placement is None:
             return None
         start = buckets[placement.index]["start"]
@@ -373,7 +411,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
             profile=item.get("profile") if item else None,
         )
 
-    async def _async_update_data(self) -> dict[str, DeviceSchedule]:
+    async def _async_update_data(self) -> dict[tuple[str, str], DeviceSchedule]:
         data = self.entry.data
         options = self.entry.options
 
@@ -391,59 +429,67 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[str, DeviceSch
         max_power = data.get(CONF_MAX_SIMULTANEOUS_POWER)
         fixed_loads = _fixed_load_windows(options.get(CONF_FIXED_LOADS, []), now)
 
-        results: dict[str, DeviceSchedule] = {}
+        results: dict[tuple[str, str], DeviceSchedule] = {}
         committed = list(fixed_loads)
         for device in options.get(CONF_DEVICES, []):
-            name = device[CONF_NAME]
-            selected = self.get_selected_program(name, device.get(CONF_PROGRAMS, []))
-            if selected == NONE_PROGRAM:
-                results[name] = DeviceSchedule(name, None, None, None)
-                continue
-            program = next((p for p in device.get(CONF_PROGRAMS, []) if p[CONF_NAME] == selected), None)
-            if program is None:
-                results[name] = DeviceSchedule(name, None, None, None)
-                continue
+            device_name = device[CONF_NAME]
+            # Own committed slots of this device's other programs, resolved so far this cycle —
+            # a hard exclusion zone (regardless of power) for the remaining programs of the same
+            # device, on top of `committed`'s cross-device power-budget sharing.
+            device_committed: list[dict] = []
+            for program in device.get(CONF_PROGRAMS, []):
+                program_name = program[CONF_NAME]
+                key = (device_name, program_name)
+                if not self.is_program_active(device_name, program_name, program):
+                    results[key] = DeviceSchedule(device_name, None, None, None)
+                    continue
 
-            # Every program has phases (power_profile), the config UI has never produced anything else.
-            profile = program[CONF_POWER_PROFILE]
-            duration_min = program.get(CONF_DURATION_MIN)
-            if duration_min is None:
-                duration_min = sum(phase[CONF_MINUTES] for phase in profile)
-            item = {"profile": profile, "duration_min": duration_min}
+                # Every program has phases (power_profile), the config UI has never produced anything else.
+                profile = program[CONF_POWER_PROFILE]
+                duration_min = program.get(CONF_DURATION_MIN)
+                if duration_min is None:
+                    duration_min = sum(phase[CONF_MINUTES] for phase in profile)
+                item = {"profile": profile, "duration_min": duration_min}
 
-            def _append_committed(slot: dict | None) -> None:
-                if slot is not None:
-                    committed.append({**item, "start": slot["start"], "end": slot["end"]})
-
-            pending_start = self._pending_forced_start(name)
-            if pending_start is not None:
-                slot = self._compute_slot_from_start(item, duration_min, pending_start, points, base_load, committed)
-                await self._set_committed(name, slot["start"], slot["end"], slot["coverage_pct"], selected, True)
-                _append_committed(slot)
-                results[name] = self._schedule_from_slot(name, slot, item, True)
-                continue
-
-            auto_days = program.get(CONF_AUTO_DAYS, [])
-            slot, forced, should_search, dormant = self._reusable_committed(
-                name, device, selected, duration_min, now, auto_days
-            )
-            if dormant:
-                results[name] = DeviceSchedule(name, None, None, None)
-                continue
-            if should_search:
-                if points:
-                    slot = self._find_slot_for_day(item, duration_min, points, base_load, committed, max_power, 0)
-                    forced = False
+                def _append_committed(slot: dict | None) -> None:
                     if slot is not None:
-                        await self._set_committed(
-                            name, slot["start"], slot["end"], slot["coverage_pct"], selected, False
-                        )
-                else:
-                    # No forecast data yet: every candidate would tie at 0% coverage, and the
-                    # search would silently keep the very first bucket ("now") — wait for real
-                    # data on the next refresh instead of committing to a guessed slot.
-                    slot = None
+                        entry = {**item, "start": slot["start"], "end": slot["end"]}
+                        committed.append(entry)
+                        device_committed.append(entry)
 
-            _append_committed(slot)
-            results[name] = self._schedule_from_slot(name, slot, item, forced)
+                pending_start = self._pending_forced_start(device_name, program_name)
+                if pending_start is not None:
+                    slot = self._compute_slot_from_start(item, duration_min, pending_start, points, base_load, committed)
+                    await self._set_committed(
+                        device_name, program_name, slot["start"], slot["end"], slot["coverage_pct"], True
+                    )
+                    _append_committed(slot)
+                    results[key] = self._schedule_from_slot(device_name, slot, item, True)
+                    continue
+
+                auto_days = program.get(CONF_AUTO_DAYS, [])
+                slot, forced, should_search, dormant = self._reusable_committed(
+                    device_name, program_name, device, duration_min, now, auto_days
+                )
+                if dormant:
+                    results[key] = DeviceSchedule(device_name, None, None, None)
+                    continue
+                if should_search:
+                    if points:
+                        slot = self._find_slot_for_day(
+                            item, duration_min, points, base_load, committed, max_power, 0, blocked=device_committed
+                        )
+                        forced = False
+                        if slot is not None:
+                            await self._set_committed(
+                                device_name, program_name, slot["start"], slot["end"], slot["coverage_pct"], False
+                            )
+                    else:
+                        # No forecast data yet: every candidate would tie at 0% coverage, and the
+                        # search would silently keep the very first bucket ("now") — wait for real
+                        # data on the next refresh instead of committing to a guessed slot.
+                        slot = None
+
+                _append_committed(slot)
+                results[key] = self._schedule_from_slot(device_name, slot, item, forced)
         return results

@@ -33,27 +33,35 @@ session:
 - **Device**: name + optional power sensor.
 - **Program**: pick a device, name it, then enter its phases, one per line, e.g. `20min@150W` or
   `1.5h@800W` (multi-phase supported), and optionally check which days of the week it should keep
-  auto-repeating on its own, unattended. A device can have several programs; `select.<device>_program`
-  picks the active one ("None" disables it). "Edit a program's phases" replaces both the phases and
-  the auto-schedule days in place, pre-filled with the current ones.
+  auto-repeating on its own, unattended. A device can have several programs, and several of a
+  device's programs can be active at once (e.g. two different wash cycles the same day) —
+  `switch.<device>_<program>_active` turns each one on or off independently. The only constraint is
+  that a device's own programs never overlap in time; a different device is only limited by the
+  shared power budget. "Edit a program's phases" replaces both the phases and the auto-schedule
+  days in place, pre-filled with the current ones.
 - **Fixed load**: a recurring non-schedulable load (start time + phases, same syntax as programs),
   subtracted from available solar capacity. Also editable in place.
 
-A device is scheduled once per program selection: picking a program always searches for today's
-best slot immediately, regardless of auto-schedule days. Once that committed slot has run (its
-window has elapsed), it won't be proposed a second slot that day, and won't keep rescheduling itself
-on later days unless the auto-schedule days are checked for one of them, no separate "reset"
-needed, picking the program again (or a new day landing on an auto-schedule day) naturally triggers
-a fresh search. Leaving auto-schedule days unchecked is a legitimate choice for on-demand devices
-with no fixed rhythm (e.g. a dishwasher run whenever it's loaded): it just means the device won't
-repeat on its own, not that it can't be scheduled.
+A program is scheduled once per activation: turning its switch on always searches for today's best
+slot immediately, regardless of auto-schedule days. Once that committed slot has run (its window has
+elapsed), it won't be proposed a second slot that day, and won't keep rescheduling itself on later
+days unless the auto-schedule days are checked for one of them, no separate "reset" needed,
+toggling the switch off then on again (or a new day landing on an auto-schedule day) naturally
+triggers a fresh search. Leaving auto-schedule days unchecked is a legitimate choice for on-demand
+programs with no fixed rhythm (e.g. a dishwasher run whenever it's loaded): it just means the
+program won't repeat on its own, not that it can't be scheduled — and it stays off by default until
+you turn it on. A program with auto-schedule days, by contrast, defaults to on the first time it's
+ever seen (no need to turn it on by hand after installing or updating).
 
-`datetime.<device>_start` shows the computed next start and doubles as a manual override: dragging
-the bar on the card, or editing the entity directly, forces that time (its `locked` attribute turns
-`true`). Click the "Auto" button (or call the `reset_to_auto` service) to cancel a forced time and
-let the coordinator search again immediately. The coordinator always commits the best slot it finds
-for today, however mediocre; if you'd rather wait for a better day, the forecast curve and
-drag-and-drop preview already show whether that's worth it, force a time yourself if so.
+`datetime.<device>_<program>_start` shows the computed next start and doubles as a manual override:
+dragging the bar on the card, or editing the entity directly, forces that time (its `locked`
+attribute turns `true`). Click the "Auto" button (or call the `reset_to_auto` service) to cancel a
+forced time and let the coordinator search again immediately. The coordinator always commits the
+best slot it finds for today, however mediocre; if you'd rather wait for a better day, the forecast
+curve and drag-and-drop preview already show whether that's worth it, force a time yourself if so.
+Dragging a program's bar onto a window that overlaps another active program of the *same* device is
+not blocked — the same-device exclusion only applies to the automatic search, not to an explicit
+manual override.
 
 Only declared consumers (fixed loads, scheduled devices) are subtracted from available solar —
 there's no live "background consumption" estimate, since a single instantaneous reading spikes
@@ -64,8 +72,9 @@ The config flow UI is available in English and French, following your Home Assis
 
 ## Entities
 
-Per device: `datetime.<device>_start` (computed or forced start time, `coverage_pct`/`profile`/`locked`
-attributes), `binary_sensor.<device>_should_run`, `select.<device>_program`.
+Per (device, program) pair: `datetime.<device>_<program>_start` (computed or forced start time,
+`coverage_pct`/`profile`/`locked` attributes), `binary_sensor.<device>_<program>_should_run`,
+`switch.<device>_<program>_active`.
 
 The integration never turns a device on/off itself: react to `should_run` in an automation.
 

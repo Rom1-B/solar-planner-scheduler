@@ -21,9 +21,29 @@ const BASE_CONFIG_ENTITY = {
       production_entity: null,
       consumption_entity: null,
       fixed_loads: [],
+      devices: [],
     },
   },
 };
+
+// One program named "Eco" per device slug, with the program's own row-slug equal to the device
+// slug — matches the real integration when a device has exactly one program, and keeps this
+// suite's entity_ids (datetime.<slug>_start etc.) unchanged from before per-program rows existed.
+// `names` overrides the display name per slug (defaults to the slug itself) — matches
+// sensor.py's real "name" field (the device's configured CONF_NAME, not its entity_id slug).
+function singleProgramDevices(slugs, { programName = "Eco", names = {} } = {}) {
+  return slugs.map((slug) => ({ name: names[slug] ?? slug, slug, programs: [{ name: programName, slug }] }));
+}
+
+// Overwrites the config sensor's devices attribute — call after setConfig({devices: [...]}) with
+// a matching list of slugs, or _programRows() finds nothing to render.
+function setDevicesAttr(card, devices) {
+  const entity = card._hass.states["sensor.solar_planner_scheduler_config"];
+  card._hass.states["sensor.solar_planner_scheduler_config"] = {
+    ...entity,
+    attributes: { ...entity.attributes, devices },
+  };
+}
 
 // Card no longer reads forecast_tomorrow_entity from its own config — flips it on in the shared
 // config sensor's attributes instead.
@@ -65,13 +85,13 @@ function buildForecast(dayStart, peakKw = 3, withConfidence = false) {
   return detailedForecast;
 }
 
-// The 3 entities solar_planner_scheduler exposes for one device, matching what _readDeviceState reads.
+// The 3 entities solar_planner_scheduler exposes for one program row, matching what
+// _readProgramState reads.
 function deviceEntities(
   slug,
   {
     name = slug,
-    program = "Eco",
-    options = ["Eco", "None"],
+    active = true,
     start = null,
     end = null,
     coveragePct = null,
@@ -94,7 +114,7 @@ function deviceEntities(
       },
     },
     [`binary_sensor.${slug}_should_run`]: { state: shouldRun ? "on" : "off" },
-    [`select.${slug}_program`]: { state: program, attributes: { options } },
+    [`switch.${slug}_active`]: { state: active ? "on" : "off" },
   };
 }
 
@@ -103,7 +123,7 @@ function baseConfig() {
 }
 
 // Two devices (Lave-linge 120min@1800W, Lave-vaisselle 90min@1200W) plus one PAC fixed load —
-// the baseline most tests build on. withActiveSelections=false gives both devices "None" selected.
+// the baseline most tests build on. withActiveSelections=false gives both programs an inactive switch.
 // PAC's start_time is computed relative to the real current time, not hardcoded — a fixed "13:00"
 // eventually falls outside the forecast's 6h-20h daylight window during a long test/dev session.
 function buildCard({ withActiveSelections = true } = {}) {
@@ -127,16 +147,20 @@ function buildCard({ withActiveSelections = true } = {}) {
         "lave_linge",
         withActiveSelections
           ? { name: "Lave-linge", start: slotStart, end: new Date(slotStart.getTime() + 120 * 60000), powerW: 1800, coveragePct: 100 }
-          : { name: "Lave-linge", program: "None" }
+          : { name: "Lave-linge", active: false }
       ),
       ...deviceEntities(
         "lave_vaisselle",
         withActiveSelections
           ? { name: "Lave-vaisselle", start: slotStart, end: new Date(slotStart.getTime() + 90 * 60000), powerW: 1200, coveragePct: 100 }
-          : { name: "Lave-vaisselle", program: "None" }
+          : { name: "Lave-vaisselle", active: false }
       ),
     },
   };
+  setDevicesAttr(
+    card,
+    singleProgramDevices(["lave_linge", "lave_vaisselle"], { names: { lave_linge: "Lave-linge", lave_vaisselle: "Lave-vaisselle" } })
+  );
   setFixedLoads(card, [{ name: "PAC", start_time: pacStartTime, power_profile: [{ minutes: 60, power_w: 1500 }] }]);
   return card;
 }
@@ -198,12 +222,12 @@ test('the table shows energy in kWh and "-" for a fixed load\'s program column',
   assert.match(html, /<td>Lave-linge<\/td><td>Eco<\/td>/);
 });
 
-test("a device with 'None' selected renders no gantt bar or stack segment", () => {
+test("an inactive program renders no gantt bar or stack segment", () => {
   const card = buildCard({ withActiveSelections: false });
   card._render();
   const html = card.shadowRoot.innerHTML;
   assert.equal(rectsWithClass(html, "stack-confirmed").length, 0, "nothing should be scheduled without an active program");
-  assert.ok(html.includes('data-program="None"'), "expected a 'None' program button to render");
+  assert.ok(html.includes('class="active-toggle "'), "expected an inactive toggle button to render");
 });
 
 test("a slot scheduled after sunset still renders within the chart (view widens beyond daylight)", () => {
@@ -362,9 +386,10 @@ test("a full-day fixed load doesn't pull the default view back to midnight", () 
     states: {
       ...BASE_CONFIG_ENTITY,
       "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(dayStart) } },
-      ...deviceEntities("lave_linge", { name: "Lave-linge", program: "None" }),
+      ...deviceEntities("lave_linge", { name: "Lave-linge", active: false }),
     },
   };
+  setDevicesAttr(card, singleProgramDevices(["lave_linge"]));
   setFixedLoads(card, [{ name: "Conso de base", start_time: "00:00", power_profile: [{ minutes: 1440, power_w: 110 }] }]);
   card._render();
   const html = card.shadowRoot.innerHTML;
@@ -460,6 +485,7 @@ test("stacked chart segments render at exact phase-boundary granularity, not a f
       }),
     },
   };
+  setDevicesAttr(card, singleProgramDevices(["lave_vaisselle"]));
   card._render();
   const rects = rectsWithClass(card.shadowRoot.innerHTML, "stack-confirmed");
   assert.equal(rects.length, 5, `expected exactly one segment per phase, got ${rects.length}`);
@@ -502,6 +528,7 @@ test("a profile-based program's energy label sums its phases, not durationMin ti
       }),
     },
   };
+  setDevicesAttr(card, singleProgramDevices(["lave_vaisselle"]));
   card._render();
   const html = card.shadowRoot.innerHTML;
   assert.ok(!html.includes("0.0 kWh"), "expected a real energy total, not the null-powerW artifact");
@@ -538,6 +565,7 @@ test("a short power spike renders at its true peak, not diluted by a bucket aver
       }),
     },
   };
+  setDevicesAttr(card, singleProgramDevices(["lave_vaisselle"]));
   card._render();
   const rects = rectsWithClass(card.shadowRoot.innerHTML, "stack-confirmed");
   assert.equal(rects.length, 3, `expected exactly one segment per phase, got ${rects.length}`);
@@ -553,9 +581,10 @@ test("fixed loads get distinct colors, not a shared gray", () => {
     states: {
       ...BASE_CONFIG_ENTITY,
       "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(new Date()) } },
-      ...deviceEntities("lave_linge", { name: "Lave-linge", program: "None" }),
+      ...deviceEntities("lave_linge", { name: "Lave-linge", active: false }),
     },
   };
+  setDevicesAttr(card, singleProgramDevices(["lave_linge"]));
   setFixedLoads(card, [
     { name: "PAC", start_time: "13:00", power_profile: [{ minutes: 60, power_w: 1500 }] },
     { name: "Base conso", start_time: "00:00", power_profile: [{ minutes: 1440, power_w: 300 }] },
@@ -567,13 +596,22 @@ test("fixed loads get distinct colors, not a shared gray", () => {
   assert.notEqual(styleMatches[0], styleMatches[1], "the two fixed loads must not share the same color");
 });
 
-test("selecting a program calls select.select_option with the right entity and option", async () => {
+test("activating a program calls switch.turn_on with the right entity", async () => {
   const card = buildCard({ withActiveSelections: false });
   const calls = [];
   card._hass.callService = async (domain, service, data) => calls.push({ domain, service, data });
-  await card._onSelectProgram("lave_linge", "Eco");
+  await card._onToggleActive("lave_linge", true);
   assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0], { domain: "select", service: "select_option", data: { entity_id: "select.lave_linge_program", option: "Eco" } });
+  assert.deepEqual(calls[0], { domain: "switch", service: "turn_on", data: { entity_id: "switch.lave_linge_active" } });
+});
+
+test("deactivating a program calls switch.turn_off with the right entity", async () => {
+  const card = buildCard();
+  const calls = [];
+  card._hass.callService = async (domain, service, data) => calls.push({ domain, service, data });
+  await card._onToggleActive("lave_linge", false);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], { domain: "switch", service: "turn_off", data: { entity_id: "switch.lave_linge_active" } });
 });
 
 test("setting a manual time writes a single forced datetime.set_value call", async () => {
@@ -645,6 +683,7 @@ test("stack order mirrors the gantt's top-to-bottom config order, not reversed",
       ...deviceEntities("b", { name: "B", start: slotStart, end: new Date(slotStart.getTime() + 60 * 60000), powerW: 800, coveragePct: 90 }),
     },
   };
+  setDevicesAttr(card, singleProgramDevices(["a", "b"]));
   card._render();
   const html = card.shadowRoot.innerHTML;
 

@@ -87,6 +87,28 @@ def test_max_simultaneous_power_stays_a_hard_filter_even_over_zero_deficit_candi
     assert placement.index != 0
 
 
+def test_blocked_excludes_a_candidate_even_with_abundant_power_budget():
+    """Same-device mutual exclusion (coordinator.py's device_committed): a blocked window is
+    excluded outright, unlike `others` which only competes for the shared power budget.
+    """
+    watts = [3000, 3000, 3000, 3000]
+    buckets = mk_buckets(watts)
+    points = mk_points(watts)
+    blocked = [{"start": buckets[0]["start"], "end": buckets[0]["start"] + timedelta(milliseconds=BUCKET_MS)}]
+    item = {"power_w": 2000, "duration_min": 30}
+    placement = find_best_placement(buckets, item, 100000, points, 0, [], blocked)
+    assert placement.index == 1
+
+
+def test_blocked_defaults_to_no_exclusion():
+    watts = [3000, 3000, 3000, 3000]
+    buckets = mk_buckets(watts)
+    points = mk_points(watts)
+    item = {"power_w": 2000, "duration_min": 30}
+    placement = find_best_placement(buckets, item, 100000, points, 0, [])
+    assert placement.index == 0
+
+
 def test_schedule_proposals_returns_null_start_when_item_cannot_fit():
     watts = [500, 500]
     buckets = mk_buckets(watts)

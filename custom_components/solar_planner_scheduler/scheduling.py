@@ -172,11 +172,15 @@ def find_best_placement(
     points: Sequence[dict],
     base_load: float,
     others: Sequence[dict],
+    blocked: Sequence[dict] = (),
 ) -> Optional[Placement]:
     """Finds the start bucket maximizing coverage ratio (unrounded — avoids ties from rounding).
 
     max_simultaneous_power stays a hard filter via _fits_peak_ceiling; the candidate step comes
-    from `buckets` itself, not a hardcoded 30 min.
+    from `buckets` itself, not a hardcoded 30 min. `blocked` excludes candidates entirely on
+    overlap, independent of power — used for same-device mutual exclusion between programs, where
+    `others`' power-budget sharing isn't enough (two low-power programs of the same physical
+    device could otherwise be placed on the same, physically impossible, overlapping window).
     """
     step = buckets[1]["start"] - buckets[0]["start"] if len(buckets) > 1 else timedelta(milliseconds=DRAG_SNAP_MS)
     step_minutes = step.total_seconds() / 60
@@ -187,6 +191,8 @@ def find_best_placement(
     for i in range(0, len(buckets) - span + 1):
         start = buckets[i]["start"]
         end = start + timedelta(minutes=item["duration_min"])
+        if any(start < b["end"] and end > b["start"] for b in blocked):
+            continue
         candidate = {**item, "start": start, "end": end}
         item_segments = phase_segments(candidate)
         if not _fits_peak_ceiling(item_segments, other_segments, max_simultaneous_power):

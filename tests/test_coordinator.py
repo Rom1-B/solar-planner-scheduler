@@ -31,6 +31,7 @@ from custom_components.solar_planner_scheduler.coordinator import (
     SolarPlannerSchedulerCoordinator,
     _ceil_to_five_minutes,
     _day_buckets,
+    _migrate_legacy_state,
     _read_forecast_points,
     compute_locked,
 )
@@ -144,113 +145,111 @@ def _coordinator(hass) -> SolarPlannerSchedulerCoordinator:
     return SolarPlannerSchedulerCoordinator(hass, entry)
 
 
-def _seed_committed(coordinator, name, schedule, program="Eco", forced=False):
-    coordinator._state[name] = {
-        **coordinator._state.get(name, {}),
+def _seed_committed(coordinator, device_name, program_name, schedule, forced=False):
+    coordinator._state.setdefault(device_name, {})[program_name] = {
+        **coordinator._state.get(device_name, {}).get(program_name, {}),
         "committed": {
             "start": schedule.start.isoformat(),
             "end": schedule.end.isoformat(),
             "coverage_pct": schedule.coverage_pct,
-            "program": program,
             "forced": forced,
         },
     }
 
 
-async def test_set_selected_program_does_not_touch_config_entry_options(hass):
-    """The whole point of the rationalization: picking a program must never call
+async def test_set_program_active_does_not_touch_config_entry_options(hass):
+    """The whole point of the rationalization: activating a program must never call
     hass.config_entries.async_update_entry (that's what used to reload the entire integration and
     flicker every device's entities)."""
     coordinator = _coordinator(hass)
     options_before = coordinator.entry.options
 
-    await coordinator.async_set_selected_program("lave_linge", "Eco")
+    await coordinator.async_set_program_active("lave_linge", "Eco", True)
     await _flush(coordinator)
 
     assert coordinator.entry.options is options_before
-    assert coordinator.get_selected_program("lave_linge") == "Eco"
+    assert coordinator.is_program_active("lave_linge", "Eco", {}) is True
 
 
-async def test_selecting_none_clears_any_committed_slot(hass):
+async def test_deactivating_a_program_clears_any_committed_slot(hass):
     coordinator = _coordinator(hass)
     now = dt_util.now()
-    _seed_committed(coordinator, "lave_linge", DeviceSchedule("lave_linge", now, now + timedelta(minutes=30), 95))
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", now, now + timedelta(minutes=30), 95))
 
-    await coordinator.async_set_selected_program("lave_linge", NONE_PROGRAM)
+    await coordinator.async_set_program_active("lave_linge", "Eco", False)
     await _flush(coordinator)
 
-    assert coordinator._get_committed("lave_linge") is None
+    assert coordinator._get_committed("lave_linge", "Eco") is None
 
 
-async def test_forget_program_resets_the_selection_only_if_it_matches(hass):
+async def test_forget_program_drops_only_the_matching_programs_state(hass):
     coordinator = _coordinator(hass)
-    await coordinator.async_set_selected_program("lave_linge", "Eco")
+    await coordinator.async_set_program_active("lave_linge", "Eco", True)
+    await coordinator.async_set_program_active("lave_linge", "Intense", True)
     await _flush(coordinator)
 
-    await coordinator.async_forget_program("lave_linge", "Intense")  # a different program: no-op
-    await _flush(coordinator)
-    assert coordinator.get_selected_program("lave_linge") == "Eco"
+    await coordinator.async_forget_program("lave_linge", "Intense")
+
+    assert "Intense" not in coordinator._state["lave_linge"]
+    assert coordinator.is_program_active("lave_linge", "Eco", {}) is True
 
     await coordinator.async_forget_program("lave_linge", "Eco")
-    await _flush(coordinator)
-    assert coordinator.get_selected_program("lave_linge") == NONE_PROGRAM
+
+    assert "Eco" not in coordinator._state["lave_linge"]
 
 
-def test_get_selected_program_defaults_to_the_auto_days_program_when_never_chosen(hass):
+def test_is_program_active_defaults_to_true_when_auto_days_non_empty_and_never_toggled(hass):
     """A program declaring auto_days already means "run me on these days" — a Store reset (e.g.
     after a HA restart with nothing persisted yet) must not silently disable that until the user
-    re-picks it by hand."""
+    re-toggles it by hand."""
     coordinator = _coordinator(hass)
-    programs = [
-        {CONF_NAME: "Eco", CONF_AUTO_DAYS: []},
-        {CONF_NAME: "Chauffe", CONF_AUTO_DAYS: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]},
-    ]
+    program = {CONF_NAME: "Chauffe", CONF_AUTO_DAYS: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}
 
-    assert coordinator.get_selected_program("ballon", programs) == "Chauffe"
+    assert coordinator.is_program_active("ballon", "Chauffe", program) is True
 
 
-def test_get_selected_program_ignores_auto_days_default_with_no_auto_program(hass):
+def test_is_program_active_defaults_to_false_with_empty_auto_days(hass):
     coordinator = _coordinator(hass)
-    programs = [{CONF_NAME: "Eco", CONF_AUTO_DAYS: []}]
+    program = {CONF_NAME: "Eco", CONF_AUTO_DAYS: []}
 
-    assert coordinator.get_selected_program("lave_vaisselle", programs) == NONE_PROGRAM
+    assert coordinator.is_program_active("lave_vaisselle", "Eco", program) is False
 
 
-async def test_get_selected_program_honors_an_explicit_none_over_the_auto_days_default(hass):
-    """The user turning a program off on purpose (e.g. "no wash today") must stick, even though a
-    program with auto_days exists — the default only applies when nothing was ever stored."""
+async def test_is_program_active_honors_an_explicit_false_over_the_auto_days_default(hass):
+    """The user turning a program off on purpose (e.g. "no wash today") must stick, even though it
+    declares auto_days — the default only applies when nothing was ever stored."""
     coordinator = _coordinator(hass)
-    programs = [{CONF_NAME: "Chauffe", CONF_AUTO_DAYS: ["mon"]}]
-    await coordinator.async_set_selected_program("ballon", NONE_PROGRAM)
+    program = {CONF_NAME: "Chauffe", CONF_AUTO_DAYS: ["mon"]}
+    await coordinator.async_set_program_active("ballon", "Chauffe", False)
     await _flush(coordinator)
 
-    assert coordinator.get_selected_program("ballon", programs) == NONE_PROGRAM
+    assert coordinator.is_program_active("ballon", "Chauffe", program) is False
 
 
 async def test_set_forced_start_is_readable_before_a_refresh_folds_it_in(hass):
     coordinator = _coordinator(hass)
     start = datetime(2026, 8, 30, 13, 0, tzinfo=timezone.utc)
 
-    await coordinator.async_set_forced_start("lave_linge", start)
+    await coordinator.async_set_forced_start("lave_linge", "Eco", start)
     await _flush(coordinator)
 
-    assert coordinator._pending_forced_start("lave_linge") == start
+    assert coordinator._pending_forced_start("lave_linge", "Eco") == start
 
 
 async def test_clear_forced_start_drops_both_pending_and_committed(hass):
     coordinator = _coordinator(hass)
     now = dt_util.now()
     _seed_committed(
-        coordinator, "lave_linge", DeviceSchedule("lave_linge", now, now + timedelta(minutes=30), 95), forced=True
+        coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", now, now + timedelta(minutes=30), 95), forced=True
     )
-    await coordinator.async_set_forced_start("lave_linge", now + timedelta(hours=1))
+    await coordinator.async_set_forced_start("lave_linge", "Eco", now + timedelta(hours=1))
     await _flush(coordinator)
 
-    await coordinator.async_clear_forced_start("lave_linge")
+    await coordinator.async_clear_forced_start("lave_linge", "Eco")
     await _flush(coordinator)
 
-    assert coordinator._get_committed("lave_linge") is None
-    assert coordinator._pending_forced_start("lave_linge") is None
+    assert coordinator._get_committed("lave_linge", "Eco") is None
+    assert coordinator._pending_forced_start("lave_linge", "Eco") is None
 
 
 # --- _reusable_committed() ---------------------------------------------------------------------
@@ -261,11 +260,11 @@ def test_reusable_committed_reuses_an_imminent_slot(hass):
     now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
     start = now + timedelta(minutes=2)
     end = start + timedelta(minutes=30)
-    _seed_committed(coordinator, "lave_linge", DeviceSchedule("lave_linge", start, end, 95))
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
 
-    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", {}, "Eco", 30, now, [])
+    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
 
-    assert slot == {"start": start, "end": end, "coverage_pct": 95, "program": "Eco", "forced": False}
+    assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False}
     assert forced is False
     assert should_search is False
     assert dormant is False
@@ -276,23 +275,21 @@ def test_reusable_committed_searches_when_the_target_is_far_off(hass):
     now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
     start = now + timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES + 1)
     end = start + timedelta(minutes=30)
-    _seed_committed(coordinator, "lave_linge", DeviceSchedule("lave_linge", start, end, 95))
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
 
-    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", {}, "Eco", 30, now, [])
+    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
 
     assert should_search is True
     assert dormant is False
 
 
-def test_reusable_committed_searches_immediately_when_a_different_program_is_selected(hass):
+def test_reusable_committed_searches_when_nothing_is_committed_yet(hass):
+    """No committed entry (a program just activated, or never toggled before) always means a
+    fresh search — there's nothing to compare against."""
     coordinator = _coordinator(hass)
     now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
-    start = now + timedelta(minutes=2)
-    _seed_committed(
-        coordinator, "lave_linge", DeviceSchedule("lave_linge", start, start + timedelta(minutes=30), 95), program="Eco"
-    )
 
-    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", {}, "Intense", 30, now, [])
+    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
 
     assert should_search is True
     assert dormant is False
@@ -302,25 +299,25 @@ def test_reusable_committed_searches_when_the_program_duration_changed(hass):
     coordinator = _coordinator(hass)
     now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
     start = now + timedelta(minutes=2)
-    _seed_committed(coordinator, "lave_linge", DeviceSchedule("lave_linge", start, start + timedelta(minutes=30), 95))
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, start + timedelta(minutes=30), 95))
 
-    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", {}, "Eco", 60, now, [])
+    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", "Eco", {}, 60, now, [])
 
     assert should_search is True
 
 
 def test_reusable_committed_keeps_showing_an_elapsed_slot_on_the_same_day(hass):
-    """A device is scheduled once per selection: once its window has passed, don't propose another
-    slot the same day, but keep displaying what already ran instead of blanking out."""
+    """A program is scheduled once per activation: once its window has passed, don't propose
+    another slot the same day, but keep displaying what already ran instead of blanking out."""
     coordinator = _coordinator(hass)
     now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
     start = now - timedelta(minutes=40)
     end = start + timedelta(minutes=30)
-    _seed_committed(coordinator, "lave_linge", DeviceSchedule("lave_linge", start, end, 95))
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
 
-    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", {}, "Eco", 30, now, [])
+    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
 
-    assert slot == {"start": start, "end": end, "coverage_pct": 95, "program": "Eco", "forced": False}
+    assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False}
     assert should_search is False
     assert dormant is False
 
@@ -328,11 +325,11 @@ def test_reusable_committed_keeps_showing_an_elapsed_slot_on_the_same_day(hass):
 def test_reusable_committed_continues_the_recurring_schedule_on_an_auto_day(hass):
     coordinator = _coordinator(hass)
     start = datetime(2026, 8, 29, 13, 0, tzinfo=timezone.utc)  # Saturday
-    _seed_committed(coordinator, "lave_linge", DeviceSchedule("lave_linge", start, start + timedelta(minutes=30), 95))
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, start + timedelta(minutes=30), 95))
 
     now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)  # Sunday
     slot, forced, should_search, dormant = coordinator._reusable_committed(
-        "lave_linge", {}, "Eco", 30, now, ["fri", "sun"]
+        "lave_linge", "Eco", {}, 30, now, ["fri", "sun"]
     )
 
     assert should_search is True
@@ -341,13 +338,13 @@ def test_reusable_committed_continues_the_recurring_schedule_on_an_auto_day(hass
 
 def test_reusable_committed_stays_dormant_on_a_non_auto_day(hass):
     """On-demand programs (empty auto_days) don't keep proposing a new slot every day on their
-    own — they stay dormant until the selection changes again."""
+    own — they stay dormant until toggled again."""
     coordinator = _coordinator(hass)
     start = datetime(2026, 8, 29, 13, 0, tzinfo=timezone.utc)
-    _seed_committed(coordinator, "lave_linge", DeviceSchedule("lave_linge", start, start + timedelta(minutes=30), 95))
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, start + timedelta(minutes=30), 95))
 
     now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
-    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", {}, "Eco", 30, now, [])
+    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
 
     assert dormant is True
     assert should_search is False
@@ -358,10 +355,10 @@ def test_reusable_committed_keeps_a_forced_slot_locked_even_far_in_the_future(ha
     now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
     start = now + timedelta(hours=6)  # nowhere near imminent
     _seed_committed(
-        coordinator, "lave_linge", DeviceSchedule("lave_linge", start, start + timedelta(minutes=30), 80), forced=True
+        coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, start + timedelta(minutes=30), 80), forced=True
     )
 
-    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", {}, "Eco", 30, now, [])
+    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
 
     assert should_search is False
     assert forced is True
@@ -372,11 +369,11 @@ def test_reusable_committed_unlocks_when_a_power_sensor_shows_it_never_started(h
     now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
     start = now - timedelta(minutes=2)
     end = start + timedelta(minutes=30)
-    _seed_committed(coordinator, "lave_linge", DeviceSchedule("lave_linge", start, end, 95))
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
     hass.states.async_set("sensor.lave_linge_power", "0")
 
     device = {CONF_POWER_SENSOR: "sensor.lave_linge_power"}
-    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", device, "Eco", 30, now, [])
+    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", "Eco", device, 30, now, [])
 
     assert should_search is True
 
@@ -388,14 +385,63 @@ def test_reusable_committed_ignores_the_power_sensor_when_forced(hass):
     now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
     start = now - timedelta(minutes=2)
     end = start + timedelta(minutes=30)
-    _seed_committed(coordinator, "lave_linge", DeviceSchedule("lave_linge", start, end, 95), forced=True)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95), forced=True)
     hass.states.async_set("sensor.lave_linge_power", "0")
 
     device = {CONF_POWER_SENSOR: "sensor.lave_linge_power"}
-    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", device, "Eco", 30, now, [])
+    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", "Eco", device, 30, now, [])
 
     assert should_search is False
     assert forced is True
+
+
+# --- _migrate_legacy_state() -------------------------------------------------------------------
+
+
+def test_migrate_legacy_state_converts_a_selected_program_to_active():
+    schedule_start = datetime(2026, 8, 30, 9, 0, tzinfo=timezone.utc)
+    legacy = {
+        "lave_linge": {
+            "selected": "Eco",
+            "pending_forced_start": "2026-08-30T10:00:00+00:00",
+            "committed": {
+                "start": schedule_start.isoformat(),
+                "end": (schedule_start + timedelta(minutes=30)).isoformat(),
+                "coverage_pct": 95,
+                "program": "Eco",
+                "forced": True,
+            },
+        }
+    }
+
+    migrated = _migrate_legacy_state(legacy)
+
+    assert migrated == {
+        "lave_linge": {
+            "Eco": {
+                "active": True,
+                "pending_forced_start": "2026-08-30T10:00:00+00:00",
+                "committed": {
+                    "start": schedule_start.isoformat(),
+                    "end": (schedule_start + timedelta(minutes=30)).isoformat(),
+                    "coverage_pct": 95,
+                    "forced": True,
+                },
+            }
+        }
+    }
+
+
+def test_migrate_legacy_state_drops_a_none_selection():
+    legacy = {"lave_vaisselle": {"selected": NONE_PROGRAM}}
+
+    assert _migrate_legacy_state(legacy) == {"lave_vaisselle": {}}
+
+
+def test_migrate_legacy_state_is_idempotent_on_the_current_schema():
+    current = {"lave_linge": {"Eco": {"active": True}}}
+
+    assert _migrate_legacy_state(current) == current
 
 
 # --- _async_update_data() -----------------------------------------------------------------------
@@ -433,17 +479,17 @@ async def test_no_forecast_data_does_not_commit_a_guessed_now_slot(hass):
     entry.add_to_hass(hass)
     coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
     await coordinator.async_load_state()
-    await coordinator.async_set_selected_program("lave_vaisselle", "Eco")
+    await coordinator.async_set_program_active("lave_vaisselle", "Eco", True)
     await _flush(coordinator)
     # sensor.forecast is deliberately never set: _read_forecast_points() returns [] for a missing state.
 
     results = await coordinator._async_update_data()
 
-    assert results["lave_vaisselle"].start is None
-    assert coordinator._get_committed("lave_vaisselle") is None
+    assert results[("lave_vaisselle", "Eco")].start is None
+    assert coordinator._get_committed("lave_vaisselle", "Eco") is None
 
 
-async def test_selecting_a_program_searches_immediately_regardless_of_auto_days(hass):
+async def test_activating_a_program_searches_immediately_regardless_of_auto_days(hass):
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
@@ -458,11 +504,11 @@ async def test_selecting_a_program_searches_immediately_regardless_of_auto_days(
     coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
     await coordinator.async_load_state()
 
-    await coordinator.async_set_selected_program("lave_vaisselle", "Eco")
+    await coordinator.async_set_program_active("lave_vaisselle", "Eco", True)
     await _flush(coordinator)
     results = await coordinator._async_update_data()
 
-    assert results["lave_vaisselle"].start is not None
+    assert results[("lave_vaisselle", "Eco")].start is not None
 
 
 async def test_a_pending_forced_start_is_applied_and_committed(hass):
@@ -474,15 +520,71 @@ async def test_a_pending_forced_start_is_applied_and_committed(hass):
     entry.add_to_hass(hass)
     coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
     await coordinator.async_load_state()
-    await coordinator.async_set_selected_program("lave_vaisselle", "Eco")
+    await coordinator.async_set_program_active("lave_vaisselle", "Eco", True)
     forced_start = dt_util.now() + timedelta(hours=2)
-    await coordinator.async_set_forced_start("lave_vaisselle", forced_start)
+    await coordinator.async_set_forced_start("lave_vaisselle", "Eco", forced_start)
     await _flush(coordinator)
 
     results = await coordinator._async_update_data()
 
-    assert results["lave_vaisselle"].start == forced_start
-    assert results["lave_vaisselle"].forced is True
-    committed = coordinator._get_committed("lave_vaisselle")
+    assert results[("lave_vaisselle", "Eco")].start == forced_start
+    assert results[("lave_vaisselle", "Eco")].forced is True
+    committed = coordinator._get_committed("lave_vaisselle", "Eco")
     assert committed["forced"] is True
-    assert coordinator._pending_forced_start("lave_vaisselle") is None
+    assert coordinator._pending_forced_start("lave_vaisselle", "Eco") is None
+
+
+async def test_two_active_programs_of_the_same_device_never_get_overlapping_slots(hass):
+    """The scenario that motivated per-program activation: two programs of the same washing
+    machine, both active the same day. Even though their combined power stays well under
+    max_simultaneous_power (so the power-budget check alone would let them overlap), the device is
+    a mutual-exclusion group — the second program must land on a distinct window.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options={
+            CONF_DEVICES: [
+                {
+                    CONF_NAME: "lave_linge",
+                    CONF_PROGRAMS: [
+                        {
+                            CONF_NAME: "Eco coton",
+                            CONF_POWER_PROFILE: [{"minutes": 30, "power_w": 100}],
+                            CONF_DURATION_MIN: 30,
+                            CONF_AUTO_DAYS: [],
+                        },
+                        {
+                            CONF_NAME: "5 chemises",
+                            CONF_POWER_PROFILE: [{"minutes": 30, "power_w": 100}],
+                            CONF_DURATION_MIN: 30,
+                            CONF_AUTO_DAYS: [],
+                        },
+                    ],
+                }
+            ]
+        },
+    )
+    entry.add_to_hass(hass)
+    now = dt_util.now()
+    hass.states.async_set(
+        "sensor.forecast",
+        "3",
+        {
+            "detailedForecast": [
+                {"period_start": now + timedelta(minutes=i * 5), "pv_estimate": 1.0} for i in range(24 * 12)
+            ]
+        },
+    )
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_linge", "Eco coton", True)
+    await coordinator.async_set_program_active("lave_linge", "5 chemises", True)
+    await _flush(coordinator)
+
+    results = await coordinator._async_update_data()
+
+    eco = results[("lave_linge", "Eco coton")]
+    chemises = results[("lave_linge", "5 chemises")]
+    assert eco.start is not None and chemises.start is not None
+    assert eco.end <= chemises.start or chemises.end <= eco.start

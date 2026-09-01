@@ -4,7 +4,7 @@ reset_to_auto:
   fields:
     entity_id:
       required: true
-      example: datetime.ballon_d_eau_chaude_start
+      example: datetime.lave_linge_eco_coton_start
       selector:
         entity:
           domain: datetime
