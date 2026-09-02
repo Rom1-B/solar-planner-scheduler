@@ -43,21 +43,28 @@ def _base_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     # rejects "" as neither a valid entity ID nor a UUID) whenever the field is left blank,
     # crashing the flow. suggested_value is a pure frontend pre-fill hint, never re-validated.
     defaults = defaults or {}
+    # Filtering is a frontend hint only (narrows the picker's suggestions), not a validation
+    # constraint — an already-configured entity that doesn't match keeps working either way, so
+    # this is safe to add without a migration. device_class values confirmed against a real
+    # instance: Solcast forecast sensors report "energy" (kWh), power/consumption sensors "power"
+    # (W) — see CLAUDE.local.md.
+    energy_sensor = selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="energy"))
+    power_sensor = selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="power"))
     return vol.Schema(
         {
             vol.Required(
                 CONF_FORECAST_ENTITY, description={"suggested_value": defaults.get(CONF_FORECAST_ENTITY)}
-            ): selector.EntitySelector(),
+            ): energy_sensor,
             vol.Optional(
                 CONF_FORECAST_TOMORROW_ENTITY,
                 description={"suggested_value": defaults.get(CONF_FORECAST_TOMORROW_ENTITY)},
-            ): selector.EntitySelector(),
+            ): energy_sensor,
             vol.Optional(
                 CONF_PRODUCTION_ENTITY, description={"suggested_value": defaults.get(CONF_PRODUCTION_ENTITY)}
-            ): selector.EntitySelector(),
+            ): power_sensor,
             vol.Optional(
                 CONF_CONSUMPTION_ENTITY, description={"suggested_value": defaults.get(CONF_CONSUMPTION_ENTITY)}
-            ): selector.EntitySelector(),
+            ): power_sensor,
             vol.Required(
                 CONF_MAX_SIMULTANEOUS_POWER,
                 default=defaults.get(CONF_MAX_SIMULTANEOUS_POWER, DEFAULT_MAX_SIMULTANEOUS_POWER),
@@ -70,7 +77,9 @@ def _device_schema() -> vol.Schema:
     return vol.Schema(
         {
             vol.Required(CONF_NAME): str,
-            vol.Optional(CONF_POWER_SENSOR): selector.EntitySelector(),
+            vol.Optional(CONF_POWER_SENSOR): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class="power")
+            ),
         }
     )
 

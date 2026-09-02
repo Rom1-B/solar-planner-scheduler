@@ -13,15 +13,19 @@ from __future__ import annotations
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.solar_planner_scheduler.config_flow import _base_schema, _device_schema
 from custom_components.solar_planner_scheduler.const import (
     CONF_AUTO_DAYS,
+    CONF_CONSUMPTION_ENTITY,
     CONF_DEVICES,
     CONF_FIXED_LOADS,
     CONF_FORECAST_ENTITY,
+    CONF_FORECAST_TOMORROW_ENTITY,
     CONF_MAX_SIMULTANEOUS_POWER,
     CONF_NAME,
     CONF_POWER_PROFILE,
     CONF_POWER_SENSOR,
+    CONF_PRODUCTION_ENTITY,
     CONF_PROGRAMS,
     CONF_START_TIME,
     DOMAIN,
@@ -307,3 +311,39 @@ async def test_edit_fixed_load_aborts_when_none_exist(hass, enable_custom_integr
 
     assert result["type"] == "abort"
     assert result["reason"] == "no_fixed_loads"
+
+
+# --- entity picker filters ---------------------------------------------------------------------
+
+
+def _selector_for(schema, field_name):
+    for key, validator in schema.schema.items():
+        if str(key) == field_name:
+            return validator
+    raise KeyError(field_name)
+
+
+def test_forecast_entity_pickers_filter_to_energy_sensors():
+    """Regression test for the device_class filter added to the entity pickers — Solcast's
+    forecast sensors report device_class "energy" (confirmed against a real instance, see
+    CLAUDE.local.md), not "power": filtering to the wrong class would silently empty the picker.
+    """
+    schema = _base_schema()
+    for field in (CONF_FORECAST_ENTITY, CONF_FORECAST_TOMORROW_ENTITY):
+        selector = _selector_for(schema, field)
+        assert selector.config["domain"] == ["sensor"]
+        assert selector.config["device_class"] == ["energy"]
+
+
+def test_production_and_consumption_pickers_filter_to_power_sensors():
+    schema = _base_schema()
+    for field in (CONF_PRODUCTION_ENTITY, CONF_CONSUMPTION_ENTITY):
+        selector = _selector_for(schema, field)
+        assert selector.config["domain"] == ["sensor"]
+        assert selector.config["device_class"] == ["power"]
+
+
+def test_device_power_sensor_picker_filters_to_power_sensors():
+    selector = _selector_for(_device_schema(), CONF_POWER_SENSOR)
+    assert selector.config["domain"] == ["sensor"]
+    assert selector.config["device_class"] == ["power"]
