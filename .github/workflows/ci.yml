@@ -1,9 +1,5 @@
 name: CI
 
-# One workflow, several jobs — not three separate workflow files — so a single "completed" event
-# fires per push. tag_release (below) only runs once every other job has succeeded, and only
-# pushes a tag when manifest.json's version is new — that tag push is what triggers release.yml,
-# so Release only ever runs when there's actually something to release. See CLAUDE.local.md.
 on:
   push:
     branches: [main]
@@ -50,11 +46,7 @@ jobs:
         with:
           category: integration
 
-  # Only runs after every other job above succeeded (needs:), only on a real push to main (not a
-  # PR, not the weekly schedule run) — creating the tag itself, rather than release.yml polling CI
-  # status, is what keeps Release from firing on every green commit: it only fires on a tag push,
-  # and a tag only gets pushed here when the version actually changed.
-  tag_release:
+  release:
     needs: [python, javascript, hassfest, hacs]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -62,12 +54,53 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      - env:
-          GH_TOKEN: ${{ github.token }}
+        with:
+          fetch-depth: 0
+
+      - name: Check for a new version
+        id: version
         run: |
           VERSION=$(jq -r .version custom_components/solar_planner_scheduler/manifest.json)
-          if gh api "repos/${{ github.repository }}/git/refs/tags/$VERSION" >/dev/null 2>&1; then
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if git rev-parse "refs/tags/$VERSION" >/dev/null 2>&1; then
             echo "Tag $VERSION already exists, skipping."
-            exit 0
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
           fi
-          gh api "repos/${{ github.repository }}/git/refs" -f ref="refs/tags/$VERSION" -f sha="${{ github.sha }}"
+
+      - name: Tag the release
+        if: steps.version.outputs.new == 'true'
+        run: |
+          git tag "${{ steps.version.outputs.version }}"
+          git push origin "${{ steps.version.outputs.version }}"
+
+      - name: Generate release notes with git-cliff
+        if: steps.version.outputs.new == 'true'
+        uses: orhun/git-cliff-action@v4
+        id: cliff
+        with:
+          config: cliff.toml
+          args: --tag ${{ steps.version.outputs.version }} --latest
+
+      - name: Create the GitHub release
+        if: steps.version.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PREV_TAG=$(git tag --sort=-v:refname | sed -n '2p')
+
+          {
+            echo "${{ steps.cliff.outputs.content }}"
+            echo
+            if [ -n "$PREV_TAG" ]; then
+              echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/$PREV_TAG...$VERSION"
+            fi
+          } > /tmp/release-notes.md
+
+          gh release create "$VERSION" \
+            --repo "${{ github.repository }}" \
+            --title "$VERSION" \
+            --notes-file /tmp/release-notes.md \
+            --target "${{ github.sha }}"
