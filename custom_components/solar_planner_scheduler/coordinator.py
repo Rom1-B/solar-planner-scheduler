@@ -217,6 +217,18 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         self._store = Store(hass, STORAGE_VERSION, f"{DOMAIN}_{entry.entry_id}")
         self._state: dict[str, dict] = {}
 
+    def diagnostics_snapshot(self) -> dict:
+        """Everything diagnostics.py exposes: the persisted Store plus the last update's outcome.
+
+        The Store already holds only JSON-safe values (ISO datetime strings, not `datetime`
+        objects — see the schema comment above), so this needs no further serialization.
+        """
+        return {
+            "store": self._state,
+            "last_update_success": self.last_update_success,
+            "last_exception": repr(self.last_exception) if self.last_exception else None,
+        }
+
     async def async_load_state(self) -> None:
         """Load persisted per-device-per-program state. Call once before the first refresh."""
         raw = await self._store.async_load() or {}
