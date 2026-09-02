@@ -1,20 +1,30 @@
 """The Solar Planner Scheduler integration.
 
-Homeassistant imports are deferred into function bodies (not at module level) so that this
-package's own `__init__.py` never pulls in `homeassistant` just by being imported — that keeps
-`scheduling.py` (zero dependencies, mirroring the JS reference) importable and testable with plain
-pytest, no Home Assistant test harness required.
+Every other homeassistant import here is deferred into function bodies (not at module level) —
+`CONFIG_SCHEMA` below is the one deliberate exception, required at module scope so hassfest can see
+it (integrations that define `async_setup`/`setup` must declare one of CONFIG_SCHEMA/
+PLATFORM_SCHEMA/PLATFORM_SCHEMA_BASE, checked 2026-09-02). This one `homeassistant.helpers.
+config_validation` import means this package's `__init__.py` now requires `homeassistant` to be
+installed to import at all (so `from custom_components.solar_planner_scheduler.scheduling import
+...` would too, despite scheduling.py itself having zero dependencies) — accepted as a real
+constraint imposed by hassfest, not worth working around with a lazier trick, since this
+integration only ever runs inside real Home Assistant or its own test harness (which always has
+`homeassistant` installed) anyway.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from homeassistant.helpers import config_validation as cv
+
 from .const import DOMAIN
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 PLATFORMS = ["sensor", "binary_sensor", "switch", "datetime"]
 
