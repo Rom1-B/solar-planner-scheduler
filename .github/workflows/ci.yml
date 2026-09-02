@@ -1,8 +1,9 @@
 name: CI
 
 # One workflow, several jobs — not three separate workflow files — so a single "completed" event
-# fires per push (its conclusion already aggregates every job below), letting Release trigger on
-# it directly without polling multiple workflows' status. See CLAUDE.local.md.
+# fires per push. tag_release (below) only runs once every other job has succeeded, and only
+# pushes a tag when manifest.json's version is new — that tag push is what triggers release.yml,
+# so Release only ever runs when there's actually something to release. See CLAUDE.local.md.
 on:
   push:
     branches: [main]
@@ -48,3 +49,25 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
+
+  # Only runs after every other job above succeeded (needs:), only on a real push to main (not a
+  # PR, not the weekly schedule run) — creating the tag itself, rather than release.yml polling CI
+  # status, is what keeps Release from firing on every green commit: it only fires on a tag push,
+  # and a tag only gets pushed here when the version actually changed.
+  tag_release:
+    needs: [python, javascript, hassfest, hacs]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(jq -r .version custom_components/solar_planner_scheduler/manifest.json)
+          if gh api "repos/${{ github.repository }}/git/refs/tags/$VERSION" >/dev/null 2>&1; then
+            echo "Tag $VERSION already exists, skipping."
+            exit 0
+          fi
+          gh api "repos/${{ github.repository }}/git/refs" -f ref="refs/tags/$VERSION" -f sha="${{ github.sha }}"
