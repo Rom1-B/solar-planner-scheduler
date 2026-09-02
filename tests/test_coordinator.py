@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -27,6 +28,7 @@ from custom_components.solar_planner_scheduler.const import (
     NONE_PROGRAM,
 )
 from custom_components.solar_planner_scheduler.coordinator import (
+    FAILED_TO_START_REPAIR_THRESHOLD,
     DeviceSchedule,
     SolarPlannerSchedulerCoordinator,
     _ceil_to_five_minutes,
@@ -262,7 +264,7 @@ def test_reusable_committed_reuses_an_imminent_slot(hass):
     end = start + timedelta(minutes=30)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
 
-    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
+    slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
 
     assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False}
     assert forced is False
@@ -277,7 +279,7 @@ def test_reusable_committed_searches_when_the_target_is_far_off(hass):
     end = start + timedelta(minutes=30)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
 
-    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
+    slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
 
     assert should_search is True
     assert dormant is False
@@ -289,7 +291,7 @@ def test_reusable_committed_searches_when_nothing_is_committed_yet(hass):
     coordinator = _coordinator(hass)
     now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
 
-    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
+    slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
 
     assert should_search is True
     assert dormant is False
@@ -301,7 +303,7 @@ def test_reusable_committed_searches_when_the_program_duration_changed(hass):
     start = now + timedelta(minutes=2)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, start + timedelta(minutes=30), 95))
 
-    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", "Eco", {}, 60, now, [])
+    slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", {}, 60, now, [])
 
     assert should_search is True
 
@@ -315,7 +317,7 @@ def test_reusable_committed_keeps_showing_an_elapsed_slot_on_the_same_day(hass):
     end = start + timedelta(minutes=30)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
 
-    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
+    slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
 
     assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False}
     assert should_search is False
@@ -328,7 +330,7 @@ def test_reusable_committed_continues_the_recurring_schedule_on_an_auto_day(hass
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, start + timedelta(minutes=30), 95))
 
     now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)  # Sunday
-    slot, forced, should_search, dormant = coordinator._reusable_committed(
+    slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed(
         "lave_linge", "Eco", {}, 30, now, ["fri", "sun"]
     )
 
@@ -344,7 +346,7 @@ def test_reusable_committed_stays_dormant_on_a_non_auto_day(hass):
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, start + timedelta(minutes=30), 95))
 
     now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
-    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
+    slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
 
     assert dormant is True
     assert should_search is False
@@ -358,7 +360,7 @@ def test_reusable_committed_keeps_a_forced_slot_locked_even_far_in_the_future(ha
         coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, start + timedelta(minutes=30), 80), forced=True
     )
 
-    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
+    slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
 
     assert should_search is False
     assert forced is True
@@ -373,9 +375,10 @@ def test_reusable_committed_unlocks_when_a_power_sensor_shows_it_never_started(h
     hass.states.async_set("sensor.lave_linge_power", "0")
 
     device = {CONF_POWER_SENSOR: "sensor.lave_linge_power"}
-    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", "Eco", device, 30, now, [])
+    slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", device, 30, now, [])
 
     assert should_search is True
+    assert failed_to_start is True
 
 
 def test_reusable_committed_ignores_the_power_sensor_when_forced(hass):
@@ -389,10 +392,54 @@ def test_reusable_committed_ignores_the_power_sensor_when_forced(hass):
     hass.states.async_set("sensor.lave_linge_power", "0")
 
     device = {CONF_POWER_SENSOR: "sensor.lave_linge_power"}
-    slot, forced, should_search, dormant = coordinator._reusable_committed("lave_linge", "Eco", device, 30, now, [])
+    slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", device, 30, now, [])
 
     assert should_search is False
+    assert failed_to_start is False
     assert forced is True
+
+
+# --- _note_failed_to_start() --------------------------------------------------------------------
+
+
+def _has_issue(hass, coordinator) -> bool:
+    issue_id = coordinator._failed_to_start_issue_id("lave_linge", "Eco")
+    return ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
+
+
+async def test_note_failed_to_start_does_not_raise_an_issue_below_the_threshold(hass):
+    """A single failed_to_start unlock is common (a device can take a few minutes to actually draw
+    power) and shouldn't alarm anyone by itself."""
+    coordinator = _coordinator(hass)
+
+    await coordinator._note_failed_to_start("lave_linge", "Eco", True)
+
+    assert coordinator._program_state("lave_linge", "Eco")["failed_start_streak"] == 1
+    assert not _has_issue(hass, coordinator)
+
+
+async def test_note_failed_to_start_raises_an_issue_past_the_threshold(hass):
+    """Hit live 2026-09-02: the ballon d'eau chaude kept failing to start, silently, for hours —
+    several *consecutive* failures should surface as a visible Repair, not just a log line."""
+    coordinator = _coordinator(hass)
+
+    for _ in range(FAILED_TO_START_REPAIR_THRESHOLD):
+        await coordinator._note_failed_to_start("lave_linge", "Eco", True)
+
+    assert _has_issue(hass, coordinator)
+
+
+async def test_note_failed_to_start_clears_the_issue_once_a_cycle_succeeds(hass):
+    coordinator = _coordinator(hass)
+
+    for _ in range(FAILED_TO_START_REPAIR_THRESHOLD):
+        await coordinator._note_failed_to_start("lave_linge", "Eco", True)
+    assert _has_issue(hass, coordinator)
+
+    await coordinator._note_failed_to_start("lave_linge", "Eco", False)
+
+    assert not _has_issue(hass, coordinator)
+    assert coordinator._program_state("lave_linge", "Eco")["failed_start_streak"] == 0
 
 
 # --- _migrate_legacy_state() -------------------------------------------------------------------

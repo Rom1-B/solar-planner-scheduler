@@ -9,9 +9,11 @@ from datetime import datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
+from homeassistant.util import slugify
 
 from .const import (
     CONF_AUTO_DAYS,
@@ -66,6 +68,11 @@ _LOGGER = logging.getLogger(__name__)
 # never goes through `hass.config_entries.async_update_entry`, so routine actions (picking a
 # program, forcing a start time) never reload the entry or flicker every device's entities.
 STORAGE_VERSION = 1
+
+# A single failed_to_start unlock is common (a device can genuinely take a few minutes to draw
+# power after its window opens) and shouldn't alarm anyone; this many *consecutive* cycles means
+# the device likely never started at all — see _note_failed_to_start.
+FAILED_TO_START_REPAIR_THRESHOLD = 2
 
 
 def _migrate_legacy_state(raw: dict) -> dict:
@@ -320,16 +327,57 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         idle_threshold = self.entry.data.get(CONF_IDLE_POWER_THRESHOLD, DEFAULT_IDLE_POWER_THRESHOLD)
         return power < idle_threshold
 
+    @staticmethod
+    def _failed_to_start_issue_id(device_name: str, program_name: str) -> str:
+        return f"failed_to_start_{slugify(f'{device_name} {program_name}')}"
+
+    async def _note_failed_to_start(self, device_name: str, program_name: str, failed: bool) -> None:
+        """Track consecutive failed_to_start unlocks and raise a repair issue past the threshold.
+
+        Hit live on 2026-09-02: the ballon d'eau chaude's "should_run" automation was broken, so
+        the coordinator kept unlocking and recomputing a new slot every cycle all morning — a real
+        problem, but invisible in the UI, only found by manually digging through HA's logs. This
+        surfaces the same signal as a Repair (Settings > System > Repairs) instead. Clears itself
+        the moment a cycle doesn't fail (including inactive/dormant/forced-start cycles, which
+        reset the streak the same as a genuine successful start — there's nothing to warn about
+        once the program isn't stuck retrying).
+        """
+        existing = self._program_state(device_name, program_name)
+        streak = existing.get("failed_start_streak", 0)
+        issue_id = self._failed_to_start_issue_id(device_name, program_name)
+        if failed:
+            streak += 1
+            self._state.setdefault(device_name, {})[program_name] = {**existing, "failed_start_streak": streak}
+            await self._store.async_save(self._state)
+            if streak >= FAILED_TO_START_REPAIR_THRESHOLD:
+                ir.async_create_issue(
+                    self.hass,
+                    DOMAIN,
+                    issue_id,
+                    is_fixable=False,
+                    severity=ir.IssueSeverity.WARNING,
+                    translation_key="failed_to_start",
+                    translation_placeholders={"device": device_name, "program": program_name},
+                )
+        elif streak:
+            self._state.setdefault(device_name, {})[program_name] = {**existing, "failed_start_streak": 0}
+            await self._store.async_save(self._state)
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+
     def _reusable_committed(
         self, device_name: str, program_name: str, device: dict, duration_min: float, now: datetime, auto_days: list[str]
-    ) -> tuple[dict | None, bool, bool, bool]:
+    ) -> tuple[dict | None, bool, bool, bool, bool]:
         """Decide whether to reuse the already-committed slot instead of searching fresh.
 
-        Returns (slot, forced, should_search, dormant):
+        Returns (slot, forced, should_search, dormant, failed_to_start):
         - should_search=True means the caller must run a fresh search (or apply a pending forced
           start, handled separately before this is even called).
         - dormant=True means show no schedule at all this cycle, without searching — the "not an
           auto_day" case.
+        - failed_to_start=True only for the specific "power sensor never showed it running" unlock
+          below — the caller uses this to track a consecutive-failure streak and raise a repair
+          issue (see _note_failed_to_start), since every other should_search=True case is a normal,
+          expected recompute, not a sign anything is actually wrong.
 
         A changed program duration always forces should_search=True, regardless of auto_days. A
         committed day that has rolled over only searches again if today is one of auto_days;
@@ -344,25 +392,25 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         """
         committed = self._get_committed(device_name, program_name)
         if committed is None:
-            return None, False, True, False
+            return None, False, True, False, False
         locked_duration = (committed["end"] - committed["start"]).total_seconds() / 60
         if abs(locked_duration - duration_min) > 0.01:
-            return None, False, True, False  # the program's own definition changed — fresh choice
+            return None, False, True, False, False  # the program's own definition changed — fresh choice
         if committed["start"].date() != now.date():
             if WEEKDAYS[now.weekday()] in auto_days:
-                return None, False, True, False  # an auto-day: keep the recurring schedule going
-            return None, False, False, True  # not an auto-day: dormant until the selection changes
+                return None, False, True, False, False  # an auto-day: keep the recurring schedule going
+            return None, False, False, True, False  # not an auto-day: dormant until the selection changes
         if now >= committed["end"]:
             # Elapsed but still today: keep showing it (locked stays true) instead of blanking out,
             # so the entity still reflects "what ran today" until the calendar day rolls over.
-            return committed, committed["forced"], False, False
+            return committed, committed["forced"], False, False, False
         if now >= committed["start"]:
             if not committed["forced"] and self._failed_to_start(device, now):
-                return None, False, True, False  # unlock: recompute instead of waiting forever
-            return committed, committed["forced"], False, False
+                return None, False, True, False, True  # unlock: recompute instead of waiting forever
+            return committed, committed["forced"], False, False, False
         if committed["forced"] or committed["start"] - now <= timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES):
-            return committed, committed["forced"], False, False
-        return None, False, True, False
+            return committed, committed["forced"], False, False, False
+        return None, False, True, False, False
 
     def _find_slot_for_day(
         self,
@@ -453,6 +501,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                 program_name = program[CONF_NAME]
                 key = (device_name, program_name)
                 if not self.is_program_active(device_name, program_name, program):
+                    await self._note_failed_to_start(device_name, program_name, False)
                     device_slots[program_name] = None
                     results[key] = DeviceSchedule(device_name, None, None, None)
                     continue
@@ -480,14 +529,16 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                     await self._set_committed(
                         device_name, program_name, slot["start"], slot["end"], slot["coverage_pct"], True
                     )
+                    await self._note_failed_to_start(device_name, program_name, False)
                     _finalize(slot)
                     results[key] = self._schedule_from_slot(device_name, slot, item, True)
                     continue
 
                 auto_days = program.get(CONF_AUTO_DAYS, [])
-                slot, forced, should_search, dormant = self._reusable_committed(
+                slot, forced, should_search, dormant, failed_to_start = self._reusable_committed(
                     device_name, program_name, device, duration_min, now, auto_days
                 )
+                await self._note_failed_to_start(device_name, program_name, failed_to_start)
                 if dormant:
                     device_slots[program_name] = None
                     results[key] = DeviceSchedule(device_name, None, None, None)

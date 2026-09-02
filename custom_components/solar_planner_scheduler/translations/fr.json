@@ -119,5 +119,11 @@
       "invalid_phase_line": "Chaque ligne doit ressembler à `20min@150W` ou `1.5h@150W`.",
       "empty_phases": "Entrez au moins une phase."
     }
+  },
+  "issues": {
+    "failed_to_start": {
+      "title": "\"{program}\" ({device}) ne semble pas démarrer",
+      "description": "Solar Planner Scheduler a planifié \"{program}\" sur \"{device}\", mais son capteur de puissance n'a jamais indiqué de consommation, sur plusieurs cycles de rafraîchissement consécutifs. Vérifiez l'automatisation qui réagit au capteur binaire `should_run` de ce programme — elle ne se déclenche peut-être pas."
+    }
   }
 }

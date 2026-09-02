@@ -119,5 +119,11 @@
       "invalid_phase_line": "Each line must look like `20min@150W` or `1.5h@150W`.",
       "empty_phases": "Enter at least one phase."
     }
+  },
+  "issues": {
+    "failed_to_start": {
+      "title": "\"{program}\" ({device}) does not seem to start",
+      "description": "Solar Planner Scheduler scheduled \"{program}\" on \"{device}\" to start, but its power sensor never showed it drawing power, for several refresh cycles in a row. Check the automation that reacts to this program's `should_run` binary sensor — it may not be triggering."
+    }
   }
 }
