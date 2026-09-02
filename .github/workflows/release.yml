@@ -15,12 +15,38 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # gh's own --generate-notes summarizes merged PRs since the last release — this repo commits
+      # straight to main with no PRs, so it always fell back to a bare "Full Changelog: a...b" link.
+      # git-cliff groups commit titles between the previous tag and this one instead — see
+      # cliff.toml (grouping/stripping tuned for this repo's "Feat: ..."/"Fix: ..." convention,
+      # verified locally against real repo history before wiring this in, see CLAUDE.local.md).
+      - name: Generate release notes with git-cliff
+        uses: orhun/git-cliff-action@v4
+        id: cliff
+        with:
+          config: cliff.toml
+          args: --tag ${{ github.ref_name }} --latest
+
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          PREV_TAG=$(git tag --sort=-v:refname | sed -n '2p')
+
+          {
+            echo "${{ steps.cliff.outputs.content }}"
+            echo
+            if [ -n "$PREV_TAG" ]; then
+              echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/$PREV_TAG...${{ github.ref_name }}"
+            fi
+          } > /tmp/release-notes.md
+
           gh release create "${{ github.ref_name }}" \
             --repo "${{ github.repository }}" \
             --title "${{ github.ref_name }}" \
-            --generate-notes \
+            --notes-file /tmp/release-notes.md \
             --target "${{ github.sha }}"
