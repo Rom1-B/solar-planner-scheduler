@@ -94,8 +94,9 @@ def _async_register_services(hass: "HomeAssistant") -> None:
 
 
 async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool:
-    from datetime import timedelta
+    from datetime import datetime, timedelta
 
+    from homeassistant.core import callback
     from homeassistant.helpers.event import async_track_time_interval
 
     from .coordinator import SolarPlannerSchedulerCoordinator
@@ -106,13 +107,21 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+
     # Pushes should_run/locked to their current value every minute without re-running the search —
     # both are pure functions of "now" against the already-known committed start/end, so this only
     # needs to prompt entities to re-read them, not recompute anything. The 15-minute coordinator
     # poll stays the cadence for the actual search/decision.
-    entry.async_on_unload(
-        async_track_time_interval(hass, lambda _now: coordinator.async_update_listeners(), timedelta(minutes=1))
-    )
+    #
+    # Must be @callback: an undecorated lambda made HA's thread-safety frame-check misidentify
+    # this as running off the event loop, raising on every tick inside async_update_listeners()
+    # (caught and logged there, so entities silently never got the update — should_run stayed
+    # stale for up to several minutes past its actual start/end, observed live 2026-09-02).
+    @callback
+    def _refresh_listeners(_now: datetime) -> None:
+        coordinator.async_update_listeners()
+
+    entry.async_on_unload(async_track_time_interval(hass, _refresh_listeners, timedelta(minutes=1)))
     return True
 
 
