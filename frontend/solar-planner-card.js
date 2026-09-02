@@ -777,9 +777,9 @@ class SolarPlannerCard extends HTMLElement {
       <style>
         :host { display: block; }
         ha-card { padding: 16px; }
-        .header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+        .header { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; row-gap: 4px; margin-bottom: 8px; }
         .title { font-size: 1.1em; font-weight: 500; color: var(--primary-text-color); }
-        .legend { display: flex; gap: 12px; font-size: 0.95em; color: var(--secondary-text-color); }
+        .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 0.95em; color: var(--secondary-text-color); }
         .legend span { display: inline-flex; align-items: center; gap: 4px; }
         .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
         .fixed-swatch { opacity: 0.6; border: 1px dashed var(--secondary-text-color); }

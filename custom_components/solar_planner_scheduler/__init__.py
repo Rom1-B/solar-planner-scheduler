@@ -22,7 +22,7 @@ CARD_URL_BASE = f"/{DOMAIN}_files"
 CARD_FILENAME = "solar-planner-card.js"
 # Bump manually whenever solar-planner-card.js changes, so the Lovelace resource URL's
 # cache-busting query string actually changes and browsers don't keep serving a stale copy.
-CARD_VERSION = "10"
+CARD_VERSION = "11"
 
 
 async def async_setup(hass: "HomeAssistant", config: dict) -> bool:
