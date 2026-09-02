@@ -1,15 +1,15 @@
 name: Release
 
-# Fires once per completion of any of the three required workflows (not just push), so it
-# re-checks every time one of them finishes — see the "all green" loop below for why this is safe.
+# A single workflow's "completed" event fires exactly once per push, and its conclusion already
+# aggregates every job in it (python, javascript, hassfest, hacs — see ci.yml) — no need to poll
+# several separate workflows' status.
 on:
   workflow_run:
-    workflows: ["Tests", "Hassfest", "HACS"]
+    workflows: ["CI"]
     types: [completed]
 
 permissions:
   contents: write
-  actions: read
 
 jobs:
   release:
@@ -20,26 +20,7 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Wait until Tests, Hassfest and HACS are all green on this commit
-        id: wait
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          SHA="${{ github.event.workflow_run.head_sha }}"
-          for NAME in "Tests" "Hassfest" "HACS"; do
-            CONCLUSION=$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=$SHA&per_page=100" \
-              --jq ".workflow_runs | map(select(.name == \"$NAME\")) | sort_by(.run_number) | last | .conclusion // \"missing\"")
-            echo "$NAME: $CONCLUSION"
-            if [ "$CONCLUSION" != "success" ]; then
-              echo "Not all required workflows are green yet for $SHA — skipping for now, another trigger will re-check."
-              echo "all_green=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          done
-          echo "all_green=true" >> "$GITHUB_OUTPUT"
-
       - name: Create a GitHub release if manifest.json's version is new
-        if: steps.wait.outputs.all_green == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
