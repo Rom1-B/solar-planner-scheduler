@@ -22,7 +22,9 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_NAME,
     CONF_POWER_PROFILE,
     CONF_POWER_SENSOR,
+    CONF_PRICE_TRACKING_ENABLED,
     CONF_PROGRAMS,
+    CONF_TARIFF_BANDS,
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
     NONE_PROGRAM,
@@ -147,6 +149,40 @@ def _coordinator(hass) -> SolarPlannerSchedulerCoordinator:
     return SolarPlannerSchedulerCoordinator(hass, entry)
 
 
+# --- _tariff_bands() ----------------------------------------------------------------------------
+
+
+_TARIFF_BANDS = [{"start": "00:00", "price": 0.20}, {"start": "22:00", "price": 0.15}]
+
+
+def _coordinator_with_tariff_data(hass, extra_data: dict) -> SolarPlannerSchedulerCoordinator:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000, **extra_data},
+        options={},
+    )
+    entry.add_to_hass(hass)
+    return SolarPlannerSchedulerCoordinator(hass, entry)
+
+
+def test_tariff_bands_returns_empty_when_tracking_disabled(hass):
+    """Same guard-rail logic as test_no_forecast_data_does_not_commit_a_guessed_now_slot: a
+    disabled/absent state must return a neutral, empty result rather than exploit whatever bands
+    happen to still be configured.
+    """
+    coordinator = _coordinator_with_tariff_data(
+        hass, {CONF_PRICE_TRACKING_ENABLED: False, CONF_TARIFF_BANDS: _TARIFF_BANDS}
+    )
+    assert coordinator._tariff_bands() == []
+
+
+def test_tariff_bands_returns_configured_bands_when_enabled(hass):
+    coordinator = _coordinator_with_tariff_data(
+        hass, {CONF_PRICE_TRACKING_ENABLED: True, CONF_TARIFF_BANDS: _TARIFF_BANDS}
+    )
+    assert coordinator._tariff_bands() == _TARIFF_BANDS
+
+
 def _seed_committed(coordinator, device_name, program_name, schedule, forced=False):
     coordinator._state.setdefault(device_name, {})[program_name] = {
         **coordinator._state.get(device_name, {}).get(program_name, {}),
@@ -266,7 +302,7 @@ def test_reusable_committed_reuses_an_imminent_slot(hass):
 
     slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
 
-    assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False}
+    assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False, "cost": None}
     assert forced is False
     assert should_search is False
     assert dormant is False
@@ -319,7 +355,7 @@ def test_reusable_committed_keeps_showing_an_elapsed_slot_on_the_same_day(hass):
 
     slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
 
-    assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False}
+    assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False, "cost": None}
     assert should_search is False
     assert dormant is False
 

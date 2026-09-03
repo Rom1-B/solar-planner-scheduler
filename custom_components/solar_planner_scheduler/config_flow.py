@@ -28,9 +28,12 @@ from .const import (
     CONF_POWER_PROFILE,
     CONF_POWER_SENSOR,
     CONF_POWER_W,
+    CONF_PRICE_TRACKING_ENABLED,
     CONF_PRODUCTION_ENTITY,
     CONF_PROGRAMS,
     CONF_START_TIME,
+    CONF_SUBSCRIPTION_PRICE_MONTHLY,
+    CONF_TARIFF_BANDS,
     DEFAULT_MAX_SIMULTANEOUS_POWER,
     DOMAIN,
     WEEKDAYS,
@@ -38,16 +41,10 @@ from .const import (
 
 
 def _base_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
-    # Entity selectors use description={"suggested_value": ...} rather than default=... to
-    # pre-fill: a plain default="" round-trips back through the selector's own validation (which
-    # rejects "" as neither a valid entity ID nor a UUID) whenever the field is left blank,
-    # crashing the flow. suggested_value is a pure frontend pre-fill hint, never re-validated.
+    # suggested_value, not default=: a plain default="" fails the selector's own validation
+    # (neither a valid entity ID nor UUID) whenever the field is left blank.
     defaults = defaults or {}
-    # Filtering is a frontend hint only (narrows the picker's suggestions), not a validation
-    # constraint — an already-configured entity that doesn't match keeps working either way, so
-    # this is safe to add without a migration. device_class values confirmed against a real
-    # instance: Solcast forecast sensors report "energy" (kWh), power/consumption sensors "power"
-    # (W) — see CLAUDE.local.md.
+    # device_class filters a picker's suggestions only, not a validation constraint.
     energy_sensor = selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="energy"))
     power_sensor = selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="power"))
     return vol.Schema(
@@ -127,10 +124,7 @@ def _phases_schema(default_text: str = "") -> vol.Schema:
 
 
 def _program_phases_schema(default_text: str = "", default_days: list[str] | None = None) -> vol.Schema:
-    # Unchecked by default: a new program doesn't inherit "every day" for free — nothing checked
-    # means on-demand (runs when picked, doesn't repeat on its own), not "never runs". Editing an
-    # existing program pre-fills whatever it already has (see the migration in __init__.py for
-    # pre-existing ones).
+    # Unchecked by default means on-demand (runs when picked), not "never runs".
     return vol.Schema(
         {
             vol.Required("phases", default=default_text): selector.TextSelector(
@@ -139,6 +133,54 @@ def _program_phases_schema(default_text: str = "", default_days: list[str] | Non
             vol.Optional(CONF_AUTO_DAYS, default=default_days or []): selector.SelectSelector(
                 selector.SelectSelectorConfig(options=WEEKDAYS, multiple=True, mode=selector.SelectSelectorMode.LIST)
             ),
+        }
+    )
+
+
+_TARIFF_LINE_RE = re.compile(r"^\s*([01]\d|2[0-3]):([0-5]\d)\s*@\s*(\d+(?:\.\d+)?)\s*$")
+
+
+class _TariffParseError(Exception):
+    """A line in the tariff bands text field doesn't match `<HH:MM>@<price>`."""
+
+    def __init__(self, error_key: str) -> None:
+        self.error_key = error_key
+        super().__init__(error_key)
+
+
+def _parse_tariff_bands(text: str) -> list[dict[str, Any]]:
+    bands: list[dict[str, Any]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = _TARIFF_LINE_RE.match(line)
+        if match is None:
+            raise _TariffParseError("invalid_tariff_line")
+        hour, minute, price = match.groups()
+        bands.append({"start": f"{hour}:{minute}", "price": float(price)})
+    if not bands:
+        raise _TariffParseError("empty_tariff_bands")
+    return sorted(bands, key=lambda b: b["start"])
+
+
+def _tariff_bands_to_text(bands: list[dict[str, Any]]) -> str:
+    return "\n".join(f"{b['start']}@{b['price']:g}" for b in bands)
+
+
+def _tariff_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
+    defaults = defaults or {}
+    return vol.Schema(
+        {
+            vol.Required(
+                CONF_PRICE_TRACKING_ENABLED, default=defaults.get(CONF_PRICE_TRACKING_ENABLED, False)
+            ): selector.BooleanSelector(),
+            vol.Optional(
+                CONF_SUBSCRIPTION_PRICE_MONTHLY, default=defaults.get(CONF_SUBSCRIPTION_PRICE_MONTHLY, 0.0)
+            ): vol.Coerce(float),
+            vol.Required(
+                "tariff_bands_text", default=defaults.get("tariff_bands_text", "00:00@0.22")
+            ): selector.TextSelector(selector.TextSelectorConfig(multiline=True)),
         }
     )
 
@@ -188,6 +230,7 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
             step_id="init",
             menu_options=[
                 "edit_base",
+                "edit_tariff",
                 "add_device",
                 "remove_device",
                 "add_program",
@@ -201,15 +244,37 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_edit_base(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
-            self.hass.config_entries.async_update_entry(self.config_entry, data=user_input)
+            # Merged, not replaced: entry.data also holds the tariff fields from async_step_edit_tariff.
+            new_data = {**self.config_entry.data, **user_input}
+            self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
             return await self.async_step_init()
         return self.async_show_form(step_id="edit_base", data_schema=_base_schema(self.config_entry.data))
 
+    async def async_step_edit_tariff(self, user_input: dict[str, Any] | None = None):
+        if user_input is not None:
+            try:
+                tariff_bands = _parse_tariff_bands(user_input["tariff_bands_text"])
+            except _TariffParseError as err:
+                return self.async_show_form(
+                    step_id="edit_tariff", data_schema=_tariff_schema(user_input), errors={"tariff_bands_text": err.error_key}
+                )
+            new_data = {
+                **self.config_entry.data,
+                CONF_PRICE_TRACKING_ENABLED: user_input[CONF_PRICE_TRACKING_ENABLED],
+                CONF_SUBSCRIPTION_PRICE_MONTHLY: user_input.get(CONF_SUBSCRIPTION_PRICE_MONTHLY, 0.0),
+                CONF_TARIFF_BANDS: tariff_bands,
+            }
+            self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
+            return await self.async_step_init()
+        current = self.config_entry.data
+        defaults = {
+            **current,
+            "tariff_bands_text": _tariff_bands_to_text(current.get(CONF_TARIFF_BANDS) or [{"start": "00:00", "price": 0.22}]),
+        }
+        return self.async_show_form(step_id="edit_tariff", data_schema=_tariff_schema(defaults))
+
     async def async_step_add_device(self, user_input: dict[str, Any] | None = None):
-        # No auto-created flat program here: a device with a name identical to its only program
-        # was a confusing extra option once real named programs exist (see "Add a program"). A
-        # freshly added device starts with no programs at all (select entity offers just "None")
-        # until one is added.
+        # Starts with no programs; add one via "Add a program".
         if user_input is not None:
             if user_input[CONF_NAME] in [d[CONF_NAME] for d in self._devices]:
                 return self.async_show_form(
@@ -351,10 +416,7 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
                 return {**d, CONF_PROGRAMS: [p for p in d[CONF_PROGRAMS] if p[CONF_NAME] != removed_name]}
 
             self._devices = [_update(d) for d in self._devices]
-            # The current selection lives in the coordinator's own store, not in these options —
-            # reset it there too if it pointed at the program just removed, so the select entity
-            # doesn't keep showing a program that no longer exists. The options flow can only be
-            # opened for a loaded entry in practice, but guard anyway rather than crash the step.
+            # Forget the removed program in the coordinator's own store too.
             coordinator = self.hass.data.get(DOMAIN, {}).get(self.config_entry.entry_id)
             if coordinator is not None:
                 await coordinator.async_forget_program(device_name, removed_name)

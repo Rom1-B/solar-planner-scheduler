@@ -99,6 +99,8 @@ function deviceEntities(
     profile = null,
     shouldRun = false,
     locked = false,
+    estimatedCost = null,
+    currency = null,
   } = {}
 ) {
   return {
@@ -111,6 +113,8 @@ function deviceEntities(
         power_w: powerW,
         profile,
         locked,
+        estimated_cost: estimatedCost,
+        currency,
       },
     },
     [`binary_sensor.${slug}_should_run`]: { state: shouldRun ? "on" : "off" },
@@ -220,6 +224,27 @@ test('the table shows energy in kWh and "-" for a fixed load\'s program column',
   assert.match(html, /<td>PAC \(external\)<\/td><td>-<\/td>/);
   assert.match(html, /<td>PAC \(external\)<\/td><td>-<\/td>\s*<td>[^<]*<\/td>\s*<td>1\.5 kWh<\/td>/);
   assert.match(html, /<td>Lave-linge<\/td><td>Eco<\/td>/);
+});
+
+test("the table's Cost column shows estimated_cost when present, \"-\" otherwise", () => {
+  const card = buildCard();
+  card._hass.states = {
+    ...card._hass.states,
+    ...deviceEntities("lave_linge", {
+      name: "Lave-linge",
+      start: new Date(Date.now() + 10 * 60000),
+      end: new Date(Date.now() + 130 * 60000),
+      powerW: 1800,
+      estimatedCost: 0.44,
+      currency: "EUR",
+    }),
+  };
+  card._showTable = true;
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  assert.ok(html.includes("<th>Cost</th>"), "expected a Cost column header");
+  assert.ok(html.includes("~0.44 EUR"), "expected the estimated cost in the table row");
+  assert.match(html, /<td>PAC \(external\)<\/td>.*?<td>-<\/td>\s*<\/tr>/s, "expected \"-\" for a fixed load with no estimated_cost");
 });
 
 test("an inactive program renders no gantt bar or stack segment", () => {
@@ -427,6 +452,35 @@ test("each device's coverage badge reflects its own sensor attribute independent
   assert.equal(badges.length, 2, `expected a coverage badge for each device, got ${badges.length}`);
   const pcts = badges.map((m) => m[2]).sort();
   assert.deepEqual(pcts, ["67", "95"]);
+});
+
+test("estimated cost shows next to the coverage badge when present, hidden when absent", () => {
+  const card = buildCard();
+  card._hass.states = {
+    ...card._hass.states,
+    ...deviceEntities("lave_linge", {
+      name: "Lave-linge",
+      start: new Date(Date.now() + 10 * 60000),
+      end: new Date(Date.now() + 130 * 60000),
+      powerW: 1800,
+      coveragePct: 67,
+      estimatedCost: 0.42,
+      currency: "EUR",
+    }),
+    ...deviceEntities("lave_vaisselle", {
+      name: "Lave-vaisselle",
+      start: new Date(Date.now() + 10 * 60000),
+      end: new Date(Date.now() + 100 * 60000),
+      powerW: 1200,
+      coveragePct: 95,
+      // estimatedCost omitted: price tracking disabled for this device's config entry.
+    }),
+  };
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  const costBadges = [...html.matchAll(/<span class="estimated-cost">([^<]+)<\/span>/g)];
+  assert.equal(costBadges.length, 1, `expected exactly one cost badge, got ${costBadges.length}`);
+  assert.equal(costBadges[0][1], "~0.42 EUR");
 });
 
 test("stacked consumption has no implicit base-load layer", () => {

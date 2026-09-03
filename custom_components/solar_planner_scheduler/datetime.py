@@ -18,7 +18,9 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     ATTR_COVERAGE_PCT,
+    ATTR_CURRENCY,
     ATTR_END,
+    ATTR_ESTIMATED_COST,
     ATTR_LOCKED,
     ATTR_POWER_W,
     ATTR_PROFILE,
@@ -63,13 +65,17 @@ class StartTimeDateTime(CoordinatorEntity[SolarPlannerSchedulerCoordinator], Dat
         schedule = self.coordinator.data.get((self._device_name, self._program_name)) if self.coordinator.data else None
         if not schedule or not schedule.start:
             return {}
-        return {
+        attributes = {
             ATTR_COVERAGE_PCT: schedule.coverage_pct,
             ATTR_END: schedule.end.isoformat() if schedule.end else None,
             ATTR_POWER_W: schedule.power_w,
             ATTR_PROFILE: schedule.profile,
             ATTR_LOCKED: compute_locked(schedule, dt_util.now()),
         }
+        if schedule.estimated_cost is not None:
+            attributes[ATTR_ESTIMATED_COST] = schedule.estimated_cost
+            attributes[ATTR_CURRENCY] = self.hass.config.currency
+        return attributes
 
     async def async_set_value(self, value: datetime) -> None:
         await self.coordinator.async_set_forced_start(self._device_name, self._program_name, value)

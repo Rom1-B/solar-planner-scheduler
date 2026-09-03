@@ -6,10 +6,12 @@ what used to be a separate read-only sensor.
 
 from __future__ import annotations
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 
 from .const import (
@@ -21,23 +23,24 @@ from .const import (
     CONF_MAX_SIMULTANEOUS_POWER,
     CONF_NAME,
     CONF_POWER_PROFILE,
+    CONF_PRICE_TRACKING_ENABLED,
     CONF_PRODUCTION_ENTITY,
     CONF_PROGRAMS,
     CONF_START_TIME,
+    CONF_TARIFF_BANDS,
+    DOMAIN,
 )
+from .coordinator import SolarPlannerSchedulerCoordinator
+from .scheduling import price_at
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
-    async_add_entities([BaseConfigSensor(entry)])
+    coordinator: SolarPlannerSchedulerCoordinator = hass.data[DOMAIN][entry.entry_id]
+    async_add_entities([BaseConfigSensor(entry), CurrentPriceSensor(coordinator, entry)])
 
 
 class BaseConfigSensor(SensorEntity):
-    """Read-only mirror of this entry's base settings and fixed loads.
-
-    Lets the bundled Lovelace card read which entities to use (forecast/production/consumption/
-    max power) and which fixed loads exist directly from here, instead of requiring the same
-    values to be re-entered in the card's own YAML config — one source of truth instead of two.
-    """
+    """Read-only mirror of this entry's base settings and fixed loads, for the card."""
 
     _attr_native_unit_of_measurement = "W"
     _attr_icon = "mdi:cog"
@@ -62,11 +65,7 @@ class BaseConfigSensor(SensorEntity):
             }
             for load in self._entry.options.get(CONF_FIXED_LOADS, [])
         ]
-        # Lets the card discover each device's programs, and the entity_id prefix shared by their
-        # switch/datetime/binary_sensor entities, from here instead of requiring them to be
-        # re-listed in the card's own YAML config. `slug` is computed with HA's own slugify() —
-        # the exact function entity_id generation itself uses — rather than left for the card to
-        # approximate from the display name.
+        # slug uses HA's own slugify() — the same function entity_id generation uses.
         devices = [
             {
                 "name": device[CONF_NAME],
@@ -86,3 +85,32 @@ class BaseConfigSensor(SensorEntity):
             "fixed_loads": fixed_loads,
             "devices": devices,
         }
+
+
+class CurrentPriceSensor(CoordinatorEntity[SolarPlannerSchedulerCoordinator], SensorEntity):
+    """The €/kWh price right now, for history and as the Energy dashboard's "current price"
+    source. None (not the internal neutral price) when tracking is disabled.
+    """
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 4
+
+    def __init__(self, coordinator: SolarPlannerSchedulerCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_current_price"
+        # Fully spelled out so entity_id is namespaced, not a collision-prone sensor.current_price.
+        self._attr_name = "Solar Planner Scheduler current price"
+
+    @property
+    def native_unit_of_measurement(self) -> str:
+        return f"{self.coordinator.hass.config.currency}/kWh"
+
+    @property
+    def native_value(self) -> float | None:
+        # Reads entry.data directly: coordinator._tariff_bands() can't distinguish "disabled"
+        # from "enabled but empty", and price_at([], ...) returns the internal neutral price.
+        if not self._entry.data.get(CONF_PRICE_TRACKING_ENABLED, False):
+            return None
+        tariff_bands = self._entry.data.get(CONF_TARIFF_BANDS, [])
+        return price_at(dt_util.now(), tariff_bands)

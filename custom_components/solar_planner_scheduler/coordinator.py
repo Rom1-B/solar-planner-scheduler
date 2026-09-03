@@ -28,8 +28,10 @@ from .const import (
     CONF_NAME,
     CONF_POWER_PROFILE,
     CONF_POWER_SENSOR,
+    CONF_PRICE_TRACKING_ENABLED,
     CONF_PROGRAMS,
     CONF_START_TIME,
+    CONF_TARIFF_BANDS,
     DEFAULT_IDLE_POWER_THRESHOLD,
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
@@ -41,48 +43,36 @@ from .scheduling import (
     Placement,
     coverage_percent,
     find_best_placement,
+    instant_deficit_cost,
     phase_segments,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-# Store schema, per device name then per program name (each program of a device is independently
-# schedulable — the device itself is only a mutual-exclusion group, see _async_update_data):
+# Store schema, per device then per program (each program is independently schedulable; the
+# device itself is only a mutual-exclusion group):
 # {
 #   "<device_name>": {
 #     "<program_name>": {
-#       "active": True,                       # whether this program is currently scheduled at all
-#       "pending_forced_start": "2026-...",   # a just-set forced start not yet folded into "committed"
-#       "committed": {
-#           "start": "2026-...", "end": "2026-...", "coverage_pct": 95,
-#           "forced": False,                  # user-forced vs auto-computed
-#       },
+#       "active": True,
+#       "pending_forced_start": "2026-...",
+#       "committed": {"start": "2026-...", "end": "2026-...", "coverage_pct": 95, "forced": False},
 #     },
 #   },
 # }
 #
-# Persisted in its own Store rather than kept only on the coordinator's `self.data` — `self.data`
-# is wiped by anything that recreates the coordinator (a HA restart, or a structural options-flow
-# change, since those still trigger a full entry reload), which would otherwise silently undo the
-# anti-flip-flop lock and the current program selection the moment either happened. Writing here
-# never goes through `hass.config_entries.async_update_entry`, so routine actions (picking a
-# program, forcing a start time) never reload the entry or flicker every device's entities.
+# Kept in its own Store, not `self.data`: `self.data` is wiped on every coordinator recreation
+# (HA restart, options change), which would drop the lock and selection. Writing here never
+# reloads the entry, so picking a program or forcing a start doesn't flicker every entity.
 STORAGE_VERSION = 1
 
-# A single failed_to_start unlock is common (a device can genuinely take a few minutes to draw
-# power after its window opens) and shouldn't alarm anyone; this many *consecutive* cycles means
-# the device likely never started at all — see _note_failed_to_start.
+# One failed_to_start unlock is normal (startup lag); this many in a row means it never started.
 FAILED_TO_START_REPAIR_THRESHOLD = 2
 
 
 def _migrate_legacy_state(raw: dict) -> dict:
-    """Convert the pre-2026-09-01 schema ({device: {selected, pending_forced_start, committed}})
-    to the current one ({device: {program: {active, pending_forced_start, committed}}}).
-
-    Detection: a legacy device entry always has a "selected" key at that level; the current
-    schema never does (its keys are program names). Runs once, right after async_load() — the
-    result is saved back immediately (see async_load_state), so this heuristic never needs to
-    fire again in practice. Idempotent: a device already in the new shape passes through as-is.
+    """Convert the legacy schema ({device: {selected, ...}}) to the current one
+    ({device: {program: {active, ...}}}). A "selected" key marks a legacy entry; idempotent.
     """
     migrated: dict[str, dict] = {}
     for device_name, device_state in raw.items():
@@ -112,14 +102,12 @@ class DeviceSchedule:
     forced: bool = False
     power_w: float | None = None
     profile: list | None = None
+    estimated_cost: float | None = None
 
 
 def compute_locked(schedule: DeviceSchedule, now: datetime) -> bool:
-    """Whether the displayed start time is figée (won't be recalculated) or still recalculable.
-
-    True if the user forced it, or the departure is imminent/under way. False once its window has
-    fully elapsed *and* the calendar day has changed — not the instant it elapses, so the entity
-    keeps showing "what ran today" for the rest of that day instead of blanking out immediately.
+    """True if forced or the departure is imminent/under way. Stays true after the window elapses
+    until the calendar day changes, so the entity keeps showing "what ran today".
     """
     if schedule.start is None or schedule.end is None:
         return False
@@ -144,9 +132,7 @@ def _read_forecast_points(hass: HomeAssistant, entity_id: str | None) -> list[di
     points = []
     for p in detailed:
         try:
-            # Solcast stores period_start as a real datetime object in its own in-memory attributes
-            # (only serialized to an ISO string once it crosses the WS/REST API boundary) — parse_datetime()
-            # requires a string, so a raw datetime here must be used as-is instead.
+            # Solcast's in-memory period_start is a real datetime, only a string over the WS/REST API.
             period_start = p["period_start"]
             if isinstance(period_start, str):
                 period_start = dt_util.parse_datetime(period_start)
@@ -167,12 +153,8 @@ def _ceil_to_five_minutes(dt: datetime) -> datetime:
 
 
 def _day_buckets(now: datetime, day_offset: int) -> list[dict]:
-    """5-minute-grid buckets for `now`'s day (day_offset=0, from now to 23:55) or a future day
-    (day_offset>=1, the full day from midnight to 23:55).
-
-    Today's buckets start at the next 5-minute mark, not at `now` itself, so an auto-scheduled
-    start time always lands on a multiple of 5 (matching the card's drag-to-reschedule grid) —
-    same as future days, which are naturally aligned by starting at midnight.
+    """5-minute-grid buckets: today (day_offset=0) from the next 5-min mark to 23:55, or a future
+    day (day_offset>=1) from midnight to 23:55 — always aligned to the card's drag grid.
     """
     if day_offset == 0:
         start = _ceil_to_five_minutes(now)
@@ -190,16 +172,11 @@ def _day_buckets(now: datetime, day_offset: int) -> list[dict]:
 
 
 def _fixed_load_windows(fixed_loads: list[dict], now: datetime) -> list[dict]:
-    """One occurrence per fixed load, anchored on today — mirrors the card's daily recurrence.
-
-    Each window carries the whole multi-phase `profile`; phase_segments() (scheduling.py) already
-    knows how to walk a profile into per-phase segments from a single start time, so a single
-    window per fixed load is enough regardless of how many phases it has.
-    """
+    """One occurrence per fixed load, anchored on today."""
     windows = []
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     for load in fixed_loads:
-        # TimeSelector returns "HH:MM:SS"; only hour/minute matter here, seconds are ignored.
+        # TimeSelector returns "HH:MM:SS"; seconds are ignored.
         hour, minute = (int(x) for x in load[CONF_START_TIME].split(":")[:2])
         start = day_start.replace(hour=hour, minute=minute)
         profile = load[CONF_POWER_PROFILE]
@@ -218,11 +195,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         self._state: dict[str, dict] = {}
 
     def diagnostics_snapshot(self) -> dict:
-        """Everything diagnostics.py exposes: the persisted Store plus the last update's outcome.
-
-        The Store already holds only JSON-safe values (ISO datetime strings, not `datetime`
-        objects — see the schema comment above), so this needs no further serialization.
-        """
+        """Everything diagnostics.py exposes: the persisted Store plus the last update's outcome."""
         return {
             "store": self._state,
             "last_update_success": self.last_update_success,
@@ -240,13 +213,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         return self._state.get(device_name, {}).get(program_name, {})
 
     def is_program_active(self, device_name: str, program_name: str, program: dict) -> bool:
-        """Return the stored activation, or True if the program has non-empty auto_days and was
-        never toggled.
-
-        A program declaring auto_days already says "run me on these days" — requiring a manual
-        toggle on top of that (e.g. after a Store reset) would defeat auto_days' own purpose. Only
-        applies when nothing was ever stored; an explicit False is left as-is.
-        """
+        """Stored activation, or True if never stored and auto_days is non-empty."""
         stored = self._program_state(device_name, program_name).get("active")
         if stored is not None:
             return stored
@@ -262,11 +229,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         await self.async_request_refresh()
 
     async def async_forget_program(self, device_name: str, program_name: str) -> None:
-        """Drop this program's stored state entirely.
-
-        Called from config_flow's "remove program" step so no stale switch/datetime/binary_sensor
-        keeps pointing at a program that no longer exists.
-        """
+        """Drop this program's stored state entirely (called when it's removed from config)."""
         device_state = self._state.get(device_name)
         if device_state is None or program_name not in device_state:
             return
@@ -304,10 +267,18 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             "end": end,
             "coverage_pct": raw["coverage_pct"],
             "forced": raw.get("forced", False),
+            "cost": raw.get("cost"),
         }
 
     async def _set_committed(
-        self, device_name: str, program_name: str, start: datetime, end: datetime, coverage_pct: int | None, forced: bool
+        self,
+        device_name: str,
+        program_name: str,
+        start: datetime,
+        end: datetime,
+        coverage_pct: int | None,
+        forced: bool,
+        cost: float | None = None,
     ) -> None:
         state = {**self._program_state(device_name, program_name)}
         state["committed"] = {
@@ -315,17 +286,14 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             "end": end.isoformat(),
             "coverage_pct": coverage_pct,
             "forced": forced,
+            "cost": cost,
         }
         state.pop("pending_forced_start", None)
         self._state.setdefault(device_name, {})[program_name] = state
         await self._store.async_save(self._state)
 
     def _failed_to_start(self, device: dict, now: datetime) -> bool:
-        """True only if a power sensor is configured and currently reads below the idle threshold.
-
-        Without a power sensor there's no telemetry to tell whether the device was actually
-        started, so we trust the committed window rather than force an endless unlock/relock loop.
-        """
+        """True only if a power sensor is configured and reads below the idle threshold."""
         power_sensor = device.get(CONF_POWER_SENSOR)
         if not power_sensor:
             return False
@@ -344,15 +312,8 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         return f"failed_to_start_{slugify(f'{device_name} {program_name}')}"
 
     async def _note_failed_to_start(self, device_name: str, program_name: str, failed: bool) -> None:
-        """Track consecutive failed_to_start unlocks and raise a repair issue past the threshold.
-
-        Hit live on 2026-09-02: the ballon d'eau chaude's "should_run" automation was broken, so
-        the coordinator kept unlocking and recomputing a new slot every cycle all morning — a real
-        problem, but invisible in the UI, only found by manually digging through HA's logs. This
-        surfaces the same signal as a Repair (Settings > System > Repairs) instead. Clears itself
-        the moment a cycle doesn't fail (including inactive/dormant/forced-start cycles, which
-        reset the streak the same as a genuine successful start — there's nothing to warn about
-        once the program isn't stuck retrying).
+        """Track consecutive failed_to_start unlocks and raise a Repair past the threshold; clears
+        on any cycle that doesn't fail.
         """
         existing = self._program_state(device_name, program_name)
         streak = existing.get("failed_start_streak", 0)
@@ -381,26 +342,14 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
     ) -> tuple[dict | None, bool, bool, bool, bool]:
         """Decide whether to reuse the already-committed slot instead of searching fresh.
 
-        Returns (slot, forced, should_search, dormant, failed_to_start):
-        - should_search=True means the caller must run a fresh search (or apply a pending forced
-          start, handled separately before this is even called).
-        - dormant=True means show no schedule at all this cycle, without searching — the "not an
-          auto_day" case.
-        - failed_to_start=True only for the specific "power sensor never showed it running" unlock
-          below — the caller uses this to track a consecutive-failure streak and raise a repair
-          issue (see _note_failed_to_start), since every other should_search=True case is a normal,
-          expected recompute, not a sign anything is actually wrong.
+        Returns (slot, forced, should_search, dormant, failed_to_start). should_search=True means
+        run a fresh search; dormant=True means no schedule this cycle (not an auto_day);
+        failed_to_start=True only for the "power sensor never showed it running" unlock, to track
+        a repair-worthy streak.
 
-        A changed program duration always forces should_search=True, regardless of auto_days. A
-        committed day that has rolled over only searches again if today is one of auto_days;
-        otherwise it goes dormant until the program is toggled again (activation is scoped per
-        program, so there's no "different program selected" case to check here — a committed
-        entry is already scoped to this exact program).
-
-        Without the "close" half of this, every refresh re-runs the search over the whole
-        remaining day; a slot later in the day (typically near solar noon) can keep looking
-        marginally better than an imminent one, so the "best" start keeps sliding forward and
-        never actually arrives.
+        A changed duration always forces should_search. A rolled-over day re-searches only if
+        today is an auto_day, else goes dormant. Reusing an imminent/in-progress slot instead of
+        re-searching every cycle avoids the "best start" sliding forward and never arriving.
         """
         committed = self._get_committed(device_name, program_name)
         if committed is None:
@@ -413,8 +362,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                 return None, False, True, False, False  # an auto-day: keep the recurring schedule going
             return None, False, False, True, False  # not an auto-day: dormant until the selection changes
         if now >= committed["end"]:
-            # Elapsed but still today: keep showing it (locked stays true) instead of blanking out,
-            # so the entity still reflects "what ran today" until the calendar day rolls over.
+            # Elapsed but still today: keep showing it until the calendar day rolls over.
             return committed, committed["forced"], False, False, False
         if now >= committed["start"]:
             if not committed["forced"] and self._failed_to_start(device, now):
@@ -423,6 +371,12 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         if committed["forced"] or committed["start"] - now <= timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES):
             return committed, committed["forced"], False, False, False
         return None, False, True, False, False
+
+    def _tariff_bands(self) -> list[dict]:
+        """Tariff bands, or [] (neutral price) when tracking is disabled."""
+        if not self.entry.data.get(CONF_PRICE_TRACKING_ENABLED, False):
+            return []
+        return self.entry.data.get(CONF_TARIFF_BANDS, [])
 
     def _find_slot_for_day(
         self,
@@ -439,28 +393,28 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         if not buckets:
             return None
         placement: Placement | None = find_best_placement(
-            buckets, item, max_power, points, base_load, committed, blocked or ()
+            buckets, item, max_power, points, base_load, committed, blocked or (), self._tariff_bands()
         )
         if placement is None:
             return None
         start = buckets[placement.index]["start"]
         end = start + timedelta(minutes=duration_min)
-        return {"start": start, "end": end, "coverage_pct": placement.coverage_pct}
+        return {"start": start, "end": end, "coverage_pct": placement.coverage_pct, "cost": placement.cost}
 
-    @staticmethod
     def _compute_slot_from_start(
-        item: dict, duration_min: float, start: datetime, points: list[dict], base_load: float, committed: list[dict]
+        self, item: dict, duration_min: float, start: datetime, points: list[dict], base_load: float, committed: list[dict]
     ) -> dict:
         end = start + timedelta(minutes=duration_min)
         item_segments = phase_segments({**item, "start": start, "end": end})
         other_segments = [seg for o in committed if o.get("start") and o.get("end") for seg in phase_segments(o)]
         coverage_pct = coverage_percent(item_segments, other_segments, points, base_load, start, end)
-        return {"start": start, "end": end, "coverage_pct": coverage_pct}
+        cost = instant_deficit_cost(item_segments, other_segments, points, base_load, start, end, self._tariff_bands())
+        return {"start": start, "end": end, "coverage_pct": coverage_pct, "cost": cost}
 
-    @staticmethod
-    def _schedule_from_slot(name: str, slot: dict | None, item: dict | None, forced: bool) -> DeviceSchedule:
+    def _schedule_from_slot(self, name: str, slot: dict | None, item: dict | None, forced: bool) -> DeviceSchedule:
         if slot is None:
             return DeviceSchedule(name, None, None, None)
+        price_tracking_enabled = self.entry.data.get(CONF_PRICE_TRACKING_ENABLED, False)
         return DeviceSchedule(
             name,
             slot["start"],
@@ -469,6 +423,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             forced,
             power_w=item.get("power_w") if item else None,
             profile=item.get("profile") if item else None,
+            estimated_cost=slot.get("cost") if price_tracking_enabled else None,
         )
 
     async def _async_update_data(self) -> dict[tuple[str, str], DeviceSchedule]:
@@ -480,10 +435,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         points = sorted(points + tomorrow_points, key=lambda pt: pt["time"])
 
         now = dt_util.now()
-        # No live "background consumption" estimate: production - surplus at a single instant
-        # spikes whenever any large load happens to be running right at update time, and that
-        # spike used to get stretched across the whole scheduling horizon. Only declared consumers
-        # (fixed_loads, scheduled devices) are deducted.
+        # No live background-consumption estimate: only declared consumers are deducted.
         base_load = 0.0
 
         max_power = data.get(CONF_MAX_SIMULTANEOUS_POWER)
@@ -494,16 +446,8 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         for device in options.get(CONF_DEVICES, []):
             device_name = device[CONF_NAME]
             programs = device.get(CONF_PROGRAMS, [])
-            # Each sibling program's currently-known slot for *today*, used as this device's hard
-            # exclusion zone. Pre-seeded from the Store (not built up empty and only as programs
-            # are visited this pass) so a program earlier in CONF_PROGRAMS order still avoids a
-            # sibling that already has a slot committed from an earlier refresh cycle and isn't
-            # being re-resolved this cycle (reused, dormant, or not yet visited) — the previous
-            # accumulate-as-you-go approach missed exactly this case: activating program A while
-            # program B (later in config order) was already committed let A's search ignore B
-            # entirely, since B's slot only entered the exclusion list once B itself was visited.
-            # Filtered to today: a stale multi-day-old commitment (e.g. a dormant on-demand
-            # program that hasn't rolled over its Store entry) must not block a fresh search.
+            # Sibling programs' today-only slots, pre-seeded from the Store so an earlier-order
+            # program still avoids a sibling committed in an earlier cycle, not just this pass.
             device_slots: dict[str, dict | None] = {}
             for p in programs:
                 existing = self._get_committed(device_name, p[CONF_NAME])
@@ -518,7 +462,6 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                     results[key] = DeviceSchedule(device_name, None, None, None)
                     continue
 
-                # Every program has phases (power_profile), the config UI has never produced anything else.
                 profile = program[CONF_POWER_PROFILE]
                 duration_min = program.get(CONF_DURATION_MIN)
                 if duration_min is None:
@@ -539,7 +482,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                 if pending_start is not None:
                     slot = self._compute_slot_from_start(item, duration_min, pending_start, points, base_load, committed)
                     await self._set_committed(
-                        device_name, program_name, slot["start"], slot["end"], slot["coverage_pct"], True
+                        device_name, program_name, slot["start"], slot["end"], slot["coverage_pct"], True, slot["cost"]
                     )
                     await self._note_failed_to_start(device_name, program_name, False)
                     _finalize(slot)
@@ -563,12 +506,16 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                         forced = False
                         if slot is not None:
                             await self._set_committed(
-                                device_name, program_name, slot["start"], slot["end"], slot["coverage_pct"], False
+                                device_name,
+                                program_name,
+                                slot["start"],
+                                slot["end"],
+                                slot["coverage_pct"],
+                                False,
+                                slot["cost"],
                             )
                     else:
-                        # No forecast data yet: every candidate would tie at 0% coverage, and the
-                        # search would silently keep the very first bucket ("now") — wait for real
-                        # data on the next refresh instead of committing to a guessed slot.
+                        # No forecast data yet: wait for it instead of committing a guessed slot.
                         slot = None
 
                 _finalize(slot)

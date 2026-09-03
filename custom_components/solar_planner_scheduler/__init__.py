@@ -1,15 +1,7 @@
 """The Solar Planner Scheduler integration.
 
-Every other homeassistant import here is deferred into function bodies (not at module level) —
-`CONFIG_SCHEMA` below is the one deliberate exception, required at module scope so hassfest can see
-it (integrations that define `async_setup`/`setup` must declare one of CONFIG_SCHEMA/
-PLATFORM_SCHEMA/PLATFORM_SCHEMA_BASE, checked 2026-09-02). This one `homeassistant.helpers.
-config_validation` import means this package's `__init__.py` now requires `homeassistant` to be
-installed to import at all (so `from custom_components.solar_planner_scheduler.scheduling import
-...` would too, despite scheduling.py itself having zero dependencies) — accepted as a real
-constraint imposed by hassfest, not worth working around with a lazier trick, since this
-integration only ever runs inside real Home Assistant or its own test harness (which always has
-`homeassistant` installed) anyway.
+Every other homeassistant import here is deferred into function bodies; `CONFIG_SCHEMA` is the one
+exception, required at module scope by hassfest for any integration defining `async_setup`.
 """
 
 from __future__ import annotations
@@ -32,18 +24,11 @@ CARD_URL_BASE = f"/{DOMAIN}_files"
 CARD_FILENAME = "solar-planner-card.js"
 # Bump manually whenever solar-planner-card.js changes, so the Lovelace resource URL's
 # cache-busting query string actually changes and browsers don't keep serving a stale copy.
-CARD_VERSION = "11"
+CARD_VERSION = "13"
 
 
 async def async_setup(hass: "HomeAssistant", config: dict) -> bool:
-    """Serve the bundled Lovelace card and register it in Lovelace's own resource storage.
-
-    `add_extra_js_url` alone does not make the frontend load a module — Lovelace (storage
-    mode) only loads modules it finds in its own `resources` storage collection, so this
-    writes an entry there directly. Home Assistant only calls this once per domain
-    regardless of how many config entries exist, so no "already registered" guard is
-    needed for the static path itself.
-    """
+    """Serve the bundled Lovelace card and register it as a Lovelace resource."""
     from pathlib import Path
 
     from homeassistant.components.http import StaticPathConfig
@@ -89,9 +74,7 @@ def _async_register_services(hass: "HomeAssistant") -> None:
         entry = hass.config_entries.async_get_entry(registry_entry.config_entry_id)
         if entry is None:
             return
-        # Resolve (device, program) by reconstructing each candidate's unique_id and matching it,
-        # rather than splitting the string apart — device/program names are free text and may
-        # themselves contain "_", which would make a split ambiguous.
+        # Matches by reconstructed unique_id, not string-splitting: names may contain "_".
         for device in entry.options.get(CONF_DEVICES, []):
             device_name = device[CONF_NAME]
             for program in device.get(CONF_PROGRAMS, []):
@@ -118,15 +101,9 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
-    # Pushes should_run/locked to their current value every minute without re-running the search —
-    # both are pure functions of "now" against the already-known committed start/end, so this only
-    # needs to prompt entities to re-read them, not recompute anything. The 15-minute coordinator
-    # poll stays the cadence for the actual search/decision.
-    #
-    # Must be @callback: an undecorated lambda made HA's thread-safety frame-check misidentify
-    # this as running off the event loop, raising on every tick inside async_update_listeners()
-    # (caught and logged there, so entities silently never got the update — should_run stayed
-    # stale for up to several minutes past its actual start/end, observed live 2026-09-02).
+    # Refreshes should_run/locked every minute without re-running the search (both are pure
+    # functions of "now"). Must be @callback, not a bare lambda, or HA's thread-safety check
+    # silently drops the update.
     @callback
     def _refresh_listeners(_now: datetime) -> None:
         coordinator.async_update_listeners()

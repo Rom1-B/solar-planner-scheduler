@@ -1,12 +1,6 @@
-"""Pure scheduling math.
-
-Ported line-for-line from solar-planner-card's solar-planner-card.js
-(github.com/Rom1-B/solar-planner-card) so the two projects never disagree about what "best slot"
-or "solar coverage" means. Any algorithm change in the JS reference must be mirrored here, along
-with its accompanying case in tests/scheduling.test.js -> tests/test_scheduling.py.
-
-Field names are snake_case here (power_w, duration_min, device_name) where the JS uses camelCase
-(powerW, durationMin, deviceName) — the only deliberate naming difference from the reference.
+"""Pure scheduling math, mirrored from frontend/solar-planner-card.js. Keep both in sync,
+including tests/scheduling.test.js <-> tests/test_scheduling.py. Fields are snake_case here,
+camelCase there — the only deliberate difference.
 """
 
 from __future__ import annotations
@@ -93,6 +87,49 @@ def instant_deficit_wh(
     return deficit_wh
 
 
+def price_at(t: datetime, tariff_bands: Sequence[dict]) -> float:
+    """€/kWh at time t. Empty tariff_bands returns the neutral price 1.0.
+
+    Bands carry only a start time ("HH:MM"): the last band whose start is <= t applies, wrapping
+    to the last band in the list when t is before the first band of the day.
+    """
+    if not tariff_bands:
+        return 1.0
+    sorted_bands = sorted(tariff_bands, key=lambda b: b["start"])
+    times = [datetime.strptime(b["start"], "%H:%M").time() for b in sorted_bands]
+    now_time = t.time()
+    current = sorted_bands[-1]
+    for band, band_time in zip(sorted_bands, times):
+        if band_time <= now_time:
+            current = band
+    return current["price"]
+
+
+def instant_deficit_cost(
+    item_segments: Sequence[dict],
+    other_segments: Sequence[dict],
+    points: Sequence[dict],
+    base_load: float,
+    start: datetime,
+    end: datetime,
+    tariff_bands: Sequence[dict],
+) -> float:
+    """Grid-draw cost (€): same walk as instant_deficit_wh(), priced per step via price_at()."""
+    cost = 0.0
+    t = start
+    while t < end:
+        step_end = min(t + _SMOOTH_BUCKET, end)
+        mid = t + (step_end - t) / 2
+        item_power = _power_at(item_segments, mid)
+        others_power = _power_at(other_segments, mid)
+        solar_available = max(0.0, interpolate(points, mid) - base_load - others_power)
+        deficit = max(0.0, item_power - solar_available)
+        deficit_kwh = deficit * (step_end - t).total_seconds() / 3600 / 1000
+        cost += deficit_kwh * price_at(mid, tariff_bands)
+        t = step_end
+    return cost
+
+
 def _coverage_ratio(
     item_segments: Sequence[dict],
     other_segments: Sequence[dict],
@@ -101,9 +138,8 @@ def _coverage_ratio(
     start: datetime,
     end: datetime,
 ) -> float:
-    """Deficit weighted by energy share while any shortfall exists (bounded 0-1); once fully
-    covered, worst ratio among above-average-power instants only (unbounded). Unrounded — callers
-    needing a display value should go through coverage_percent().
+    """Bounded 0-1 while a shortfall exists; unbounded once fully covered. Use coverage_percent()
+    for a display value.
     """
     deficit_wh = instant_deficit_wh(item_segments, other_segments, points, base_load, start, end)
     total_energy_wh = sum(seg["power"] * (seg["end"] - seg["start"]).total_seconds() / 3600 for seg in item_segments)
@@ -163,6 +199,7 @@ class Placement:
     index: int
     ratio: float
     coverage_pct: int
+    cost: float = 0.0
 
 
 def find_best_placement(
@@ -173,14 +210,13 @@ def find_best_placement(
     base_load: float,
     others: Sequence[dict],
     blocked: Sequence[dict] = (),
+    tariff_bands: Sequence[dict] = (),
 ) -> Optional[Placement]:
-    """Finds the start bucket maximizing coverage ratio (unrounded — avoids ties from rounding).
+    """Finds the start bucket minimizing estimated cost, breaking ties by coverage ratio.
 
-    max_simultaneous_power stays a hard filter via _fits_peak_ceiling; the candidate step comes
-    from `buckets` itself, not a hardcoded 30 min. `blocked` excludes candidates entirely on
-    overlap, independent of power — used for same-device mutual exclusion between programs, where
-    `others`' power-budget sharing isn't enough (two low-power programs of the same physical
-    device could otherwise be placed on the same, physically impossible, overlapping window).
+    With tariff_bands empty, price_at() is a flat 1.0, so this reproduces the old ratio-only
+    ranking. `blocked` excludes candidates outright (same-device mutual exclusion); `others` only
+    competes for the shared power budget.
     """
     step = buckets[1]["start"] - buckets[0]["start"] if len(buckets) > 1 else timedelta(milliseconds=DRAG_SNAP_MS)
     step_minutes = step.total_seconds() / 60
@@ -198,8 +234,9 @@ def find_best_placement(
         if not _fits_peak_ceiling(item_segments, other_segments, max_simultaneous_power):
             continue
         ratio = _coverage_ratio(item_segments, other_segments, points, base_load, start, end)
-        if best is None or ratio > best.ratio:
-            best = Placement(index=i, ratio=ratio, coverage_pct=_round_half_up(ratio * 100))
+        cost = instant_deficit_cost(item_segments, other_segments, points, base_load, start, end, tariff_bands)
+        if best is None or cost < best.cost or (cost == best.cost and ratio > best.ratio):
+            best = Placement(index=i, ratio=ratio, coverage_pct=_round_half_up(ratio * 100), cost=cost)
     return best
 
 
@@ -211,9 +248,7 @@ def schedule_proposals(
     base_load: float,
     pre_committed: Optional[Sequence[dict]] = None,
 ) -> list[dict]:
-    """pre_committed seeds already-reserved items; each newly placed item is added to it so later
-    items in the batch see earlier placements.
-    """
+    """pre_committed seeds reserved items; each placed item is added so later ones see it."""
     committed = list(pre_committed or [])
     sorted_items = sorted(items, key=lambda it: it["power_w"], reverse=True)
     proposals = []
@@ -231,10 +266,8 @@ def schedule_proposals(
 
 
 def find_peak_conflicts(entries: Sequence[dict], max_simultaneous_power: float) -> list[dict]:
-    """Exact conflict check: sweeps real phase boundaries and sums truly concurrent power.
-
-    Returns a list of the conflicting entry dicts, deduplicated by identity (JS returns a Set of
-    object references; Python dicts aren't hashable, so this is the closest equivalent).
+    """Sweeps real phase boundaries, sums truly concurrent power, returns conflicting entries
+    deduplicated by identity.
     """
     with_segments = [(entry, phase_segments(entry)) for entry in entries if entry.get("start") and entry.get("end")]
     breakpoints = set()

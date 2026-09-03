@@ -12,9 +12,11 @@ from custom_components.solar_planner_scheduler.scheduling import (
     DRAG_SNAP_MS,
     find_best_placement,
     find_peak_conflicts,
+    instant_deficit_cost,
     instant_deficit_wh,
     coverage_percent,
     phase_segments,
+    price_at,
     schedule_proposals,
     snap_to_grid,
 )
@@ -334,6 +336,76 @@ def test_find_best_placement_does_not_falsely_reject_bucket_sharing_non_overlapp
     assert placement is not None
     assert placement.index == 1
     assert placement.coverage_pct >= 100
+
+
+def test_price_at_returns_the_neutral_price_when_no_tariff_bands():
+    assert price_at(t(10, 0), []) == 1.0
+
+
+def test_price_at_resolves_the_active_band():
+    tariff_bands = [{"start": "00:00", "price": 0.20}, {"start": "07:00", "price": 0.15}, {"start": "22:00", "price": 0.30}]
+    assert price_at(t(8, 0), tariff_bands) == 0.15
+    assert price_at(t(23, 0), tariff_bands) == 0.30
+
+
+def test_price_at_wraps_around_midnight_to_the_last_band():
+    # No band starts before 07:00 today: falls back to 22:00 (the band that "started yesterday"
+    # and is still running), the wraparound this format relies on to cover 24h with no gaps.
+    tariff_bands = [{"start": "07:00", "price": 0.15}, {"start": "22:00", "price": 0.30}]
+    assert price_at(t(2, 0), tariff_bands) == 0.30
+
+
+def test_instant_deficit_cost_converts_wh_deficit_to_euros_at_the_active_price():
+    start = t(10, 0)
+    end = t(11, 0)
+    points = [{"time": start, "w": 500}, {"time": end, "w": 500}]
+    item_segments = phase_segments({"power_w": 1500, "start": start, "end": end})
+    tariff_bands = [{"start": "00:00", "price": 0.25}]
+    cost = instant_deficit_cost(item_segments, [], points, 0, start, end, tariff_bands)
+    # 1000 W deficit for 1h = 1 kWh, at 0.25 EUR/kWh.
+    assert cost == pytest.approx(0.25)
+
+
+def test_find_best_placement_prefers_lower_tariff_cost_over_higher_solar_coverage():
+    # Candidate A: 90% covered, in an expensive band. Candidate B: only 80% covered but in a much
+    # cheaper band, ending up strictly less costly overall — the tariff must be able to flip the
+    # winner away from the plain-coverage pick.
+    points = [
+        {"time": t(10, 0), "w": 1800},
+        {"time": t(11, 0), "w": 1800},
+        {"time": t(14, 0), "w": 1600},
+        {"time": t(15, 0), "w": 1600},
+    ]
+    item = {"power_w": 2000, "duration_min": 60}
+    buckets = [{"start": t(10, 0)}, {"start": t(14, 0)}]
+
+    placement_no_tariff = find_best_placement(buckets, item, 4000, points, 0, [])
+    assert placement_no_tariff.index == 0, "without tariff tracking, ranking stays coverage-only"
+    assert placement_no_tariff.coverage_pct == 90
+
+    tariff_bands = [{"start": "00:00", "price": 0.30}, {"start": "13:00", "price": 0.05}]
+    placement_with_tariff = find_best_placement(buckets, item, 4000, points, 0, [], tariff_bands=tariff_bands)
+    assert placement_with_tariff.index == 1, "the cheap 13:00 band makes the lower-coverage slot win on cost"
+    assert placement_with_tariff.coverage_pct == 80
+
+
+def test_find_best_placement_tiebreaks_zero_deficit_candidates_by_solar_margin():
+    """Both candidates fully cover the item (0 deficit -> cost 0 for both, tariff_bands or not),
+    proving cost alone can't distinguish them: the ratio tiebreaker must still pick the candidate
+    with more remaining solar margin, exactly as find_best_placement did before cost existed.
+    """
+    item = {"power_w": 2000, "duration_min": 60}
+    points = [
+        {"time": t(9, 0), "w": 3000},
+        {"time": t(10, 0), "w": 3000},
+        {"time": t(11, 0), "w": 5000},
+        {"time": t(12, 0), "w": 5000},
+    ]
+    buckets = [{"start": t(9, 0)}, {"start": t(11, 0)}]
+    placement = find_best_placement(buckets, item, 4000, points, 0, [])
+    assert placement.index == 1, "5000 W of solar margin beats 3000 W once both fully cover the load"
+    assert placement.cost == 0
+    assert placement.ratio > 1.0
 
 
 def test_snap_to_grid_rounds_to_nearest_5_minute_mark():

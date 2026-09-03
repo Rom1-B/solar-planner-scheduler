@@ -8,7 +8,7 @@
           "forecast_tomorrow_entity": "Entité de prévision pour demain (optionnel)",
           "production_entity": "Entité de production solaire (optionnel)",
           "consumption_entity": "Entité de consommation de la maison (optionnel)",
-          "max_simultaneous_power": "Puissance simultanée max (W, plafond de sécurité disjoncteur)"
+          "max_simultaneous_power": "Puissance simultanée max (W)"
         }
       }
     }
@@ -19,6 +19,7 @@
         "title": "Solar Planner Scheduler",
         "menu_options": {
           "edit_base": "Modifier les paramètres de base",
+          "edit_tariff": "Configurer les tarifs",
           "add_device": "Ajouter un appareil",
           "remove_device": "Supprimer un appareil",
           "add_program": "Ajouter un programme à un appareil (multi-phases)",
@@ -36,12 +37,21 @@
           "forecast_tomorrow_entity": "Entité de prévision pour demain (optionnel)",
           "production_entity": "Entité de production solaire (optionnel)",
           "consumption_entity": "Entité de consommation de la maison (optionnel)",
-          "max_simultaneous_power": "Puissance simultanée max (W, plafond de sécurité disjoncteur)"
+          "max_simultaneous_power": "Puissance simultanée max (W)"
+        }
+      },
+      "edit_tariff": {
+        "title": "Configurer les tarifs",
+        "description": "Une plage par ligne : `HH:MM@prix`, ex. `22:00@0.1589`.",
+        "data": {
+          "price_tracking_enabled": "Activer le suivi tarifaire",
+          "subscription_price_monthly": "Prix d'abonnement mensuel",
+          "tariff_bands_text": "Plages de prix (kWh)"
         }
       },
       "add_device": {
         "title": "Ajouter un appareil",
-        "description": "Crée l'appareil sans programme pour l'instant, utilisez \"Ajouter un programme\" ensuite pour lui en donner un (ou plusieurs).",
+        "description": "Ajoutez un programme ensuite pour lui donner des phases.",
         "data": {
           "name": "Nom",
           "power_sensor": "Capteur de puissance (optionnel)"
@@ -53,12 +63,12 @@
       },
       "add_program": {
         "title": "Ajouter un programme",
-        "description": "Choisissez l'appareil et nommez le nouveau programme (ex. \"Eco coton\"). L'écran suivant demande ses phases.",
+        "description": "L'écran suivant demande ses phases.",
         "data": { "name": "Appareil", "program_name": "Nom du programme" }
       },
       "add_program_phases": {
         "title": "Phases du programme",
-        "description": "Une phase par ligne, ex. `20min@150W` ou `1.5h@150W`. Au moins une phase est requise. Cochez les jours où ce programme peut être planifié automatiquement (laissez tout décoché pour ne l'utiliser qu'en mode manuel).",
+        "description": "Une phase par ligne : `20min@150W` ou `1.5h@150W`. Cochez les jours de planification auto.",
         "data": { "phases": "Phases", "auto_days": "Planification auto le" }
       },
       "edit_program": {
@@ -72,7 +82,7 @@
       },
       "edit_program_phases": {
         "title": "Phases du programme",
-        "description": "Une phase par ligne, ex. `20min@150W` ou `1.5h@150W`. Ceci remplace toute la liste de phases. Cochez les jours où ce programme peut être planifié automatiquement (laissez tout décoché pour ne l'utiliser qu'en mode manuel).",
+        "description": "Une phase par ligne : `20min@150W` ou `1.5h@150W`. Remplace toute la liste. Cochez les jours de planification auto.",
         "data": { "phases": "Phases", "auto_days": "Planification auto le" }
       },
       "remove_program": {
@@ -81,7 +91,7 @@
       },
       "add_fixed_load": {
         "title": "Ajouter une charge fixe",
-        "description": "Nommez la charge et définissez son heure de démarrage quotidienne. L'écran suivant demande ses phases.",
+        "description": "L'écran suivant demande ses phases.",
         "data": {
           "name": "Nom",
           "start_time": "Heure de démarrage quotidienne"
@@ -89,7 +99,7 @@
       },
       "add_fixed_load_phases": {
         "title": "Phases de la charge fixe",
-        "description": "Une phase par ligne, ex. `20min@150W` ou `1.5h@150W`. Au moins une phase est requise.",
+        "description": "Une phase par ligne : `20min@150W` ou `1.5h@150W`.",
         "data": { "phases": "Phases" }
       },
       "edit_fixed_load": {
@@ -99,7 +109,7 @@
       },
       "edit_fixed_load_phases": {
         "title": "Phases de la charge fixe",
-        "description": "Une phase par ligne, ex. `20min@150W` ou `1.5h@150W`. Ceci remplace toute la liste de phases.",
+        "description": "Une phase par ligne : `20min@150W` ou `1.5h@150W`. Remplace toute la liste.",
         "data": { "phases": "Phases" }
       },
       "remove_fixed_load": {
@@ -117,13 +127,15 @@
       "duplicate_program": "Cet appareil a déjà un programme avec ce nom.",
       "duplicate_device": "Un appareil avec ce nom existe déjà.",
       "invalid_phase_line": "Chaque ligne doit ressembler à `20min@150W` ou `1.5h@150W`.",
-      "empty_phases": "Entrez au moins une phase."
+      "empty_phases": "Entrez au moins une phase.",
+      "invalid_tariff_line": "Chaque ligne doit ressembler à `22:00@0.1589` (HH:MM@prix).",
+      "empty_tariff_bands": "Entrez au moins une plage de prix."
     }
   },
   "issues": {
     "failed_to_start": {
       "title": "\"{program}\" ({device}) ne semble pas démarrer",
-      "description": "Solar Planner Scheduler a planifié \"{program}\" sur \"{device}\", mais son capteur de puissance n'a jamais indiqué de consommation, sur plusieurs cycles de rafraîchissement consécutifs. Vérifiez l'automatisation qui réagit au capteur binaire `should_run` de ce programme — elle ne se déclenche peut-être pas."
+      "description": "\"{program}\" sur \"{device}\" n'a jamais consommé après plusieurs tentatives. Vérifiez l'automatisation qui réagit à `should_run`."
     }
   }
 }

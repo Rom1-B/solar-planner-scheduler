@@ -27,6 +27,10 @@ WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 CONF_IDLE_POWER_THRESHOLD = "idle_power_threshold"
 
+CONF_PRICE_TRACKING_ENABLED = "price_tracking_enabled"
+CONF_SUBSCRIPTION_PRICE_MONTHLY = "subscription_price_monthly"
+CONF_TARIFF_BANDS = "tariff_bands"
+
 NONE_PROGRAM = "None"
 
 DEFAULT_MAX_SIMULTANEOUS_POWER = 4000
@@ -39,3 +43,5 @@ ATTR_DURATION_MIN = "duration_min"
 ATTR_POWER_W = "power_w"
 ATTR_PROFILE = "profile"
 ATTR_LOCKED = "locked"
+ATTR_ESTIMATED_COST = "estimated_cost"
+ATTR_CURRENCY = "currency"

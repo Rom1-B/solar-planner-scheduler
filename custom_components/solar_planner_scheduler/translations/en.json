@@ -8,7 +8,7 @@
           "forecast_tomorrow_entity": "Forecast entity for tomorrow (optional)",
           "production_entity": "Solar production entity (optional)",
           "consumption_entity": "House consumption entity (optional)",
-          "max_simultaneous_power": "Max simultaneous power (W, breaker safety ceiling)"
+          "max_simultaneous_power": "Max simultaneous power (W)"
         }
       }
     }
@@ -19,6 +19,7 @@
         "title": "Solar Planner Scheduler",
         "menu_options": {
           "edit_base": "Edit base settings",
+          "edit_tariff": "Configure tariffs",
           "add_device": "Add a device",
           "remove_device": "Remove a device",
           "add_program": "Add a program to a device (multi-phase)",
@@ -36,12 +37,21 @@
           "forecast_tomorrow_entity": "Forecast entity for tomorrow (optional)",
           "production_entity": "Solar production entity (optional)",
           "consumption_entity": "House consumption entity (optional)",
-          "max_simultaneous_power": "Max simultaneous power (W, breaker safety ceiling)"
+          "max_simultaneous_power": "Max simultaneous power (W)"
+        }
+      },
+      "edit_tariff": {
+        "title": "Configure tariffs",
+        "description": "One band per line: `HH:MM@price`, e.g. `22:00@0.1589`.",
+        "data": {
+          "price_tracking_enabled": "Enable tariff tracking",
+          "subscription_price_monthly": "Monthly subscription price",
+          "tariff_bands_text": "Price bands (kWh)"
         }
       },
       "add_device": {
         "title": "Add a device",
-        "description": "Creates the device with no program yet, use \"Add a program\" next to give it one (or several).",
+        "description": "Add a program next to give it phases.",
         "data": {
           "name": "Name",
           "power_sensor": "Power sensor (optional)"
@@ -53,12 +63,12 @@
       },
       "add_program": {
         "title": "Add a program",
-        "description": "Pick the device and name the new program (e.g. \"Eco coton\"). The next screen asks for its phases.",
+        "description": "Next screen asks for its phases.",
         "data": { "name": "Device", "program_name": "Program name" }
       },
       "add_program_phases": {
         "title": "Program phases",
-        "description": "One phase per line, e.g. `20min@150W` or `1.5h@150W`. At least one phase is required. Check the days this program may be scheduled automatically (leave all unchecked to only run it via manual mode).",
+        "description": "One phase per line: `20min@150W` or `1.5h@150W`. Check days for auto-scheduling.",
         "data": { "phases": "Phases", "auto_days": "Auto-schedule on" }
       },
       "edit_program": {
@@ -72,7 +82,7 @@
       },
       "edit_program_phases": {
         "title": "Program phases",
-        "description": "One phase per line, e.g. `20min@150W` or `1.5h@150W`. This replaces the whole list of phases. Check the days this program may be scheduled automatically (leave all unchecked to only run it via manual mode).",
+        "description": "One phase per line: `20min@150W` or `1.5h@150W`. Replaces the whole list. Check days for auto-scheduling.",
         "data": { "phases": "Phases", "auto_days": "Auto-schedule on" }
       },
       "remove_program": {
@@ -81,7 +91,7 @@
       },
       "add_fixed_load": {
         "title": "Add a fixed load",
-        "description": "Name the load and set its daily start time. The next screen asks for its phases.",
+        "description": "Next screen asks for its phases.",
         "data": {
           "name": "Name",
           "start_time": "Daily start time"
@@ -89,7 +99,7 @@
       },
       "add_fixed_load_phases": {
         "title": "Fixed load phases",
-        "description": "One phase per line, e.g. `20min@150W` or `1.5h@150W`. At least one phase is required.",
+        "description": "One phase per line: `20min@150W` or `1.5h@150W`.",
         "data": { "phases": "Phases" }
       },
       "edit_fixed_load": {
@@ -99,7 +109,7 @@
       },
       "edit_fixed_load_phases": {
         "title": "Fixed load phases",
-        "description": "One phase per line, e.g. `20min@150W` or `1.5h@150W`. This replaces the whole list of phases.",
+        "description": "One phase per line: `20min@150W` or `1.5h@150W`. Replaces the whole list.",
         "data": { "phases": "Phases" }
       },
       "remove_fixed_load": {
@@ -117,13 +127,15 @@
       "duplicate_program": "This device already has a program with that name.",
       "duplicate_device": "A device with that name already exists.",
       "invalid_phase_line": "Each line must look like `20min@150W` or `1.5h@150W`.",
-      "empty_phases": "Enter at least one phase."
+      "empty_phases": "Enter at least one phase.",
+      "invalid_tariff_line": "Each line must look like `22:00@0.1589` (HH:MM@price).",
+      "empty_tariff_bands": "Enter at least one price band."
     }
   },
   "issues": {
     "failed_to_start": {
       "title": "\"{program}\" ({device}) does not seem to start",
-      "description": "Solar Planner Scheduler scheduled \"{program}\" on \"{device}\" to start, but its power sensor never showed it drawing power, for several refresh cycles in a row. Check the automation that reacts to this program's `should_run` binary sensor — it may not be triggering."
+      "description": "\"{program}\" on \"{device}\" never drew power after several attempts. Check the automation reacting to `should_run`."
     }
   }
 }

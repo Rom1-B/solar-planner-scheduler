@@ -11,9 +11,16 @@ a final `create_entry` result.
 
 from __future__ import annotations
 
+import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.solar_planner_scheduler.config_flow import _base_schema, _device_schema
+from custom_components.solar_planner_scheduler.config_flow import (
+    _base_schema,
+    _device_schema,
+    _parse_tariff_bands,
+    _TariffParseError,
+    _tariff_schema,
+)
 from custom_components.solar_planner_scheduler.const import (
     CONF_AUTO_DAYS,
     CONF_CONSUMPTION_ENTITY,
@@ -25,9 +32,12 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_NAME,
     CONF_POWER_PROFILE,
     CONF_POWER_SENSOR,
+    CONF_PRICE_TRACKING_ENABLED,
     CONF_PRODUCTION_ENTITY,
     CONF_PROGRAMS,
     CONF_START_TIME,
+    CONF_SUBSCRIPTION_PRICE_MONTHLY,
+    CONF_TARIFF_BANDS,
     DOMAIN,
 )
 
@@ -230,6 +240,72 @@ async def test_edit_base_accepts_omitted_optional_entities(hass, enable_custom_i
     assert entry.data.get("production_entity") is None
 
 
+async def test_edit_tariff_writes_price_tracking_config_to_entry_data(hass, enable_custom_integrations):
+    entry = _entry(hass, [])
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_tariff"})
+    assert result["step_id"] == "edit_tariff"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_PRICE_TRACKING_ENABLED: True,
+            CONF_SUBSCRIPTION_PRICE_MONTHLY: 12.5,
+            "tariff_bands_text": "06:00@0.1892\n22:00@0.1589",
+        },
+    )
+
+    assert result["type"] == "menu"
+    assert entry.data[CONF_PRICE_TRACKING_ENABLED] is True
+    assert entry.data[CONF_SUBSCRIPTION_PRICE_MONTHLY] == 12.5
+    assert entry.data[CONF_TARIFF_BANDS] == [
+        {"start": "06:00", "price": 0.1892},
+        {"start": "22:00", "price": 0.1589},
+    ]
+
+
+async def test_edit_tariff_rejects_an_invalid_band_line(hass, enable_custom_integrations):
+    entry = _entry(hass, [])
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_tariff"})
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_PRICE_TRACKING_ENABLED: True, "tariff_bands_text": "garbage"},
+    )
+
+    assert result["type"] == "form"
+    assert result["errors"] == {"tariff_bands_text": "invalid_tariff_line"}
+    assert CONF_TARIFF_BANDS not in entry.data
+
+
+async def test_editing_base_settings_does_not_wipe_previously_configured_tariff_data(hass, enable_custom_integrations):
+    """Regression test: async_step_edit_base() used to overwrite entry.data wholesale
+    (data=user_input), which would have silently dropped price_tracking_enabled/tariff_bands the
+    moment base settings were re-edited after configuring tariffs, since edit_base's own form
+    never carries those fields. It must merge instead.
+    """
+    entry = _entry(hass, [])
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_tariff"})
+    await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_PRICE_TRACKING_ENABLED: True, "tariff_bands_text": "00:00@0.22"},
+    )
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_base"})
+    await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 5000},
+    )
+
+    assert entry.data[CONF_MAX_SIMULTANEOUS_POWER] == 5000
+    assert entry.data[CONF_PRICE_TRACKING_ENABLED] is True
+    assert entry.data[CONF_TARIFF_BANDS] == [{"start": "00:00", "price": 0.22}]
+
+
 async def test_remove_program_removes_it_from_the_devices_only_program_list(hass, enable_custom_integrations):
     """The current selection itself lives in the coordinator's own store, not in these options
     (see test_coordinator.py's test_forget_program_resets_the_selection_only_if_it_matches for the
@@ -347,3 +423,33 @@ def test_device_power_sensor_picker_filters_to_power_sensors():
     selector = _selector_for(_device_schema(), CONF_POWER_SENSOR)
     assert selector.config["domain"] == ["sensor"]
     assert selector.config["device_class"] == ["power"]
+
+
+# --- tariff bands parser ------------------------------------------------------------------------
+
+
+def test_parse_tariff_bands_handles_midnight_wraparound():
+    bands = _parse_tariff_bands("22:00@0.1589\n06:00@0.1892")
+    # Sorted by start time; the caller (price_at) is what handles the actual wraparound lookup.
+    assert bands == [{"start": "06:00", "price": 0.1892}, {"start": "22:00", "price": 0.1589}]
+
+
+def test_parse_tariff_bands_rejects_invalid_line():
+    with pytest.raises(_TariffParseError) as exc_info:
+        _parse_tariff_bands("not a band")
+    assert exc_info.value.error_key == "invalid_tariff_line"
+
+
+def test_parse_tariff_bands_rejects_empty_text():
+    with pytest.raises(_TariffParseError) as exc_info:
+        _parse_tariff_bands("   \n  ")
+    assert exc_info.value.error_key == "empty_tariff_bands"
+
+
+def test_price_tracking_defaults_to_disabled():
+    schema = _tariff_schema()
+    for key in schema.schema:
+        if str(key) == CONF_PRICE_TRACKING_ENABLED:
+            assert key.default() is False
+            return
+    raise AssertionError(f"{CONF_PRICE_TRACKING_ENABLED} not found in schema")

@@ -5,7 +5,7 @@ const COLORS = {
   dark: { forecast: "#3987e5", actual: "#d95926", consumption: "#199e70" },
 };
 
-// Devices start at color slot 4+ (red-first, not green, to avoid a slot-3 aqua CVD clash) — re-validate with validate_palette.js before reordering.
+// Red-first, not green, to avoid a slot-3 aqua CVD clash — re-validate with validate_palette.js.
 const DEVICE_COLORS = {
   light: ["#e34948", "#008300", "#4a3aa7", "#eda100", "#e87ba4"],
   dark: ["#e66767", "#008300", "#9085e9", "#c98500", "#d55181"],
@@ -16,7 +16,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export const SMOOTH_BUCKET_MS = 5 * 60 * 1000;
 export const DRAG_SNAP_MS = 5 * 60 * 1000;
 
-// Snaps a dragged gantt bar's start to a readable grid instead of an arbitrary pixel-derived ms.
 export function snapToGrid(ms, stepMs = DRAG_SNAP_MS) {
   return Math.round(ms / stepMs) * stepMs;
 }
@@ -30,13 +29,11 @@ function fmtW(w) {
   return w >= 1000 ? `${(w / 1000).toFixed(1)} kW` : `${Math.round(w)} W`;
 }
 
-// Always kWh, even under 1 (e.g. "0.2 kWh") — simpler than fmtW's W/kW switch.
 function fmtWh(wh) {
   if (wh == null || Number.isNaN(wh)) return "-";
   return `${(wh / 1000).toFixed(1)} kWh`;
 }
 
-// Y-axis ticks only — wStep is always a multiple of 1000, so every tick is a whole kW (unit shown once, above the axis).
 function fmtWTick(w) {
   return String(Math.round(w / 1000));
 }
@@ -51,7 +48,7 @@ function startOfDay(d) {
   return r;
 }
 
-// Downsamples raw event-driven history (thousands of samples by afternoon) into time-weighted buckets for a readable line.
+// Downsamples raw history into time-weighted buckets.
 export function smoothCurve(points, bucketMs, rangeStart, rangeEnd) {
   if (!points.length) return [];
   const result = [];
@@ -93,7 +90,7 @@ function interpolate(points, t) {
   return 0;
 }
 
-// Power at time t, summing every overlapping segment — segments concatenates several items, so a plain .find() would silently drop all but one concurrent item (real bug, see CLAUDE.local.md).
+// Sums every overlapping segment, not just the first match.
 function powerAt(segments, t) {
   let sum = 0;
   for (const s of segments) {
@@ -102,7 +99,7 @@ function powerAt(segments, t) {
   return sum;
 }
 
-// Solar-coverage deficit (Wh), checked instant-by-instant at SMOOTH_BUCKET_MS (not a 30-min average) so a brief spike must itself clear the forecast, not just balance out over the half-hour.
+// Solar-coverage deficit (Wh), checked instant-by-instant so a brief spike can't just average out.
 export function instantDeficitWh(itemSegments, otherSegments, points, baseLoad, start, end) {
   let deficitWh = 0;
   for (let t = start.getTime(); t < end.getTime(); t += SMOOTH_BUCKET_MS) {
@@ -117,8 +114,7 @@ export function instantDeficitWh(itemSegments, otherSegments, points, baseLoad, 
   return deficitWh;
 }
 
-// Deficit weighted by energy share while any shortfall exists (bounded 0-1); once fully covered, worst
-// ratio among above-average-power instants only (unbounded, see CLAUDE.local.md). Unrounded, for coveragePercent.
+// Bounded 0-1 while a shortfall exists; unbounded once fully covered (worst-case margin instead).
 function coverageRatio(itemSegments, otherSegments, points, baseLoad, start, end) {
   const deficitWh = instantDeficitWh(itemSegments, otherSegments, points, baseLoad, start, end);
   const totalEnergyWh = itemSegments.reduce((sum, seg) => sum + (seg.power * (seg.end.getTime() - seg.start.getTime())) / 3600000, 0);
@@ -143,7 +139,6 @@ export function coveragePercent(itemSegments, otherSegments, points, baseLoad, s
   return Math.round(coverageRatio(itemSegments, otherSegments, points, baseLoad, start, end) * 100);
 }
 
-// Breaks an item into absolute-time phase segments; no profile means one flat segment for the whole run.
 export function phaseSegments(item) {
   if (!item.profile) return [{ start: item.start, end: item.end, power: item.powerW }];
   let t = item.start;
@@ -164,18 +159,12 @@ class SolarPlannerCard extends HTMLElement {
     this._consumptionCurve = [];
     this._lastRefresh = 0;
     this._lastSignature = null;
-    // Live gantt-bar drag state, not re-rendered per pointermove — see _bindGanttDrag.
+    // Drag state, not re-rendered per pointermove — see _bindGanttDrag.
     this._drag = null;
   }
 
-  // config.devices is a list of solar_planner_scheduler device slugs (matching each device's
-  // "slug" in sensor.solar_planner_scheduler_config's devices attribute — see _baseConfig()).
-  // One gantt/legend row is rendered per (device, program) pair, entity_ids built from that
-  // program's own "slug" (datetime.<slug>_start, binary_sensor.<slug>_should_run,
-  // switch.<slug>_active) — the integration computes these slugs server-side (real slugify(),
-  // matching entity_id generation exactly) so the card never approximates one itself.
-  // fixed_loads is no longer read from here either — see _baseConfig(), sourced from the
-  // integration's own config entry.
+  // config.devices is a list of device slugs; entity_ids are built from each program's own
+  // server-computed "slug" (see _baseConfig()), never approximated client-side.
   setConfig(config) {
     if (!Array.isArray(config.devices) || !config.devices.length) {
       throw new Error("solar-planner-card: 'devices' must be a non-empty array of device slugs");
@@ -190,9 +179,7 @@ class SolarPlannerCard extends HTMLElement {
     this._lastSignature = null;
   }
 
-  // Reads forecast/production/consumption/max_simultaneous_power/fixed_loads from the
-  // integration's own sensor.solar_planner_scheduler_config instead of requiring them in card
-  // config — one source of truth instead of two.
+  // Reads base settings from sensor.solar_planner_scheduler_config, not card config.
   _baseConfig() {
     if (!this._hass) return { fixed_loads: [] };
     const state = this._hass.states["sensor.solar_planner_scheduler_config"];
@@ -212,9 +199,7 @@ class SolarPlannerCard extends HTMLElement {
     };
   }
 
-  // One row per (device, program) pair, in config.devices order then each device's own program
-  // order — a device not found in the config sensor's devices attribute (e.g. removed from
-  // integration config but still listed in the card's own YAML) is silently skipped.
+  // One row per (device, program) pair; a device missing from the config sensor is skipped.
   _programRows() {
     if (!this._hass || !this._config) return [];
     const byDeviceSlug = new Map(this._baseConfig().devices.map((d) => [d.slug, d]));
@@ -245,7 +230,7 @@ class SolarPlannerCard extends HTMLElement {
   _requestRender() {
     const active = this.shadowRoot.activeElement;
     if (active instanceof HTMLInputElement) {
-      // Don't rebuild the DOM under an input being actively edited (e.g. the manual time picker) — retry on blur.
+      // Don't rebuild the DOM under an active input — retry on blur.
       this._renderDirty = true;
       active.addEventListener(
         "blur",
@@ -274,10 +259,8 @@ class SolarPlannerCard extends HTMLElement {
     return 4 + this._programRows().length + this._baseConfig().fixed_loads.length;
   }
 
+  // Excludes fast-ticking entities that would wipe focus/hover for no visible change.
   _relevantSignature() {
-    // Excludes fast-ticking entities (surplus/power/etc.) that only feed 5-min-refreshed values —
-    // rendering on those would wipe focus/hover for nothing. Includes every per-program entity so
-    // an activation toggle, a forced start, or a server-side recompute all trigger a re-render.
     const base = this._baseConfig();
     const ids = ["sensor.solar_planner_scheduler_config", base.forecast_entity, base.forecast_tomorrow_entity].filter(Boolean);
     for (const row of this._programRows()) {
@@ -320,7 +303,6 @@ class SolarPlannerCard extends HTMLElement {
     if (base.production_entity) {
       jobs.push(
         this._fetchHistory(base.production_entity, midnight, now).then((pts) => {
-          // Smoothed once here, not per mousemove — raw history can hold thousands of samples by afternoon.
           this._actualPoints = smoothCurve(pts, SMOOTH_BUCKET_MS, midnight, now);
           this._actualCurve = this._actualPoints.map((p) => ({ time: p.time, w: p.value }));
         })
@@ -351,8 +333,7 @@ class SolarPlannerCard extends HTMLElement {
     if (!Array.isArray(detailed)) return null;
     const tomorrowState = base.forecast_tomorrow_entity ? this._hass.states[base.forecast_tomorrow_entity] : null;
     const tomorrowDetailed = Array.isArray(tomorrowState?.attributes?.detailedForecast) ? tomorrowState.attributes.detailedForecast : [];
-    // w10/w90 default to w (Solcast's P10/P90 percentiles) — a source without them collapses the
-    // confidence band to zero width instead of drawing a misleading gap.
+    // w10/w90 default to w: no percentiles collapses the confidence band instead of misleading.
     return [...detailed, ...tomorrowDetailed]
       .map((p) => {
         const w = (p.pv_estimate || 0) * 1000;
@@ -366,7 +347,7 @@ class SolarPlannerCard extends HTMLElement {
       .sort((a, b) => a.time - b.time);
   }
 
-  // days: daily-occurrence offsets from today (e.g. [0, 1] for today + tomorrow) — fixed loads recur daily.
+  // days: offsets from today, e.g. [0, 1] for today + tomorrow.
   _fixedLoadWindows(days = [0]) {
     const today = startOfDay(new Date());
     const result = [];
@@ -391,10 +372,7 @@ class SolarPlannerCard extends HTMLElement {
     return result;
   }
 
-  // One consolidated view of a program's server-computed state, read fresh every render from the
-  // three entities solar_planner_scheduler exposes for it. Nothing here is computed client-side —
-  // only the live drag preview in _bindGanttDrag still is (scorePct), for instant feedback before
-  // the server has a chance to recompute.
+  // Server-computed state only; the live drag preview (scorePct) is the one exception.
   _readProgramState(row) {
     const start = this._hass.states[`datetime.${row.slug}_start`];
     const shouldRun = this._hass.states[`binary_sensor.${row.slug}_should_run`];
@@ -414,6 +392,8 @@ class SolarPlannerCard extends HTMLElement {
       powerW: attrs.power_w ?? null,
       profile: attrs.profile ?? null,
       active: active?.state === "on",
+      estimatedCost: attrs.estimated_cost ?? null,
+      currency: attrs.currency ?? null,
     };
   }
 
@@ -421,8 +401,7 @@ class SolarPlannerCard extends HTMLElement {
     await this._hass.callService("switch", nextActive ? "turn_on" : "turn_off", { entity_id: `switch.${slug}_active` });
   }
 
-  // Shared write path for the manual time input and gantt-bar drag — forcing the start time is a
-  // single datetime.set_value call now, no separate mode switch to flip.
+  // Shared write path for the manual time input and gantt-bar drag.
   async _setForcedStart(slug, date) {
     await this._hass.callService("datetime", "set_value", { entity_id: `datetime.${slug}_start`, datetime: date.toISOString() });
   }
@@ -443,7 +422,7 @@ class SolarPlannerCard extends HTMLElement {
 
   _render() {
     if (!this._hass || !this._config) return;
-    // _render() rebuilds the whole DOM every call, so .chart-scroll is new each time — restore scrollLeft or a horizontal scroll gets yanked back to the start.
+    // Rebuilds the whole DOM each call — restore scrollLeft or it snaps back to the start.
     const scrollLeft = this.shadowRoot.querySelector(".chart-scroll")?.scrollLeft;
     this._lastSignature = this._relevantSignature();
     const base = this._baseConfig();
@@ -462,9 +441,8 @@ class SolarPlannerCard extends HTMLElement {
 
     const programRows = this._programRows();
     const deviceStates = programRows.map((row) => this._readProgramState(row));
-    // Fixed loads continue the same categorical sequence right after program rows, not a shared gray.
     const fixedLoadColor = (index) => deviceColorList[(deviceStates.length + index) % deviceColorList.length];
-    // Fixed loads recur daily — generate tomorrow's occurrence too once the view extends there.
+    // Generate tomorrow's occurrence too once the view extends there.
     const fixedLoads = this._fixedLoadWindows(base.forecast_tomorrow_entity ? [0, 1] : [0]);
     const fixedLoadsByIndex = new Map();
     fixedLoads.forEach((load) => {
@@ -472,7 +450,6 @@ class SolarPlannerCard extends HTMLElement {
       fixedLoadsByIndex.get(load.loadIndex).push(load);
     });
 
-    // Stacked layers: each device (config order, top-to-bottom), then fixed loads.
     const stackLayers = deviceStates
       .map((ds, i) => {
         const bar =
@@ -500,23 +477,23 @@ class SolarPlannerCard extends HTMLElement {
     const marginBottom = 24;
     const innerH = height - marginTop - marginBottom;
 
-    // Show only the daylight window (+30 min margin), not a fixed 0h-24h axis, to avoid a mostly-empty chart at night.
+    // Daylight window only (+30 min margin), to avoid a mostly-empty chart at night.
     const SUN_MARGIN_MS = 30 * 60 * 1000;
     const sunPoints = points.filter((p) => p.w > 0);
     const daylightStart = sunPoints.length ? new Date(sunPoints[0].time.getTime() - SUN_MARGIN_MS) : dayStart;
     const daylightEnd = sunPoints.length
       ? new Date(sunPoints[sunPoints.length - 1].time.getTime() + SUN_MARGIN_MS)
       : new Date(dayStart.getTime() + DAY_MS);
-    // Scheduled items can fall outside daylight hours (least-bad fallback) — widen the view or they'd render off the edge.
+    // Widen the view to include scheduled items that fall outside daylight hours.
     const scheduledTimes = stackLayers.flatMap((layer) => layer.bars.flatMap((b) => (b.start && b.end ? [b.start.getTime(), b.end.getTime()] : [])));
-    // Floored at now - 6h (never before midnight) — a full-day fixed load otherwise pulls the default view back to midnight regardless of time of day, hiding what's still ahead.
+    // Floored at now - 6h so a full-day fixed load doesn't pull the view back to midnight.
     const PAST_MARGIN_MS = 6 * 60 * 60 * 1000;
     const pastFloor = Math.max(now.getTime() - PAST_MARGIN_MS, dayStart.getTime());
     const viewStart = new Date(Math.max(Math.min(daylightStart.getTime(), ...scheduledTimes), pastFloor));
     const viewEnd = new Date(Math.max(daylightEnd.getTime(), ...scheduledTimes));
     const viewSpanMs = viewEnd.getTime() - viewStart.getTime();
 
-    // Chart width scales with the visible span, not a flat 100%, so forecast_tomorrow_entity's extra day spills into scroll (.chart-scroll) instead of compressing today.
+    // Width scales with the visible span so tomorrow's extra day scrolls instead of compressing today.
     const todayEnd = new Date(dayStart.getTime() + DAY_MS);
     const todaySunPoints = sunPoints.filter((p) => p.time < todayEnd);
     const todayDaylightStart = todaySunPoints.length ? new Date(todaySunPoints[0].time.getTime() - SUN_MARGIN_MS) : dayStart;
@@ -524,7 +501,6 @@ class SolarPlannerCard extends HTMLElement {
       ? new Date(todaySunPoints[todaySunPoints.length - 1].time.getTime() + SUN_MARGIN_MS)
       : todayEnd;
     const todayViewSpanMs = todayDaylightEnd.getTime() - todayDaylightStart.getTime();
-    // Fixed px-per-ms density, not a widthScale ratio clamped to 1 — that ratio could stretch a short span across a full day's pixels once viewStart got its own floor.
     const baseInnerW = 600 - marginLeft - marginRight;
     const pxPerMs = baseInnerW / todayViewSpanMs;
     const innerW = Math.max(1, viewSpanMs) * pxPerMs;
@@ -584,8 +560,7 @@ class SolarPlannerCard extends HTMLElement {
     const visiblePoints = points.filter((p) => p.time >= viewStart && p.time <= viewEnd);
     const visibleActualPoints = this._actualPoints.filter((p) => p.time >= viewStart && p.time <= viewEnd);
     const visibleConsumptionPoints = this._consumptionPoints.filter((p) => p.time >= viewStart && p.time <= viewEnd);
-    // Closed polygon: P90 left-to-right, then P10 back right-to-left. Zero width (P10 === P90 === w
-    // when a source has no percentiles) draws a degenerate, invisible sliver rather than a gap.
+    // Closed polygon: P90 left-to-right, then P10 back. Zero width draws an invisible sliver, not a gap.
     const hasConfidenceBand = visiblePoints.some((p) => p.w90 > p.w10);
     const confidenceBandPath = hasConfidenceBand
       ? [
@@ -666,8 +641,7 @@ class SolarPlannerCard extends HTMLElement {
       const bars = [];
       if (ds.start && ds.end) {
         const durationMin = (ds.end.getTime() - ds.start.getTime()) / 60000;
-        // A profile has no single flat powerW — total energy is the sum of each phase's own
-        // minutes*power_w, not durationMin*powerW (powerW is null for profile-based programs).
+        // Profile-based programs have no flat powerW; sum each phase's own minutes*power_w instead.
         const energyWh = ds.profile ? ds.profile.reduce((s, p) => s + (p.minutes * p.power_w) / 60, 0) : (ds.powerW * durationMin) / 60;
         const powerLabel = ds.profile ? `${fmtWh(energyWh)} · peak ${fmtW(Math.max(...ds.profile.map((p) => p.power_w)))}` : fmtWh(energyWh);
         const label = `${ds.name} · ${ds.programName} · ${fmtTime(ds.start)}–${fmtTime(ds.end)} · ${powerLabel}`;
@@ -699,10 +673,7 @@ class SolarPlannerCard extends HTMLElement {
 
     const unplaced = deviceStates.filter((ds) => ds.active && !ds.start);
 
-    // Grouped by device (consecutive rows share a device, _programRows() already orders them that
-    // way) so the device name is shown once instead of repeated on every one of its programs' rows.
-    // Color identity stays per-program (deviceColor(i) on the original flat index), matching each
-    // program's own gantt lane/stack segment — grouping is purely a text/layout change.
+    // Groups consecutive rows sharing a device so the name shows once, not per program.
     const deviceGroups = [];
     deviceStates.forEach((ds, i) => {
       const lastGroup = deviceGroups[deviceGroups.length - 1];
@@ -719,6 +690,11 @@ class SolarPlannerCard extends HTMLElement {
                 ${
                   ds.coveragePct != null
                     ? `<span class="coverage-pct ${ds.coveragePct >= 100 ? "coverage-good" : "coverage-low"}">${ds.coveragePct}% solar</span>`
+                    : ""
+                }
+                ${
+                  ds.estimatedCost != null
+                    ? `<span class="estimated-cost">~${ds.estimatedCost.toFixed(2)} ${ds.currency ?? ""}</span>`
                     : ""
                 }`
               : "";
@@ -737,7 +713,7 @@ class SolarPlannerCard extends HTMLElement {
       })
       .join("");
 
-    // Fixed loads aren't selectable, but still need a name/swatch legend since the gantt carries no text labels.
+    // Not selectable, but still need a legend since the gantt carries no text labels.
     const fixedLoadsLegend = base.fixed_loads
       .map(
         (load, i) =>
@@ -756,9 +732,11 @@ class SolarPlannerCard extends HTMLElement {
           end: ds.end,
           // A profile has no single flat powerW — sum each phase's own minutes*power_w instead.
           energyWh: ds.profile ? ds.profile.reduce((s, p) => s + (p.minutes * p.power_w) / 60, 0) : (ds.powerW * durationMin) / 60,
+          estimatedCost: ds.estimatedCost,
+          currency: ds.currency,
         };
       });
-    // "Tomorrow " distinguishes today's/tomorrow's occurrence of a recurring fixed load — same HH:MM otherwise reads as an unexplained duplicate.
+    // Distinguishes today's/tomorrow's occurrence of a recurring fixed load.
     const tableRows = [
       ...deviceTableRows,
       ...fixedLoads.map((p) => ({ ...p, energyWh: (p.powerW * p.durationMin) / 60 })),
@@ -769,6 +747,7 @@ class SolarPlannerCard extends HTMLElement {
           <td>${p.deviceName}${p.fixed ? " (external)" : ""}</td><td>${p.fixed ? "-" : p.programName}</td>
           <td>${p.start ? `${dayLabel}${fmtTime(p.start)} – ${fmtTime(p.end)}` : "no window"}</td>
           <td>${fmtWh(p.energyWh)}</td>
+          <td>${p.estimatedCost != null ? `~${p.estimatedCost.toFixed(2)} ${p.currency ?? ""}` : "-"}</td>
         </tr>`;
       })
       .join("");
@@ -830,6 +809,7 @@ class SolarPlannerCard extends HTMLElement {
         .coverage-pct { font-size: 0.8em; font-weight: 500; }
         .coverage-pct.coverage-good { color: var(--success-color, #4caf50); }
         .coverage-pct.coverage-low { color: var(--warning-color, #fab219); }
+        .estimated-cost { font-size: 0.8em; font-weight: 500; color: var(--secondary-text-color); }
         .warnings { margin-top: 10px; font-size: 0.85em; color: var(--warning-color, #fab219); }
         .warnings div { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
         .table-toggle { margin-top: 10px; cursor: pointer; font-size: 0.85em; color: var(--primary-color); background: none; border: none; padding: 0; }
@@ -881,10 +861,10 @@ class SolarPlannerCard extends HTMLElement {
             : ""
         }
         <button class="table-toggle" id="toggle-table">${this._showTable ? "Hide" : "Show"} as table</button>
-        ${this._showTable ? `<table><thead><tr><th>Device</th><th>Program</th><th>Window</th><th>Energy</th></tr></thead><tbody>${tableRows}</tbody></table>` : ""}
+        ${this._showTable ? `<table><thead><tr><th>Device</th><th>Program</th><th>Window</th><th>Energy</th><th>Cost</th></tr></thead><tbody>${tableRows}</tbody></table>` : ""}
       </ha-card>`;
 
-    // Deferred via double requestAnimationFrame, not a synchronous forced reflow — HA's own grid layout can still be settling a frame after this DOM mutation.
+    // Deferred via double requestAnimationFrame: HA's grid layout may still be settling.
     if (scrollLeft != null) {
       const scrollEl = this.shadowRoot.querySelector(".chart-scroll");
       if (scrollEl) {
@@ -911,13 +891,13 @@ class SolarPlannerCard extends HTMLElement {
     });
 
     this._bindGanttDrag({ viewStart, viewSpanMs, marginLeft, marginRight, width });
-    // Remapped to interpolate()'s {time, w} shape so the mirrored helper (see CLAUDE.local.md) stays untouched.
+    // Remapped to interpolate()'s {time, w} shape so the shared helper stays untouched.
     const w10Curve = points.map((p) => ({ time: p.time, w: p.w10 }));
     const w90Curve = points.map((p) => ({ time: p.time, w: p.w90 }));
     this._bindHover({ points, w10Curve, w90Curve, viewStart, viewSpanMs, x, y, marginLeft, marginRight, marginTop, height, width, todayEnd });
   }
 
-  // pointermove moves the bar's `x` directly (not via _render(), which would drop pointer capture mid-drag); the live % is the one thing computed fresh each move.
+  // pointermove moves `x` directly, not via _render() which would drop pointer capture mid-drag.
   _bindGanttDrag({ viewStart, viewSpanMs, marginLeft, marginRight, width }) {
     const svg = this.shadowRoot.querySelector("svg.gantt");
     if (!svg) return;
@@ -933,7 +913,7 @@ class SolarPlannerCard extends HTMLElement {
     const pctGroup = this.shadowRoot.querySelector(".drag-pct-group");
     const pctText = this.shadowRoot.querySelector(".drag-pct");
 
-    // Same math as the device row's coveragePct badge — cached at pointerdown, only the candidate start is rescored per move.
+    // Same math as the coveragePct badge; cached at pointerdown, only the start is rescored per move.
     const scorePct = (drag, start) => {
       const end = new Date(start.getTime() + drag.durationMin * 60000);
       const segments = phaseSegments({ ...drag.item, start, end });
@@ -964,7 +944,7 @@ class SolarPlannerCard extends HTMLElement {
         rect.setPointerCapture?.(ev.pointerId);
         const grabOffsetMs = timeAt(ev.clientX, ev.clientY).getTime() - ds.start.getTime();
         const points = this._theoreticalPoints();
-        // No live background-consumption estimate: only declared consumers count (see coordinator.py).
+        // No live background-consumption estimate: only declared consumers count.
         const baseLoad = 0;
         const otherDeviceBars = this._programRows()
           .filter((r) => r.slug !== slug)
@@ -1028,7 +1008,7 @@ class SolarPlannerCard extends HTMLElement {
     const actualText = box.querySelector(".hover-actual");
     const consumptionText = box.querySelector(".hover-consumption");
 
-    // Only line/box here — the dots' opacity is per-point (set in mousemove); setting it here too would clobber that.
+    // Dots' opacity is set per-point in mousemove, not here.
     const show = (visible) => {
       line.style.opacity = visible ? "1" : "0";
       box.style.opacity = visible ? "1" : "0";
@@ -1047,7 +1027,7 @@ class SolarPlannerCard extends HTMLElement {
       const local = pt.matrixTransform(svg.getScreenCTM().inverse());
       const clampedX = Math.min(Math.max(local.x, marginLeft), width - marginRight);
       const t = new Date(viewStart.getTime() + ((clampedX - marginLeft) / (width - marginLeft - marginRight)) * viewSpanMs);
-      // interpolate() clamps past a curve's end instead of returning null — blank each series past its own real end, or hovering past it shows a stale value.
+      // interpolate() clamps past a curve's end; blank each series past its own end instead.
       const inToday = t < todayEnd;
       const inForecastRange = points.length && t <= points[points.length - 1].time;
       const wForecast = inForecastRange ? interpolate(points, t) : null;
@@ -1078,7 +1058,7 @@ class SolarPlannerCard extends HTMLElement {
       confidenceText.textContent = w10 != null && w90 != null && w90 > w10 ? `Confidence: ${fmtW(w10)} – ${fmtW(w90)}` : "";
       actualText.textContent = wActual != null ? `Real production: ${fmtW(wActual)}` : "";
       consumptionText.textContent = wConsumption != null ? `Consumption: ${fmtW(wConsumption)}` : "";
-      // Flips against the visible (scrolled) viewport's right edge, not the total SVG width, so the tooltip can't render into the clipped-away region.
+      // Flips against the scrolled viewport's edge, not the total SVG width.
       let visibleRight = width - marginRight;
       const scrollRect = scrollEl?.getBoundingClientRect();
       if (scrollRect) {
