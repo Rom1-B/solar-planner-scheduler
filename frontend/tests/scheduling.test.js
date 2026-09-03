@@ -35,6 +35,28 @@ test("instantDeficitWh catches a spike that outpaces the ramping forecast, even 
   assert.equal(deficitLater, 0, "delaying 30 min moves the spike to 10:20-10:40, where the forecast has already caught up");
 });
 
+test("coveragePercent never goes negative for a short phase misaligned to the bucket grid", () => {
+  // Regression: hit live 2026-09-03 on a real dishwasher profile. A 5-minute SMOOTH_BUCKET
+  // straddling an unaligned phase boundary used to misattribute the whole bucket to whichever
+  // phase's power the midpoint landed in, over-counting deficit past the item's own total energy
+  // need and driving coveragePercent to -10% with zero solar available all night.
+  const day = new Date("2026-01-15T00:00:00Z");
+  const t = (h, m) => new Date(day.getTime() + (h * 60 + m) * 60000);
+  const start = t(23, 10);
+  const profile = [
+    { minutes: 32, power_w: 100 },
+    { minutes: 8, power_w: 2000 },
+    { minutes: 75, power_w: 100 },
+    { minutes: 5, power_w: 2000 },
+    { minutes: 75, power_w: 10 },
+  ];
+  const totalMinutes = profile.reduce((sum, p) => sum + p.minutes, 0);
+  const end = new Date(start.getTime() + totalMinutes * 60000);
+  const segments = phaseSegments({ profile, start, end });
+  const pct = coveragePercent(segments, [], [], 0, start, end); // no points: solar available is always 0
+  assert.equal(pct, 0, "zero solar all night means exactly 0% coverage, never negative");
+});
+
 test("coveragePercent reports the ratio at a single flat active bucket", () => {
   const day = new Date("2026-01-15T00:00:00Z");
   const t = (h, m) => new Date(day.getTime() + (h * 60 + m) * 60000);

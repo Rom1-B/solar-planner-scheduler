@@ -99,12 +99,35 @@ function powerAt(segments, t) {
   return sum;
 }
 
+// Sub-buckets at most SMOOTH_BUCKET_MS wide, never straddling an item/other phase boundary — a
+// bucket spanning a short phase's boundary used to misattribute the whole bucket to whichever
+// side its midpoint landed in, over- or under-counting deficit.
+function* instantSteps(itemSegments, otherSegments, start, end) {
+  const startMs = start.getTime();
+  const endMs = end.getTime();
+  const breakpoints = new Set([startMs, endMs]);
+  for (const seg of [...itemSegments, ...otherSegments]) {
+    const segStart = seg.start.getTime();
+    const segEnd = seg.end.getTime();
+    if (startMs < segStart && segStart < endMs) breakpoints.add(segStart);
+    if (startMs < segEnd && segEnd < endMs) breakpoints.add(segEnd);
+  }
+  const sortedBp = [...breakpoints].sort((a, b) => a - b);
+  for (let i = 0; i < sortedBp.length - 1; i++) {
+    let t = sortedBp[i];
+    const t1 = sortedBp[i + 1];
+    while (t < t1) {
+      const stepEnd = Math.min(t + SMOOTH_BUCKET_MS, t1);
+      yield [t, stepEnd, new Date((t + stepEnd) / 2)];
+      t = stepEnd;
+    }
+  }
+}
+
 // Solar-coverage deficit (Wh), checked instant-by-instant so a brief spike can't just average out.
 export function instantDeficitWh(itemSegments, otherSegments, points, baseLoad, start, end) {
   let deficitWh = 0;
-  for (let t = start.getTime(); t < end.getTime(); t += SMOOTH_BUCKET_MS) {
-    const stepEnd = Math.min(t + SMOOTH_BUCKET_MS, end.getTime());
-    const mid = new Date((t + stepEnd) / 2);
+  for (const [t, stepEnd, mid] of instantSteps(itemSegments, otherSegments, start, end)) {
     const itemPower = powerAt(itemSegments, mid);
     const othersPower = powerAt(otherSegments, mid);
     const solarAvailable = Math.max(0, interpolate(points, mid) - baseLoad - othersPower);
@@ -118,13 +141,11 @@ export function instantDeficitWh(itemSegments, otherSegments, points, baseLoad, 
 function coverageRatio(itemSegments, otherSegments, points, baseLoad, start, end) {
   const deficitWh = instantDeficitWh(itemSegments, otherSegments, points, baseLoad, start, end);
   const totalEnergyWh = itemSegments.reduce((sum, seg) => sum + (seg.power * (seg.end.getTime() - seg.start.getTime())) / 3600000, 0);
-  if (deficitWh > 0) return totalEnergyWh > 0 ? 1 - deficitWh / totalEnergyWh : 0;
+  if (deficitWh > 0) return totalEnergyWh > 0 ? Math.max(0, 1 - deficitWh / totalEnergyWh) : 0;
 
   const avgPowerW = totalEnergyWh / ((end.getTime() - start.getTime()) / 3600000);
   let minRatio = null;
-  for (let t = start.getTime(); t < end.getTime(); t += SMOOTH_BUCKET_MS) {
-    const stepEnd = Math.min(t + SMOOTH_BUCKET_MS, end.getTime());
-    const mid = new Date((t + stepEnd) / 2);
+  for (const [, , mid] of instantSteps(itemSegments, otherSegments, start, end)) {
     const itemPower = powerAt(itemSegments, mid);
     if (itemPower <= 0 || itemPower < avgPowerW) continue;
     const othersPower = powerAt(otherSegments, mid);

@@ -69,6 +69,9 @@ STORAGE_VERSION = 1
 # One failed_to_start unlock is normal (startup lag); this many in a row means it never started.
 FAILED_TO_START_REPAIR_THRESHOLD = 2
 
+# How far today's search extends past midnight, e.g. to reach a cheap overnight tariff band.
+NIGHT_EXTENSION_HOURS = 5
+
 
 def _migrate_legacy_state(raw: dict) -> dict:
     """Convert the legacy schema ({device: {selected, ...}}) to the current one
@@ -114,10 +117,19 @@ def compute_locked(schedule: DeviceSchedule, now: datetime) -> bool:
     if schedule.forced:
         return True
     if now >= schedule.end:
-        return now.date() == schedule.start.date()
+        return now.date() == schedule.end.date()
     if now >= schedule.start:
         return True
     return schedule.start - now <= timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES)
+
+
+def _is_relevant_today(committed: dict | None, now: datetime) -> bool:
+    """Whether a committed slot should still block a sibling program's search: started today, or
+    still running (covers an overnight slot started yesterday, not just stale multi-day-old ones).
+    """
+    if committed is None:
+        return False
+    return committed["start"].date() == now.date() or now < committed["end"]
 
 
 def _read_forecast_points(hass: HomeAssistant, entity_id: str | None) -> list[dict]:
@@ -153,12 +165,13 @@ def _ceil_to_five_minutes(dt: datetime) -> datetime:
 
 
 def _day_buckets(now: datetime, day_offset: int) -> list[dict]:
-    """5-minute-grid buckets: today (day_offset=0) from the next 5-min mark to 23:55, or a future
-    day (day_offset>=1) from midnight to 23:55 — always aligned to the card's drag grid.
+    """5-minute-grid buckets: today (day_offset=0) from the next 5-min mark to 23:55 plus
+    NIGHT_EXTENSION_HOURS into tomorrow morning (covers an overnight cheap-tariff window), or a
+    future day (day_offset>=1) from midnight to 23:55 — aligned to the card's drag grid.
     """
     if day_offset == 0:
         start = _ceil_to_five_minutes(now)
-        day_end = now.replace(hour=23, minute=55, second=0, microsecond=0)
+        day_end = now.replace(hour=23, minute=55, second=0, microsecond=0) + timedelta(hours=NIGHT_EXTENSION_HOURS)
     else:
         day_start = (now + timedelta(days=day_offset)).replace(hour=0, minute=0, second=0, microsecond=0)
         start = day_start
@@ -348,8 +361,10 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         a repair-worthy streak.
 
         A changed duration always forces should_search. A rolled-over day re-searches only if
-        today is an auto_day, else goes dormant. Reusing an imminent/in-progress slot instead of
-        re-searching every cycle avoids the "best start" sliding forward and never arriving.
+        today is an auto_day, else goes dormant — but only once the slot has actually elapsed, so
+        an overnight slot crossing midnight (see NIGHT_EXTENSION_HOURS) isn't cut off mid-run.
+        Reusing an imminent/in-progress slot instead of re-searching every cycle avoids the "best
+        start" sliding forward and never arriving.
         """
         committed = self._get_committed(device_name, program_name)
         if committed is None:
@@ -357,16 +372,17 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         locked_duration = (committed["end"] - committed["start"]).total_seconds() / 60
         if abs(locked_duration - duration_min) > 0.01:
             return None, False, True, False, False  # the program's own definition changed — fresh choice
-        if committed["start"].date() != now.date():
-            if WEEKDAYS[now.weekday()] in auto_days:
-                return None, False, True, False, False  # an auto-day: keep the recurring schedule going
-            return None, False, False, True, False  # not an auto-day: dormant until the selection changes
-        if now >= committed["end"]:
-            # Elapsed but still today: keep showing it until the calendar day rolls over.
-            return committed, committed["forced"], False, False, False
         if now >= committed["start"]:
-            if not committed["forced"] and self._failed_to_start(device, now):
-                return None, False, True, False, True  # unlock: recompute instead of waiting forever
+            if now < committed["end"]:
+                # In progress — even overnight, this is never a day rollover.
+                if not committed["forced"] and self._failed_to_start(device, now):
+                    return None, False, True, False, True  # unlock: recompute instead of waiting forever
+                return committed, committed["forced"], False, False, False
+            if committed["start"].date() != now.date():
+                if WEEKDAYS[now.weekday()] in auto_days:
+                    return None, False, True, False, False  # an auto-day: keep the recurring schedule going
+                return None, False, False, True, False  # not an auto-day: dormant until the selection changes
+            # Elapsed but still the day it started: keep showing it until the calendar day rolls over.
             return committed, committed["forced"], False, False, False
         if committed["forced"] or committed["start"] - now <= timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES):
             return committed, committed["forced"], False, False, False
@@ -446,12 +462,12 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         for device in options.get(CONF_DEVICES, []):
             device_name = device[CONF_NAME]
             programs = device.get(CONF_PROGRAMS, [])
-            # Sibling programs' today-only slots, pre-seeded from the Store so an earlier-order
+            # Sibling programs' today-relevant slots, pre-seeded from the Store so an earlier-order
             # program still avoids a sibling committed in an earlier cycle, not just this pass.
             device_slots: dict[str, dict | None] = {}
             for p in programs:
                 existing = self._get_committed(device_name, p[CONF_NAME])
-                device_slots[p[CONF_NAME]] = existing if existing and existing["start"].date() == now.date() else None
+                device_slots[p[CONF_NAME]] = existing if _is_relevant_today(existing, now) else None
 
             for program in programs:
                 program_name = program[CONF_NAME]

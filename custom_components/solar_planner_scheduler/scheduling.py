@@ -64,6 +64,28 @@ def _power_at(segments: Sequence[dict], t: datetime) -> float:
     return sum(s["power"] for s in segments if s["start"] <= t < s["end"])
 
 
+def _instant_steps(
+    item_segments: Sequence[dict], other_segments: Sequence[dict], start: datetime, end: datetime
+):
+    """Yields (t, step_end, mid) sub-buckets, at most SMOOTH_BUCKET_MS wide and never straddling
+    an item/other phase boundary — a bucket spanning a short phase's boundary used to misattribute
+    the whole bucket to whichever side its midpoint landed in, over- or under-counting deficit.
+    """
+    breakpoints = {start, end}
+    for seg in (*item_segments, *other_segments):
+        if start < seg["start"] < end:
+            breakpoints.add(seg["start"])
+        if start < seg["end"] < end:
+            breakpoints.add(seg["end"])
+    sorted_bp = sorted(breakpoints)
+    for t0, t1 in zip(sorted_bp, sorted_bp[1:]):
+        t = t0
+        while t < t1:
+            step_end = min(t + _SMOOTH_BUCKET, t1)
+            yield t, step_end, t + (step_end - t) / 2
+            t = step_end
+
+
 def instant_deficit_wh(
     item_segments: Sequence[dict],
     other_segments: Sequence[dict],
@@ -74,16 +96,12 @@ def instant_deficit_wh(
 ) -> float:
     """Solar-coverage deficit (Wh), checked instant-by-instant at SMOOTH_BUCKET_MS."""
     deficit_wh = 0.0
-    t = start
-    while t < end:
-        step_end = min(t + _SMOOTH_BUCKET, end)
-        mid = t + (step_end - t) / 2
+    for t, step_end, mid in _instant_steps(item_segments, other_segments, start, end):
         item_power = _power_at(item_segments, mid)
         others_power = _power_at(other_segments, mid)
         solar_available = max(0.0, interpolate(points, mid) - base_load - others_power)
         deficit = max(0.0, item_power - solar_available)
         deficit_wh += deficit * (step_end - t).total_seconds() / 3600
-        t = step_end
     return deficit_wh
 
 
@@ -116,17 +134,13 @@ def instant_deficit_cost(
 ) -> float:
     """Grid-draw cost (€): same walk as instant_deficit_wh(), priced per step via price_at()."""
     cost = 0.0
-    t = start
-    while t < end:
-        step_end = min(t + _SMOOTH_BUCKET, end)
-        mid = t + (step_end - t) / 2
+    for t, step_end, mid in _instant_steps(item_segments, other_segments, start, end):
         item_power = _power_at(item_segments, mid)
         others_power = _power_at(other_segments, mid)
         solar_available = max(0.0, interpolate(points, mid) - base_load - others_power)
         deficit = max(0.0, item_power - solar_available)
         deficit_kwh = deficit * (step_end - t).total_seconds() / 3600 / 1000
         cost += deficit_kwh * price_at(mid, tariff_bands)
-        t = step_end
     return cost
 
 
@@ -144,15 +158,12 @@ def _coverage_ratio(
     deficit_wh = instant_deficit_wh(item_segments, other_segments, points, base_load, start, end)
     total_energy_wh = sum(seg["power"] * (seg["end"] - seg["start"]).total_seconds() / 3600 for seg in item_segments)
     if deficit_wh > 0:
-        return (1 - deficit_wh / total_energy_wh) if total_energy_wh > 0 else 0.0
+        return max(0.0, 1 - deficit_wh / total_energy_wh) if total_energy_wh > 0 else 0.0
 
     duration_hours = (end - start).total_seconds() / 3600
     avg_power_w = total_energy_wh / duration_hours if duration_hours else 0.0
     min_ratio: Optional[float] = None
-    t = start
-    while t < end:
-        step_end = min(t + _SMOOTH_BUCKET, end)
-        mid = t + (step_end - t) / 2
+    for _, _, mid in _instant_steps(item_segments, other_segments, start, end):
         item_power = _power_at(item_segments, mid)
         if item_power > 0 and item_power >= avg_power_w:
             others_power = _power_at(other_segments, mid)
@@ -160,7 +171,6 @@ def _coverage_ratio(
             ratio = solar_available / item_power
             if min_ratio is None or ratio < min_ratio:
                 min_ratio = ratio
-        t = step_end
     return 1.0 if min_ratio is None else min_ratio
 
 

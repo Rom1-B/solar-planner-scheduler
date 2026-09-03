@@ -33,10 +33,14 @@ max simultaneous power). Devices, programs and fixed loads are managed via "Conf
   programs active at once; `switch.<device>_<program>_active` turns each one on or off.
 - **Fixed load**: a recurring non-schedulable load (start time + phases), subtracted from
   available solar capacity.
+- **Tariffs** (optional): enable tariff tracking, set a monthly subscription price and price bands
+  (`HH:MM@price`, one per line, e.g. `22:00@0.1589`). Slot selection always minimizes estimated
+  cost, falling back to solar coverage when tracking is off; the real price only shows once enabled.
 
-Turning a program on searches for today's best slot immediately. Once it has run, it repeats on a
-later day only if that day is checked in its auto-schedule days. Programs with no auto-schedule
-days stay off until you turn them on; programs with auto-schedule days turn on by default.
+Turning a program on searches for today's best slot immediately, extending up to 6h past midnight
+to reach an overnight tariff band. Once it has run, it repeats on a later day only if that day is
+checked in its auto-schedule days. Programs with no auto-schedule days stay off until you turn them
+on; programs with auto-schedule days turn on by default.
 
 `datetime.<device>_<program>_start` shows the next start time. Drag its bar on the card, or edit
 the entity directly, to force a time. Click "Auto" to cancel a forced time and search again.
@@ -45,6 +49,9 @@ the entity directly, to force a time. Click "Auto" to cancel a forced time and s
 
 Per (device, program) pair: `datetime.<device>_<program>_start`,
 `binary_sensor.<device>_<program>_should_run`, `switch.<device>_<program>_active`.
+
+`sensor.solar_planner_scheduler_current_price` exposes the live €/kWh price (when tariff tracking
+is enabled), usable as the Energy dashboard's "current price" source for grid-consumption cost.
 
 The integration never turns a device on/off itself: react to `should_run` in an automation.
 

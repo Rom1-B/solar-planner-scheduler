@@ -31,10 +31,12 @@ from custom_components.solar_planner_scheduler.const import (
 )
 from custom_components.solar_planner_scheduler.coordinator import (
     FAILED_TO_START_REPAIR_THRESHOLD,
+    NIGHT_EXTENSION_HOURS,
     DeviceSchedule,
     SolarPlannerSchedulerCoordinator,
     _ceil_to_five_minutes,
     _day_buckets,
+    _is_relevant_today,
     _migrate_legacy_state,
     _read_forecast_points,
     compute_locked,
@@ -66,6 +68,14 @@ def test_todays_buckets_start_on_the_next_five_minute_mark_not_now():
     buckets = _day_buckets(now, day_offset=0)
     assert buckets[0]["start"] == datetime(2026, 8, 30, 14, 25, tzinfo=timezone.utc)
     assert all(b["start"].minute % 5 == 0 and b["start"].second == 0 for b in buckets)
+
+
+def test_todays_buckets_extend_past_midnight_by_night_extension_hours():
+    now = datetime(2026, 8, 30, 14, 0, tzinfo=timezone.utc)
+    buckets = _day_buckets(now, day_offset=0)
+    last_start = buckets[-1]["start"]
+    assert last_start.date() == datetime(2026, 8, 31, tzinfo=timezone.utc).date()
+    assert last_start < datetime(2026, 8, 30, 23, 55, tzinfo=timezone.utc) + timedelta(hours=NIGHT_EXTENSION_HOURS)
 
 
 async def test_read_forecast_points_handles_a_raw_datetime_period_start(hass):
@@ -129,11 +139,55 @@ def test_compute_locked_stays_true_once_elapsed_the_same_day():
     assert compute_locked(schedule, now) is True
 
 
+def test_compute_locked_stays_true_after_an_overnight_slot_elapses_on_the_end_day():
+    """A slot crossing midnight (e.g. 23:30 -> 01:00) must stay locked until the day it *ended*
+    changes, not the day it started — using start.date() here would drop lock the instant it
+    elapses, defeating "keep showing what ran today".
+    """
+    start = datetime(2026, 8, 29, 23, 30, tzinfo=timezone.utc)
+    end = datetime(2026, 8, 30, 1, 0, tzinfo=timezone.utc)
+    schedule = DeviceSchedule("d", start, end, 95)
+    now = datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)  # elapsed, still the day it ended
+    assert compute_locked(schedule, now) is True
+
+
 def test_compute_locked_is_false_once_the_calendar_day_has_changed():
     start = datetime(2026, 8, 29, 9, 0, tzinfo=timezone.utc)
     schedule = DeviceSchedule("d", start, start + timedelta(minutes=30), 95)
     now = datetime(2026, 8, 30, 9, 0, tzinfo=timezone.utc)
     assert compute_locked(schedule, now) is False
+
+
+# --- _is_relevant_today() -----------------------------------------------------------------------
+
+
+def test_is_relevant_today_is_false_with_nothing_committed():
+    assert _is_relevant_today(None, datetime(2026, 8, 30, tzinfo=timezone.utc)) is False
+
+
+def test_is_relevant_today_is_true_for_a_slot_started_today():
+    now = datetime(2026, 8, 30, 9, 0, tzinfo=timezone.utc)
+    committed = {"start": now, "end": now + timedelta(minutes=30)}
+    assert _is_relevant_today(committed, now) is True
+
+
+def test_is_relevant_today_is_true_for_an_overnight_slot_still_running():
+    """Started yesterday, still in progress: must still block a sibling's search."""
+    committed = {
+        "start": datetime(2026, 8, 29, 23, 30, tzinfo=timezone.utc),
+        "end": datetime(2026, 8, 30, 1, 0, tzinfo=timezone.utc),
+    }
+    now = datetime(2026, 8, 30, 0, 30, tzinfo=timezone.utc)
+    assert _is_relevant_today(committed, now) is True
+
+
+def test_is_relevant_today_is_false_for_a_stale_multi_day_old_commitment():
+    committed = {
+        "start": datetime(2026, 8, 20, 9, 0, tzinfo=timezone.utc),
+        "end": datetime(2026, 8, 20, 9, 30, tzinfo=timezone.utc),
+    }
+    now = datetime(2026, 8, 30, 9, 0, tzinfo=timezone.utc)
+    assert _is_relevant_today(committed, now) is False
 
 
 # --- coordinator state / store helpers --------------------------------------------------------
@@ -354,6 +408,23 @@ def test_reusable_committed_keeps_showing_an_elapsed_slot_on_the_same_day(hass):
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
 
     slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
+
+    assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False, "cost": None}
+    assert should_search is False
+    assert dormant is False
+
+
+def test_reusable_committed_stays_in_progress_for_a_slot_crossing_midnight(hass):
+    """A slot started yesterday (e.g. 23:30) and still running past midnight must not be treated
+    as a day rollover mid-run — the in-progress check must win over the date comparison.
+    """
+    coordinator = _coordinator(hass)
+    start = datetime(2026, 8, 29, 23, 30, tzinfo=timezone.utc)
+    end = datetime(2026, 8, 30, 1, 0, tzinfo=timezone.utc)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
+    now = datetime(2026, 8, 30, 0, 30, tzinfo=timezone.utc)  # in progress, day already rolled over
+
+    slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", {}, 90, now, [])
 
     assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False, "cost": None}
     assert should_search is False

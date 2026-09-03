@@ -209,6 +209,26 @@ def test_coverage_percent_sums_every_concurrent_other():
     assert pct == 57
 
 
+def test_coverage_percent_never_goes_negative_for_a_short_phase_misaligned_to_the_bucket_grid():
+    """Regression: hit live 2026-09-03 on a real dishwasher profile. A 5-minute SMOOTH_BUCKET
+    straddling an unaligned phase boundary used to misattribute the whole bucket to whichever
+    phase's power the midpoint landed in, over-counting deficit past the item's own total energy
+    need and driving coverage_pct to -10% with zero solar available all night.
+    """
+    start = t(23, 10)
+    profile = [
+        {"minutes": 32, "power_w": 100},
+        {"minutes": 8, "power_w": 2000},
+        {"minutes": 75, "power_w": 100},
+        {"minutes": 5, "power_w": 2000},
+        {"minutes": 75, "power_w": 10},
+    ]
+    end = start + timedelta(minutes=sum(p["minutes"] for p in profile))
+    segments = phase_segments({"profile": profile, "start": start, "end": end})
+    pct = coverage_percent(segments, [], [], 0, start, end)  # no points: solar available is always 0
+    assert pct == 0, "zero solar all night means exactly 0% coverage, never negative"
+
+
 def test_find_best_placement_candidate_grid_matches_drag_snap_ms():
     points = [
         {"time": t(10, 0), "w": 1500},
