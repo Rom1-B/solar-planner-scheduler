@@ -62,18 +62,19 @@ async def test_add_program_phases_parses_valid_multiline_text(hass, enable_custo
     entry = _entry(hass, [{CONF_NAME: "lave_linge", CONF_POWER_SENSOR: "", CONF_PROGRAMS: []}])
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "devices_menu"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "manage_device"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "lave_linge"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_program"})
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_NAME: "lave_linge", "program_name": "Eco coton"}
-    )
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"program_name": "Eco coton"})
     assert result["step_id"] == "add_program_phases"
 
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"phases": "20min@150W\n45min@1800W"}
     )
-    # Loops back to the menu instead of closing the flow.
+    # Loops back to the device's own menu, not the top-level menu.
     assert result["type"] == "menu"
-    assert result["step_id"] == "init"
+    assert result["step_id"] == "device_detail"
 
     program = entry.options[CONF_DEVICES][0][CONF_PROGRAMS][0]
     assert program[CONF_NAME] == "Eco coton"
@@ -89,10 +90,11 @@ async def test_add_program_phases_stores_the_selected_auto_days(hass, enable_cus
     entry = _entry(hass, [{CONF_NAME: "lave_linge", CONF_POWER_SENSOR: "", CONF_PROGRAMS: []}])
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "devices_menu"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "manage_device"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "lave_linge"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_program"})
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_NAME: "lave_linge", "program_name": "Eco coton"}
-    )
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"program_name": "Eco coton"})
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"phases": "20min@150W", CONF_AUTO_DAYS: ["mon", "wed", "fri"]}
     )
@@ -106,10 +108,11 @@ async def test_add_program_phases_accepts_hours(hass, enable_custom_integrations
     entry = _entry(hass, [{CONF_NAME: "lave_linge", CONF_POWER_SENSOR: "", CONF_PROGRAMS: []}])
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "devices_menu"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "manage_device"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "lave_linge"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_program"})
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_NAME: "lave_linge", "program_name": "Conso de base"}
-    )
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"program_name": "Conso de base"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"phases": "24h@110W\n1.5h@800W"})
 
     assert result["type"] == "menu"
@@ -124,10 +127,11 @@ async def test_add_program_phases_rejects_a_malformed_line(hass, enable_custom_i
     entry = _entry(hass, [{CONF_NAME: "lave_linge", CONF_POWER_SENSOR: "", CONF_PROGRAMS: []}])
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "devices_menu"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "manage_device"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "lave_linge"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_program"})
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_NAME: "lave_linge", "program_name": "Eco coton"}
-    )
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"program_name": "Eco coton"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"phases": "20 minutes at 150W"})
 
     assert result["type"] == "form"
@@ -139,10 +143,11 @@ async def test_add_program_phases_rejects_empty_input(hass, enable_custom_integr
     entry = _entry(hass, [{CONF_NAME: "lave_linge", CONF_POWER_SENSOR: "", CONF_PROGRAMS: []}])
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "devices_menu"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "manage_device"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "lave_linge"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_program"})
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_NAME: "lave_linge", "program_name": "Eco coton"}
-    )
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"program_name": "Eco coton"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"phases": "   \n  "})
 
     assert result["type"] == "form"
@@ -166,9 +171,11 @@ async def test_edit_program_prefills_and_replaces_phases_in_place(hass, enable_c
     entry = _entry(hass, devices)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_program"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "devices_menu"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "manage_device"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "lave_linge"})
-    assert result["step_id"] == "edit_program_pick"
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_program"})
+    assert result["step_id"] == "edit_program"
 
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"program_name": "Eco coton"})
     assert result["step_id"] == "edit_program_phases"
@@ -193,6 +200,9 @@ async def test_edit_program_aborts_when_no_device_has_a_program(hass, enable_cus
     entry = _entry(hass, [{CONF_NAME: "lave_linge", CONF_POWER_SENSOR: "", CONF_PROGRAMS: []}])
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "devices_menu"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "manage_device"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "lave_linge"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_program"})
 
     assert result["type"] == "abort"
@@ -203,6 +213,7 @@ async def test_add_device_rejects_a_duplicate_name(hass, enable_custom_integrati
     entry = _entry(hass, [{CONF_NAME: "lave_linge", CONF_POWER_SENSOR: "", CONF_PROGRAMS: []}])
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "devices_menu"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_device"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "lave_linge"})
 
@@ -217,6 +228,7 @@ async def test_add_device_without_a_power_sensor_does_not_crash(hass, enable_cus
     entry = _entry(hass, [])
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "devices_menu"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_device"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "lave_linge"})
 
@@ -321,8 +333,10 @@ async def test_remove_program_removes_it_from_the_devices_only_program_list(hass
     entry = _entry(hass, devices)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "remove_program"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "devices_menu"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "manage_device"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "lave_linge"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "remove_program"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"program_name": "Eco coton"})
 
     assert result["type"] == "menu"
@@ -334,6 +348,7 @@ async def test_add_fixed_load_parses_a_multi_phase_profile(hass, enable_custom_i
     entry = _entry(hass, [])
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "fixed_loads_menu"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_fixed_load"})
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {CONF_NAME: "PAC", CONF_START_TIME: "13:00:00"}
@@ -365,6 +380,7 @@ async def test_edit_fixed_load_prefills_and_replaces_phases_in_place(hass, enabl
     entry = _entry(hass, [], fixed_loads=fixed_loads)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "fixed_loads_menu"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_fixed_load"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "PAC"})
     assert result["step_id"] == "edit_fixed_load_phases"
@@ -383,6 +399,7 @@ async def test_edit_fixed_load_aborts_when_none_exist(hass, enable_custom_integr
     entry = _entry(hass, [])
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "fixed_loads_menu"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_fixed_load"})
 
     assert result["type"] == "abort"
@@ -396,8 +413,11 @@ async def test_edit_device_prefills_and_replaces_power_sensor_in_place(hass, ena
     entry = _entry(hass, devices)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_device"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "devices_menu"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "manage_device"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "PAC"})
+    assert result["step_id"] == "device_detail"
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_device_power_sensor"})
     assert result["step_id"] == "edit_device_power_sensor"
     key = next(k for k in result["data_schema"].schema if str(k) == CONF_POWER_SENSOR)
     assert key.description["suggested_value"] == "sensor.old_power"
@@ -410,11 +430,12 @@ async def test_edit_device_prefills_and_replaces_power_sensor_in_place(hass, ena
     assert device[CONF_POWER_SENSOR] == "sensor.new_power"
 
 
-async def test_edit_device_aborts_when_none_exist(hass, enable_custom_integrations):
+async def test_manage_device_aborts_when_none_exist(hass, enable_custom_integrations):
     entry = _entry(hass, [])
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_device"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "devices_menu"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "manage_device"})
 
     assert result["type"] == "abort"
     assert result["reason"] == "no_devices"

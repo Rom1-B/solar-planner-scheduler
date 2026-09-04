@@ -20,12 +20,35 @@
         "menu_options": {
           "edit_base": "Edit base settings",
           "edit_tariff": "Configure tariffs",
+          "devices_menu": "Devices",
+          "fixed_loads_menu": "Fixed loads"
+        }
+      },
+      "devices_menu": {
+        "title": "Devices",
+        "menu_options": {
           "add_device": "Add a device",
-          "edit_device": "Edit a device's power sensor",
-          "remove_device": "Remove a device",
-          "add_program": "Add a program to a device (multi-phase)",
-          "edit_program": "Edit a program's phases",
-          "remove_program": "Remove a program from a device",
+          "manage_device": "Manage a device",
+          "remove_device": "Remove a device"
+        }
+      },
+      "manage_device": {
+        "title": "Manage a device",
+        "description": "Pick which device to manage.",
+        "data": { "name": "Device" }
+      },
+      "device_detail": {
+        "title": "Manage device",
+        "menu_options": {
+          "edit_device_power_sensor": "Edit power sensor",
+          "add_program": "Add a program",
+          "edit_program": "Edit a program",
+          "remove_program": "Remove a program"
+        }
+      },
+      "fixed_loads_menu": {
+        "title": "Fixed loads",
+        "menu_options": {
           "add_fixed_load": "Add a fixed load",
           "edit_fixed_load": "Edit a fixed load's phases",
           "remove_fixed_load": "Remove a fixed load"
@@ -58,13 +81,9 @@
           "power_sensor": "Power sensor (optional)"
         }
       },
-      "edit_device": {
-        "title": "Edit a device",
-        "description": "Pick which device's power sensor to edit.",
-        "data": { "name": "Device" }
-      },
       "edit_device_power_sensor": {
         "title": "Device power sensor",
+        "description": "Power sensor for {device}.",
         "data": { "power_sensor": "Power sensor (optional)" }
       },
       "remove_device": {
@@ -73,8 +92,8 @@
       },
       "add_program": {
         "title": "Add a program",
-        "description": "Next screen asks for its phases.",
-        "data": { "name": "Device", "program_name": "Program name" }
+        "description": "Add a program to {device}. Next screen asks for its phases.",
+        "data": { "program_name": "Program name" }
       },
       "add_program_phases": {
         "title": "Program phases",
@@ -83,11 +102,7 @@
       },
       "edit_program": {
         "title": "Edit a program",
-        "description": "Pick which device's program to edit.",
-        "data": { "name": "Device" }
-      },
-      "edit_program_pick": {
-        "title": "Edit a program",
+        "description": "Pick which of {device}'s programs to edit.",
         "data": { "program_name": "Program" }
       },
       "edit_program_phases": {
@@ -97,7 +112,8 @@
       },
       "remove_program": {
         "title": "Remove a program",
-        "data": { "name": "Device", "program_name": "Program to remove" }
+        "description": "Pick which of {device}'s programs to remove.",
+        "data": { "program_name": "Program to remove" }
       },
       "add_fixed_load": {
         "title": "Add a fixed load",
@@ -130,8 +146,8 @@
     "abort": {
       "no_devices": "No devices configured yet.",
       "no_fixed_loads": "No fixed loads configured yet.",
-      "no_programs": "No device has a program to edit yet.",
-      "no_removable_programs": "No device has a program to remove."
+      "no_programs": "This device has no program to edit yet.",
+      "no_removable_programs": "This device has no program to remove."
     },
     "error": {
       "duplicate_program": "This device already has a program with that name.",

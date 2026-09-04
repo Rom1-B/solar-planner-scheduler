@@ -20,12 +20,35 @@
         "menu_options": {
           "edit_base": "Modifier les paramètres de base",
           "edit_tariff": "Configurer les tarifs",
+          "devices_menu": "Appareils",
+          "fixed_loads_menu": "Charges fixes"
+        }
+      },
+      "devices_menu": {
+        "title": "Appareils",
+        "menu_options": {
           "add_device": "Ajouter un appareil",
-          "edit_device": "Modifier le capteur de puissance d'un appareil",
-          "remove_device": "Supprimer un appareil",
-          "add_program": "Ajouter un programme à un appareil (multi-phases)",
-          "edit_program": "Modifier les phases d'un programme",
-          "remove_program": "Supprimer un programme d'un appareil",
+          "manage_device": "Gérer un appareil",
+          "remove_device": "Supprimer un appareil"
+        }
+      },
+      "manage_device": {
+        "title": "Gérer un appareil",
+        "description": "Choisissez l'appareil à gérer.",
+        "data": { "name": "Appareil" }
+      },
+      "device_detail": {
+        "title": "Gérer l'appareil",
+        "menu_options": {
+          "edit_device_power_sensor": "Modifier le capteur de puissance",
+          "add_program": "Ajouter un programme",
+          "edit_program": "Modifier un programme",
+          "remove_program": "Supprimer un programme"
+        }
+      },
+      "fixed_loads_menu": {
+        "title": "Charges fixes",
+        "menu_options": {
           "add_fixed_load": "Ajouter une charge fixe",
           "edit_fixed_load": "Modifier les phases d'une charge fixe",
           "remove_fixed_load": "Supprimer une charge fixe"
@@ -58,13 +81,9 @@
           "power_sensor": "Capteur de puissance (optionnel)"
         }
       },
-      "edit_device": {
-        "title": "Modifier un appareil",
-        "description": "Choisissez l'appareil dont vous voulez modifier le capteur de puissance.",
-        "data": { "name": "Appareil" }
-      },
       "edit_device_power_sensor": {
         "title": "Capteur de puissance de l'appareil",
+        "description": "Capteur de puissance de {device}.",
         "data": { "power_sensor": "Capteur de puissance (optionnel)" }
       },
       "remove_device": {
@@ -73,8 +92,8 @@
       },
       "add_program": {
         "title": "Ajouter un programme",
-        "description": "L'écran suivant demande ses phases.",
-        "data": { "name": "Appareil", "program_name": "Nom du programme" }
+        "description": "Ajoute un programme à {device}. L'écran suivant demande ses phases.",
+        "data": { "program_name": "Nom du programme" }
       },
       "add_program_phases": {
         "title": "Phases du programme",
@@ -83,11 +102,7 @@
       },
       "edit_program": {
         "title": "Modifier un programme",
-        "description": "Choisissez le programme de quel appareil modifier.",
-        "data": { "name": "Appareil" }
-      },
-      "edit_program_pick": {
-        "title": "Modifier un programme",
+        "description": "Choisissez quel programme de {device} modifier.",
         "data": { "program_name": "Programme" }
       },
       "edit_program_phases": {
@@ -97,7 +112,8 @@
       },
       "remove_program": {
         "title": "Supprimer un programme",
-        "data": { "name": "Appareil", "program_name": "Programme à supprimer" }
+        "description": "Choisissez quel programme de {device} supprimer.",
+        "data": { "program_name": "Programme à supprimer" }
       },
       "add_fixed_load": {
         "title": "Ajouter une charge fixe",
@@ -130,8 +146,8 @@
     "abort": {
       "no_devices": "Aucun appareil configuré pour l'instant.",
       "no_fixed_loads": "Aucune charge fixe configurée pour l'instant.",
-      "no_programs": "Aucun appareil n'a de programme à modifier.",
-      "no_removable_programs": "Aucun appareil n'a de programme à supprimer."
+      "no_programs": "Cet appareil n'a pas encore de programme à modifier.",
+      "no_removable_programs": "Cet appareil n'a pas encore de programme à supprimer."
     },
     "error": {
       "duplicate_program": "Cet appareil a déjà un programme avec ce nom.",
