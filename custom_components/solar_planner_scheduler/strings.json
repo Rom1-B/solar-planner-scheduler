@@ -21,6 +21,7 @@
           "edit_base": "Edit base settings",
           "edit_tariff": "Configure tariffs",
           "add_device": "Add a device",
+          "edit_device": "Edit a device's power sensor",
           "remove_device": "Remove a device",
           "add_program": "Add a program to a device (multi-phase)",
           "edit_program": "Edit a program's phases",
@@ -56,6 +57,15 @@
           "name": "Name",
           "power_sensor": "Power sensor (optional)"
         }
+      },
+      "edit_device": {
+        "title": "Edit a device",
+        "description": "Pick which device's power sensor to edit.",
+        "data": { "name": "Device" }
+      },
+      "edit_device_power_sensor": {
+        "title": "Device power sensor",
+        "data": { "power_sensor": "Power sensor (optional)" }
       },
       "remove_device": {
         "title": "Remove a device",

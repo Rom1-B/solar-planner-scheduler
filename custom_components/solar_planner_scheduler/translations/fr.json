@@ -21,6 +21,7 @@
           "edit_base": "Modifier les paramètres de base",
           "edit_tariff": "Configurer les tarifs",
           "add_device": "Ajouter un appareil",
+          "edit_device": "Modifier le capteur de puissance d'un appareil",
           "remove_device": "Supprimer un appareil",
           "add_program": "Ajouter un programme à un appareil (multi-phases)",
           "edit_program": "Modifier les phases d'un programme",
@@ -56,6 +57,15 @@
           "name": "Nom",
           "power_sensor": "Capteur de puissance (optionnel)"
         }
+      },
+      "edit_device": {
+        "title": "Modifier un appareil",
+        "description": "Choisissez l'appareil dont vous voulez modifier le capteur de puissance.",
+        "data": { "name": "Appareil" }
+      },
+      "edit_device_power_sensor": {
+        "title": "Capteur de puissance de l'appareil",
+        "data": { "power_sensor": "Capteur de puissance (optionnel)" }
       },
       "remove_device": {
         "title": "Supprimer un appareil",

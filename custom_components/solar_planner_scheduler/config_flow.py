@@ -81,6 +81,16 @@ def _device_schema() -> vol.Schema:
     )
 
 
+def _edit_device_schema(device: dict[str, Any]) -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Optional(
+                CONF_POWER_SENSOR, description={"suggested_value": device.get(CONF_POWER_SENSOR)}
+            ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="power")),
+        }
+    )
+
+
 _PHASE_LINE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(min|h)\s*@\s*(\d+(?:\.\d+)?)\s*w\s*$", re.IGNORECASE)
 
 
@@ -232,6 +242,7 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
                 "edit_base",
                 "edit_tariff",
                 "add_device",
+                "edit_device",
                 "remove_device",
                 "add_program",
                 "edit_program",
@@ -289,6 +300,31 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
             )
             return await self._finish_step()
         return self.async_show_form(step_id="add_device", data_schema=_device_schema())
+
+    async def async_step_edit_device(self, user_input: dict[str, Any] | None = None):
+        """Pick which device's power_sensor to edit (step 1 of 2: pick -> field).
+
+        Only power_sensor is editable, not the name: it's the key the coordinator's Store and every
+        entity's unique_id are built from, so renaming here would orphan already-committed state.
+        """
+        if not self._devices:
+            return self.async_abort(reason="no_devices")
+        if user_input is not None:
+            self._editing_device_name = user_input[CONF_NAME]
+            return await self.async_step_edit_device_power_sensor()
+        names = [d[CONF_NAME] for d in self._devices]
+        return self.async_show_form(step_id="edit_device", data_schema=vol.Schema({vol.Required(CONF_NAME): vol.In(names)}))
+
+    async def async_step_edit_device_power_sensor(self, user_input: dict[str, Any] | None = None):
+        device_name = self._editing_device_name
+        device = next(d for d in self._devices if d[CONF_NAME] == device_name)
+        if user_input is not None:
+            self._devices = [
+                {**d, CONF_POWER_SENSOR: user_input.get(CONF_POWER_SENSOR, "")} if d[CONF_NAME] == device_name else d
+                for d in self._devices
+            ]
+            return await self._finish_step()
+        return self.async_show_form(step_id="edit_device_power_sensor", data_schema=_edit_device_schema(device))
 
     async def async_step_remove_device(self, user_input: dict[str, Any] | None = None):
         if not self._devices:

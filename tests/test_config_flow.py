@@ -389,6 +389,37 @@ async def test_edit_fixed_load_aborts_when_none_exist(hass, enable_custom_integr
     assert result["reason"] == "no_fixed_loads"
 
 
+async def test_edit_device_prefills_and_replaces_power_sensor_in_place(hass, enable_custom_integrations):
+    hass.states.async_set("sensor.old_power", "0")
+    hass.states.async_set("sensor.new_power", "0")
+    devices = [{CONF_NAME: "PAC", CONF_POWER_SENSOR: "sensor.old_power", CONF_PROGRAMS: []}]
+    entry = _entry(hass, devices)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_device"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "PAC"})
+    assert result["step_id"] == "edit_device_power_sensor"
+    key = next(k for k in result["data_schema"].schema if str(k) == CONF_POWER_SENSOR)
+    assert key.description["suggested_value"] == "sensor.old_power"
+
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_POWER_SENSOR: "sensor.new_power"})
+    assert result["type"] == "menu"
+
+    device = entry.options[CONF_DEVICES][0]
+    assert device[CONF_NAME] == "PAC"
+    assert device[CONF_POWER_SENSOR] == "sensor.new_power"
+
+
+async def test_edit_device_aborts_when_none_exist(hass, enable_custom_integrations):
+    entry = _entry(hass, [])
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_device"})
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "no_devices"
+
+
 # --- entity picker filters ---------------------------------------------------------------------
 
 
