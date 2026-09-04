@@ -18,6 +18,7 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_DEVICES,
     CONF_DURATION_MIN,
     CONF_FORECAST_ENTITY,
+    CONF_FORECAST_SOURCE,
     CONF_MAX_SIMULTANEOUS_POWER,
     CONF_NAME,
     CONF_POWER_PROFILE,
@@ -27,6 +28,7 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_TARIFF_BANDS,
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
+    FORECAST_SOURCE_COMPUTED,
     NONE_PROGRAM,
 )
 from custom_components.solar_planner_scheduler.coordinator import (
@@ -636,6 +638,54 @@ async def test_no_forecast_data_does_not_commit_a_guessed_now_slot(hass):
     await coordinator.async_set_program_active("lave_vaisselle", "Eco", True)
     await _flush(coordinator)
     # sensor.forecast is deliberately never set: _read_forecast_points() returns [] for a missing state.
+
+    results = await coordinator._async_update_data()
+
+    assert results[("lave_vaisselle", "Eco")].start is None
+    assert coordinator._get_committed("lave_vaisselle", "Eco") is None
+
+
+async def test_computed_forecast_source_reads_from_pv_forecast_coordinator(hass):
+    """forecast_source="computed" must read points from pv_forecast_coordinator.data, not try
+    _read_forecast_points() against an entity: no forecast_entity is even set here.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_SOURCE: FORECAST_SOURCE_COMPUTED, CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options=_device_options(),
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_vaisselle", "Eco", True)
+    await _flush(coordinator)
+
+    class _FakePvForecastCoordinator:
+        data = [{"time": dt_util.now(), "w": 3000.0}]
+
+    coordinator.pv_forecast_coordinator = _FakePvForecastCoordinator()
+
+    results = await coordinator._async_update_data()
+
+    assert results[("lave_vaisselle", "Eco")].start is not None
+
+
+async def test_computed_forecast_source_with_no_pv_coordinator_yet_does_not_commit_a_guessed_slot(hass):
+    """Mirrors test_no_forecast_data_does_not_commit_a_guessed_now_slot for the computed source:
+    before __init__.py has set pv_forecast_coordinator (e.g. its own first refresh hasn't run
+    yet), the same empty-forecast guard must apply, not crash on a None attribute access.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_SOURCE: FORECAST_SOURCE_COMPUTED, CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options=_device_options(),
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_vaisselle", "Eco", True)
+    await _flush(coordinator)
+    # coordinator.pv_forecast_coordinator stays None, as it is right after construction.
 
     results = await coordinator._async_update_data()
 

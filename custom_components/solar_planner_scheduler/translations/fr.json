@@ -4,13 +4,23 @@
       "user": {
         "title": "Solar Planner Scheduler",
         "data": {
+          "forecast_source": "Source de la prévision",
           "forecast_entity": "Entité de prévision (ex. Solcast aujourd'hui)",
           "forecast_tomorrow_entity": "Entité de prévision pour demain (optionnel)",
           "production_entity": "Entité de production solaire (optionnel)",
           "consumption_entity": "Entité de consommation de la maison (optionnel)",
-          "max_simultaneous_power": "Puissance simultanée max (W)"
+          "max_simultaneous_power": "Puissance simultanée max (W)",
+          "pv_capacity_kwc": "Puissance crête des panneaux (kWc, calcul auto uniquement)",
+          "pv_azimuth": "Azimut des panneaux (°, 180=Sud, calcul auto uniquement)",
+          "pv_tilt": "Inclinaison des panneaux (°, calcul auto uniquement)",
+          "pv_loss_pct": "Pertes système (%, calcul auto uniquement)",
+          "pv_weather_model": "Modèle météo (calcul auto uniquement)"
         }
       }
+    },
+    "error": {
+      "forecast_entity_required": "L'entité de prévision est requise quand la source est \"entité existante\".",
+      "pv_params_required": "La puissance crête, l'azimut et l'inclinaison sont requis quand la source est \"calcul automatique\"."
     }
   },
   "options": {
@@ -33,11 +43,17 @@
       "edit_base": {
         "title": "Paramètres de base",
         "data": {
+          "forecast_source": "Source de la prévision",
           "forecast_entity": "Entité de prévision (ex. Solcast aujourd'hui)",
           "forecast_tomorrow_entity": "Entité de prévision pour demain (optionnel)",
           "production_entity": "Entité de production solaire (optionnel)",
           "consumption_entity": "Entité de consommation de la maison (optionnel)",
-          "max_simultaneous_power": "Puissance simultanée max (W)"
+          "max_simultaneous_power": "Puissance simultanée max (W)",
+          "pv_capacity_kwc": "Puissance crête des panneaux (kWc, calcul auto uniquement)",
+          "pv_azimuth": "Azimut des panneaux (°, 180=Sud, calcul auto uniquement)",
+          "pv_tilt": "Inclinaison des panneaux (°, calcul auto uniquement)",
+          "pv_loss_pct": "Pertes système (%, calcul auto uniquement)",
+          "pv_weather_model": "Modèle météo (calcul auto uniquement)"
         }
       },
       "edit_tariff": {
@@ -129,7 +145,9 @@
       "invalid_phase_line": "Chaque ligne doit ressembler à `20min@150W` ou `1.5h@150W`.",
       "empty_phases": "Entrez au moins une phase.",
       "invalid_tariff_line": "Chaque ligne doit ressembler à `22:00@0.1589` (HH:MM@prix).",
-      "empty_tariff_bands": "Entrez au moins une plage de prix."
+      "empty_tariff_bands": "Entrez au moins une plage de prix.",
+      "forecast_entity_required": "L'entité de prévision est requise quand la source est \"entité existante\".",
+      "pv_params_required": "La puissance crête, l'azimut et l'inclinaison sont requis quand la source est \"calcul automatique\"."
     }
   },
   "issues": {

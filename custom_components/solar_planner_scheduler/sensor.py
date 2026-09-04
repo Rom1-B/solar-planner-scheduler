@@ -6,7 +6,9 @@ what used to be a separate read-only sensor.
 
 from __future__ import annotations
 
-from homeassistant.components.sensor import SensorEntity, SensorStateClass
+from typing import TYPE_CHECKING
+
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -31,12 +33,18 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import SolarPlannerSchedulerCoordinator
-from .scheduling import price_at
+from .scheduling import interpolate, price_at
+
+if TYPE_CHECKING:
+    from .pv_forecast import PvForecastCoordinator
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
     coordinator: SolarPlannerSchedulerCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([BaseConfigSensor(entry), CurrentPriceSensor(coordinator, entry)])
+    entities: list[SensorEntity] = [BaseConfigSensor(entry), CurrentPriceSensor(coordinator, entry)]
+    if coordinator.pv_forecast_coordinator is not None:
+        entities.append(ComputedForecastSensor(coordinator.pv_forecast_coordinator, entry))
+    async_add_entities(entities)
 
 
 class BaseConfigSensor(SensorEntity):
@@ -114,3 +122,39 @@ class CurrentPriceSensor(CoordinatorEntity[SolarPlannerSchedulerCoordinator], Se
             return None
         tariff_bands = self._entry.data.get(CONF_TARIFF_BANDS, [])
         return price_at(dt_util.now(), tariff_bands)
+
+
+class ComputedForecastSensor(CoordinatorEntity["PvForecastCoordinator"], SensorEntity):
+    """The pvlib-computed forecast: current interpolated power, plus the full hourly curve as an
+    attribute in Solcast's own shape, for use outside this integration (Energy dashboard, a plain
+    History graph card next to a Solcast entity and `production_entity` for comparison).
+
+    Runs independently of `forecast_source` (see __init__.py): this entity exists whenever it
+    does, regardless of whether it's actually driving scheduling.
+    """
+
+    _attr_native_unit_of_measurement = "W"
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: "PvForecastCoordinator", entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_computed_forecast"
+        # Fully spelled out, same reasoning as CurrentPriceSensor: avoids a collision-prone
+        # sensor.computed_forecast.
+        self._attr_name = "Solar Planner Scheduler computed forecast"
+
+    @property
+    def native_value(self) -> float | None:
+        if not self.coordinator.data:
+            return None
+        return interpolate(self.coordinator.data, dt_util.now())
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {
+            "detailedForecast": [
+                {"period_start": p["time"].isoformat(), "pv_estimate": p["w"] / 1000}
+                for p in self.coordinator.data or []
+            ]
+        }

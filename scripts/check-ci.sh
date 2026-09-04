@@ -4,6 +4,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+echo "== pvlib version (requirements-dev.txt vs manifest.json) =="
+DEV_VERSION=$(grep -oP '(?<=^pvlib==)\S+' requirements-dev.txt)
+MANIFEST_VERSION=$(jq -r '.requirements[] | select(startswith("pvlib=="))' custom_components/solar_planner_scheduler/manifest.json | cut -d= -f3)
+if [ "$DEV_VERSION" != "$MANIFEST_VERSION" ]; then
+  echo "pvlib version mismatch: requirements-dev.txt has $DEV_VERSION, manifest.json has $MANIFEST_VERSION." >&2
+  exit 1
+fi
+
 echo "== pytest =="
 .venv/bin/pytest tests/
 

@@ -66,3 +66,24 @@ async def test_system_health_counts_open_repairs_from_the_real_issue_registry(ha
     info = await system_health_info(hass)
 
     assert info["open_repairs"] == 1
+
+
+async def test_system_health_omits_pv_forecast_status_with_no_pv_coordinator(hass):
+    _set_up_coordinator(hass)
+
+    info = await system_health_info(hass)
+
+    assert "pv_forecast_last_update_success" not in info
+
+
+async def test_system_health_reports_pv_forecast_status_when_present(hass):
+    coordinator = _set_up_coordinator(hass)
+
+    class _FakePvForecastCoordinator:
+        last_update_success = True
+
+    coordinator.pv_forecast_coordinator = _FakePvForecastCoordinator()
+
+    info = await system_health_info(hass)
+
+    assert info["pv_forecast_last_update_success"] is True

@@ -61,3 +61,27 @@ async def test_diagnostics_reports_the_last_exception_when_present(hass):
 
     assert diagnostics["last_update_success"] is False
     assert "boom" in diagnostics["last_exception"]
+
+
+async def test_diagnostics_omits_pv_forecast_fields_when_no_pv_coordinator(hass):
+    coordinator = _set_up_coordinator(hass)
+
+    diagnostics = await async_get_config_entry_diagnostics(hass, coordinator.entry)
+
+    assert "pv_forecast_last_update_success" not in diagnostics
+    assert "pv_forecast_last_exception" not in diagnostics
+
+
+async def test_diagnostics_includes_pv_forecast_status_when_present(hass):
+    coordinator = _set_up_coordinator(hass)
+
+    class _FakePvForecastCoordinator:
+        last_update_success = False
+        last_exception = ValueError("open-meteo unreachable")
+
+    coordinator.pv_forecast_coordinator = _FakePvForecastCoordinator()
+
+    diagnostics = await async_get_config_entry_diagnostics(hass, coordinator.entry)
+
+    assert diagnostics["pv_forecast_last_update_success"] is False
+    assert "open-meteo unreachable" in diagnostics["pv_forecast_last_exception"]
