@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -17,13 +18,17 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_AUTO_DAYS,
     CONF_DEVICES,
     CONF_DURATION_MIN,
+    CONF_FIXED_LOADS,
     CONF_FORECAST_ENTITY,
     CONF_MAX_SIMULTANEOUS_POWER,
+    CONF_MINUTES,
     CONF_NAME,
     CONF_POWER_PROFILE,
     CONF_POWER_SENSOR,
+    CONF_POWER_W,
     CONF_PRICE_TRACKING_ENABLED,
     CONF_PROGRAMS,
+    CONF_START_TIME,
     CONF_TARIFF_BANDS,
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
@@ -805,3 +810,77 @@ async def test_activating_a_program_avoids_a_sibling_committed_in_an_earlier_cyc
     chemises = results[("lave_linge", "5 chemises")]
     assert eco.start is not None and chemises.start is not None
     assert eco.end <= chemises.start or chemises.end <= eco.start
+
+
+# --- fixed load cost --------------------------------------------------------------------------
+
+
+def _fixed_load(name="PAC", start_time="12:00:00", minutes=60, power_w=2000.0):
+    return {CONF_NAME: name, CONF_START_TIME: start_time, CONF_POWER_PROFILE: [{CONF_MINUTES: minutes, CONF_POWER_W: power_w}]}
+
+
+async def test_fixed_load_cost_is_computed_when_tariff_tracking_is_enabled(hass):
+    """No forecast state is ever set, so solar coverage is 0 and the full 2 kWh draw is billed at
+    the flat 0.20 EUR/kWh tariff band: exactly 0.40 EUR, easy to verify by hand.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_FORECAST_ENTITY: "sensor.forecast",
+            CONF_MAX_SIMULTANEOUS_POWER: 4000,
+            CONF_PRICE_TRACKING_ENABLED: True,
+            CONF_TARIFF_BANDS: [{"start": "00:00", "price": 0.20}],
+        },
+        options={CONF_DEVICES: [], CONF_FIXED_LOADS: [_fixed_load()]},
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+
+    await coordinator._async_update_data()
+
+    assert coordinator.fixed_load_cost("PAC") == pytest.approx(0.40)
+
+
+async def test_fixed_load_cost_is_none_when_tariff_tracking_is_disabled(hass):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options={CONF_DEVICES: [], CONF_FIXED_LOADS: [_fixed_load()]},
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+
+    await coordinator._async_update_data()
+
+    assert coordinator.fixed_load_cost("PAC") is None
+
+
+async def test_fixed_load_cost_accounts_for_other_concurrent_loads(hass):
+    """A second fixed load overlapping the same window shares the (zero) solar coverage, so each
+    load's own deficit, and therefore cost, is unaffected by the other's presence here (no solar
+    to split): this only proves the "other" load doesn't get excluded from the walk by mistake,
+    since a wrongly-excluded self would double count, not a shared-solar scenario.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_FORECAST_ENTITY: "sensor.forecast",
+            CONF_MAX_SIMULTANEOUS_POWER: 4000,
+            CONF_PRICE_TRACKING_ENABLED: True,
+            CONF_TARIFF_BANDS: [{"start": "00:00", "price": 0.20}],
+        },
+        options={
+            CONF_DEVICES: [],
+            CONF_FIXED_LOADS: [_fixed_load(name="PAC"), _fixed_load(name="Ballon", power_w=1000.0)],
+        },
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+
+    await coordinator._async_update_data()
+
+    assert coordinator.fixed_load_cost("PAC") == pytest.approx(0.40)
+    assert coordinator.fixed_load_cost("Ballon") == pytest.approx(0.20)

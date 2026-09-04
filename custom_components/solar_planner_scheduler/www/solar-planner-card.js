@@ -405,6 +405,8 @@ class SolarPlannerCard extends HTMLElement {
           loadIndex,
           start,
           end: new Date(start.getTime() + load.duration_minutes * 60000),
+          estimatedCost: load.estimated_cost ?? null,
+          currency: load.currency ?? null,
         });
       }
     });

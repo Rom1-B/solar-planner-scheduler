@@ -194,7 +194,7 @@ def _fixed_load_windows(fixed_loads: list[dict], now: datetime) -> list[dict]:
         start = day_start.replace(hour=hour, minute=minute)
         profile = load[CONF_POWER_PROFILE]
         end = start + timedelta(minutes=sum(p[CONF_MINUTES] for p in profile))
-        windows.append({"start": start, "end": end, "profile": profile})
+        windows.append({"name": load[CONF_NAME], "start": start, "end": end, "profile": profile})
     return windows
 
 
@@ -206,6 +206,13 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         self.entry = entry
         self._store = Store(hass, STORAGE_VERSION, f"{DOMAIN}_{entry.entry_id}")
         self._state: dict[str, dict] = {}
+        # Recomputed every _async_update_data() cycle, never persisted — same "always derived,
+        # never stale-cached across restarts" choice as `results` itself.
+        self._fixed_load_costs: dict[str, float] = {}
+
+    def fixed_load_cost(self, name: str) -> float | None:
+        """€ cost of a fixed load's daily window, or None if tariff tracking is off."""
+        return self._fixed_load_costs.get(name)
 
     def diagnostics_snapshot(self) -> dict:
         """Everything diagnostics.py exposes: the persisted Store plus the last update's outcome."""
@@ -536,4 +543,23 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
 
                 _finalize(slot)
                 results[key] = self._schedule_from_slot(device_name, slot, item, forced)
+
+        # Fixed loads are never scheduled (their window is fixed), but still draw from the grid
+        # when solar can't cover them, same as a scheduled device. Computed once `committed` holds
+        # every other device/fixed-load's final window, so "others" reflects the whole picture.
+        self._fixed_load_costs = {}
+        if data.get(CONF_PRICE_TRACKING_ENABLED, False):
+            tariff_bands = self._tariff_bands()
+            for load in fixed_loads:
+                item_segments = phase_segments(load)
+                other_segments = [
+                    seg
+                    for o in committed
+                    if o is not load and o.get("start") and o.get("end")
+                    for seg in phase_segments(o)
+                ]
+                self._fixed_load_costs[load["name"]] = instant_deficit_cost(
+                    item_segments, other_segments, points, base_load, load["start"], load["end"], tariff_bands
+                )
+
         return results

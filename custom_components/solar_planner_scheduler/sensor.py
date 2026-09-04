@@ -36,16 +36,17 @@ from .scheduling import price_at
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
     coordinator: SolarPlannerSchedulerCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([BaseConfigSensor(entry), CurrentPriceSensor(coordinator, entry)])
+    async_add_entities([BaseConfigSensor(coordinator, entry), CurrentPriceSensor(coordinator, entry)])
 
 
-class BaseConfigSensor(SensorEntity):
+class BaseConfigSensor(CoordinatorEntity[SolarPlannerSchedulerCoordinator], SensorEntity):
     """Read-only mirror of this entry's base settings and fixed loads, for the card."""
 
     _attr_native_unit_of_measurement = "W"
     _attr_icon = "mdi:cog"
 
-    def __init__(self, entry: ConfigEntry) -> None:
+    def __init__(self, coordinator: SolarPlannerSchedulerCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_config"
         self._attr_name = "Solar Planner Scheduler config"
@@ -57,11 +58,16 @@ class BaseConfigSensor(SensorEntity):
     @property
     def extra_state_attributes(self) -> dict:
         data = self._entry.data
+        # Only scheduled devices get a cost from the coordinator's own results; a fixed load's
+        # window never changes, so its cost is computed separately (coordinator.fixed_load_cost()).
+        price_tracking_enabled = data.get(CONF_PRICE_TRACKING_ENABLED, False)
         fixed_loads = [
             {
                 CONF_NAME: load[CONF_NAME],
                 CONF_START_TIME: load[CONF_START_TIME],
                 "power_profile": load[CONF_POWER_PROFILE],
+                "estimated_cost": self.coordinator.fixed_load_cost(load[CONF_NAME]) if price_tracking_enabled else None,
+                "currency": self.coordinator.hass.config.currency if price_tracking_enabled else None,
             }
             for load in self._entry.options.get(CONF_FIXED_LOADS, [])
         ]

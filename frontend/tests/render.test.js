@@ -247,6 +247,23 @@ test("the table's Cost column shows estimated_cost when present, \"-\" otherwise
   assert.match(html, /<td>PAC \(external\)<\/td>.*?<td>-<\/td>\s*<\/tr>/s, "expected \"-\" for a fixed load with no estimated_cost");
 });
 
+test("the table's Cost column shows a fixed load's estimated_cost when the server provides one", () => {
+  const card = buildCard();
+  setFixedLoads(card, [
+    {
+      name: "PAC",
+      start_time: "13:00",
+      power_profile: [{ minutes: 60, power_w: 1500 }],
+      estimated_cost: 0.28,
+      currency: "EUR",
+    },
+  ]);
+  card._showTable = true;
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  assert.match(html, /<td>PAC \(external\)<\/td>\s*<td>[^<]*<\/td>\s*<td>[^<]*<\/td>\s*<td>~0.28 EUR<\/td>/);
+});
+
 test("an inactive program renders no gantt bar or stack segment", () => {
   const card = buildCard({ withActiveSelections: false });
   card._render();
