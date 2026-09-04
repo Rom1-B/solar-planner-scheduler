@@ -336,13 +336,16 @@ class SolarPlannerCard extends HTMLElement {
     this._lastRefresh = Date.now();
 
     const base = this._baseConfig();
-    const midnight = startOfDay(new Date());
     const now = new Date();
+    // Matches the chart's own display window, so the actual/consumption curves don't truncate
+    // at midnight while the forecast/gantt already show further back.
+    const chartHoursPast = this._config.chart_hours_past ?? 6;
+    const historyStart = new Date(now.getTime() - chartHoursPast * 3600000);
     const jobs = [];
     if (base.production_entity) {
       jobs.push(
-        this._fetchHistory(base.production_entity, midnight, now).then((pts) => {
-          this._actualPoints = smoothCurve(pts, SMOOTH_BUCKET_MS, midnight, now);
+        this._fetchHistory(base.production_entity, historyStart, now).then((pts) => {
+          this._actualPoints = smoothCurve(pts, SMOOTH_BUCKET_MS, historyStart, now);
           this._actualCurve = this._actualPoints.map((p) => ({ time: p.time, w: p.value }));
         })
       );
@@ -352,8 +355,8 @@ class SolarPlannerCard extends HTMLElement {
     }
     if (base.consumption_entity) {
       jobs.push(
-        this._fetchHistory(base.consumption_entity, midnight, now).then((pts) => {
-          this._consumptionPoints = smoothCurve(pts, SMOOTH_BUCKET_MS, midnight, now);
+        this._fetchHistory(base.consumption_entity, historyStart, now).then((pts) => {
+          this._consumptionPoints = smoothCurve(pts, SMOOTH_BUCKET_MS, historyStart, now);
           this._consumptionCurve = this._consumptionPoints.map((p) => ({ time: p.time, w: p.value }));
         })
       );
@@ -512,42 +515,25 @@ class SolarPlannerCard extends HTMLElement {
     const dayStart = startOfDay(new Date());
     const now = new Date();
     const height = 220;
-    const marginLeft = 44;
-    const marginRight = 8;
+    const marginLeft = 28;
+    const marginRight = 4;
     const marginTop = 14;
     const marginBottom = 24;
     const innerH = height - marginTop - marginBottom;
 
-    // Daylight window only (+30 min margin), to avoid a mostly-empty chart at night.
-    const SUN_MARGIN_MS = 30 * 60 * 1000;
-    const sunPoints = points.filter((p) => p.w > 0);
-    const daylightStart = sunPoints.length ? new Date(sunPoints[0].time.getTime() - SUN_MARGIN_MS) : dayStart;
-    const daylightEnd = sunPoints.length
-      ? new Date(sunPoints[sunPoints.length - 1].time.getTime() + SUN_MARGIN_MS)
-      : new Date(dayStart.getTime() + DAY_MS);
-    // Widen the view to include scheduled items that fall outside daylight hours.
-    const scheduledTimes = stackLayers.flatMap((layer) => layer.bars.flatMap((b) => (b.start && b.end ? [b.start.getTime(), b.end.getTime()] : [])));
-    // Floored at now - 6h so a full-day fixed load doesn't pull the view back to midnight.
-    const PAST_MARGIN_MS = 6 * 60 * 60 * 1000;
-    const pastFloor = Math.max(now.getTime() - PAST_MARGIN_MS, dayStart.getTime());
-    const viewStart = new Date(Math.max(Math.min(daylightStart.getTime(), ...scheduledTimes), pastFloor));
-    const viewEnd = new Date(Math.max(daylightEnd.getTime(), ...scheduledTimes));
+    // Fixed window around "now", configurable per card instance (chart_hours_past/chart_hours_future)
+    // instead of an auto-widening daylight/scheduled-items heuristic. Always maps to width=600, so the
+    // whole window fits without a side-scroll.
+    const chartHoursPast = this._config.chart_hours_past ?? 6;
+    const chartHoursFuture = this._config.chart_hours_future ?? 24;
+    const viewStart = new Date(now.getTime() - chartHoursPast * 3600000);
+    const viewEnd = new Date(now.getTime() + chartHoursFuture * 3600000);
     const viewSpanMs = viewEnd.getTime() - viewStart.getTime();
 
-    // Width scales with the visible span so tomorrow's extra day scrolls instead of compressing today.
     const todayEnd = new Date(dayStart.getTime() + DAY_MS);
-    const todaySunPoints = sunPoints.filter((p) => p.time < todayEnd);
-    const todayDaylightStart = todaySunPoints.length ? new Date(todaySunPoints[0].time.getTime() - SUN_MARGIN_MS) : dayStart;
-    const todayDaylightEnd = todaySunPoints.length
-      ? new Date(todaySunPoints[todaySunPoints.length - 1].time.getTime() + SUN_MARGIN_MS)
-      : todayEnd;
-    const todayViewSpanMs = todayDaylightEnd.getTime() - todayDaylightStart.getTime();
-    const baseInnerW = 600 - marginLeft - marginRight;
-    const pxPerMs = baseInnerW / todayViewSpanMs;
-    const innerW = Math.max(1, viewSpanMs) * pxPerMs;
+    const innerW = 600 - marginLeft - marginRight;
     const width = innerW + marginLeft + marginRight;
-    // Must be width/600 to keep 1 SVG unit a constant real-px size regardless of `width` (see .chart-scroll/svg.chart CSS).
-    const chartWidthPercent = ((width / 600) * 100).toFixed(2);
+    const chartWidthPercent = 100;
 
     // Grid cut at exact phase boundaries, not a fixed step: avoids diluting short spikes (see CLAUDE.local.md).
     const stackLayersWithSegments = stackLayers.map((layer) => ({
@@ -639,21 +625,22 @@ class SolarPlannerCard extends HTMLElement {
       .join("");
 
     const hourTicks = [];
-    // Stepped from todayViewSpanMs (fixed), not the total span, so tick density doesn't thin out with forecast_tomorrow_entity.
-    const todayViewSpanHours = todayViewSpanMs / 3600000;
-    const tickStepHours = Math.max(1, Math.round(todayViewSpanHours / 8));
+    const tickStepHours = Math.max(1, Math.round(viewSpanMs / 3600000 / 8));
     const firstTickHour = Math.ceil(viewStart.getTime() / 3600000 / tickStepHours) * tickStepHours;
     for (let h = firstTickHour; h * 3600000 <= viewEnd.getTime(); h += tickStepHours) {
       const t = new Date(h * 3600000);
       hourTicks.push(`<text x="${x(t).toFixed(1)}" y="${height - 6}" class="axis-label" text-anchor="middle">${t.getHours()}h</text>`);
     }
-    // Marks the midnight boundary so repeated hour labels ("8h") aren't ambiguous between today and tomorrow.
+    // Marks each midnight boundary so repeated hour labels ("8h") aren't ambiguous between days.
+    // Labeled by day offset from today, not always "Tomorrow": chart_hours_future can span several days.
     const dayTicks = [];
-    for (let d = new Date(todayEnd); d < viewEnd; d = new Date(d.getTime() + DAY_MS)) {
+    let dayOffset = 1;
+    for (let d = new Date(todayEnd); d < viewEnd; d = new Date(d.getTime() + DAY_MS), dayOffset++) {
       if (d <= viewStart) continue;
+      const label = dayOffset === 1 ? "Tomorrow" : `In ${dayOffset} days`;
       dayTicks.push(
         `<line x1="${x(d).toFixed(1)}" y1="${marginTop}" x2="${x(d).toFixed(1)}" y2="${height - marginBottom}" class="day-line"/>`,
-        `<text x="${(x(d) + 4).toFixed(1)}" y="${marginTop + 9}" class="axis-label day-label">Tomorrow</text>`
+        `<text x="${(x(d) + 4).toFixed(1)}" y="${marginTop + 9}" class="axis-label day-label">${label}</text>`
       );
     }
     const wTicks = [`<text x="${marginLeft - 6}" y="${marginTop - 2}" class="axis-label" text-anchor="end">kW</text>`];
@@ -807,7 +794,8 @@ class SolarPlannerCard extends HTMLElement {
       .map((p) => {
         const dayLabel = p.start && p.start >= todayEnd ? "Tomorrow " : "";
         const countdown = p.start ? fmtCountdown(p.start, now) : null;
-        return `<tr>
+        const started = p.start && p.start <= now;
+        return `<tr class="${started ? "row-started" : ""}">
           <td>${p.deviceName}${p.fixed ? " (external)" : ` - ${p.programName}`}</td>
           <td>${p.start ? `${dayLabel}${fmtTime(p.start)} - ${fmtTime(p.end)}${countdown ? ` (${countdown})` : ""}` : "no window"}</td>
           ${showEnergyColumn ? `<td>${fmtWh(p.energyWh)}</td>` : ""}
@@ -883,6 +871,7 @@ class SolarPlannerCard extends HTMLElement {
         .table-toggle-row { margin-top: 10px; }
         table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 0.85em; }
         th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--divider-color); }
+        .row-started { opacity: 0.5; }
       </style>
       <ha-card>
         <div class="header">

@@ -85,11 +85,14 @@ chart_expanded: true    # optional, default true (the forecast chart/gantt/devic
 table_expanded: false   # optional, default false (the summary table)
 table_show_energy: true # optional, default true (the table's Energy column)
 table_show_cost: true   # optional, default true (the table's Cost column)
+chart_hours_past: 6     # optional, default 6 (hours shown before now)
+chart_hours_future: 24  # optional, default 24 (hours shown after now)
 ```
 
 Each section has its own toggle icon in the card itself; `chart_expanded`/`table_expanded`
 only set which state it starts in. The table's Window column shows a countdown to a future start
-(e.g. `08:30 - 10:00 (in 2h15m)`).
+(e.g. `08:30 - 10:00 (in 2h15m)`). `chart_hours_past`/`chart_hours_future` control the chart/gantt's
+fixed display window around the current time; they're display-only and don't affect scheduling.
 
 ## Development
 

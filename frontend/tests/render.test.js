@@ -226,6 +226,24 @@ test("the table shows energy in kWh, merging the Device and Program columns", ()
   assert.match(html, /<td>Lave-linge - Eco<\/td>/);
 });
 
+test("a table row is italicized once its window's start has passed", () => {
+  const card = buildCard();
+  card._hass.states = {
+    ...card._hass.states,
+    ...deviceEntities("lave_linge", {
+      name: "Lave-linge",
+      start: new Date(Date.now() - 10 * 60000),
+      end: new Date(Date.now() + 110 * 60000),
+      powerW: 1800,
+    }),
+  };
+  card._showTable = true;
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  assert.match(html, /<tr class="row-started">\s*<td>Lave-linge - Eco<\/td>/, "expected the started row to carry row-started");
+  assert.match(html, /<tr class="">\s*<td>Lave-vaisselle - Eco<\/td>/, "expected the not-yet-started row to stay unmarked");
+});
+
 test("the table's Cost column shows estimated_cost when present, \"-\" otherwise", () => {
   const card = buildCard();
   card._hass.states = {
@@ -272,9 +290,10 @@ test("an inactive program renders no gantt bar or stack segment", () => {
   assert.ok(html.includes('class="program-toggle "'), "expected an inactive toggle button to render");
 });
 
-test("a slot scheduled after sunset still renders within the chart (view widens beyond daylight)", () => {
+test("a slot scheduled after sunset still renders within the chart's fixed display window", () => {
   // The fallback "least-bad slot" placement can push a device past sunset when no full-solar window
-  // exists that day. The chart view must widen to include every scheduled item, not just daylight hours.
+  // exists that day. The default 6h-past/24h-future window comfortably covers a same-day slot from
+  // any time of day, so it must still render, not be clipped.
   const card = buildCard({ withActiveSelections: false });
   const lateStart = new Date();
   lateStart.setHours(23, 0, 0, 0);
@@ -325,7 +344,7 @@ function ganttBarGeometry(html, slug) {
   return m ? { x: parseFloat(m[1]), width: parseFloat(m[2]) } : null;
 }
 
-test("forecast_tomorrow_entity widens the chart without shrinking today's own resolution", () => {
+test("forecast_tomorrow_entity does not change the fixed display window or today's bar geometry", () => {
   const withoutTomorrow = buildCard();
   withoutTomorrow._render();
   const barWithout = ganttBarGeometry(withoutTomorrow.shadowRoot.innerHTML, "lave_linge");
@@ -348,7 +367,33 @@ test("forecast_tomorrow_entity widens the chart without shrinking today's own re
   assert.ok(Math.abs(barWith.width - barWithout.width) < 0.1, `expected the same width, got ${barWith.width} vs ${barWithout.width}`);
 
   const chartWidth = parseFloat(/<svg class="chart" viewBox="0 0 ([\d.]+)/.exec(htmlWith)?.[1] ?? "NaN");
-  assert.ok(chartWidth > 600, `expected tomorrow's forecast to widen the view past the 600 baseline, got ${chartWidth}`);
+  assert.equal(chartWidth, 600, `expected the chart to keep the fixed 600 width, got ${chartWidth}`);
+});
+
+test("chart_hours_past/chart_hours_future control the visible window (now-line position)", () => {
+  const card = buildCard();
+  card._config.chart_hours_past = 2;
+  card._config.chart_hours_future = 6;
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  const nowX = parseFloat(/class="now-line"/.test(html) && /x1="([\d.]+)"[^>]*class="now-line"/.exec(html)?.[1]);
+  const marginLeft = 28;
+  const innerW = 600 - marginLeft - 4;
+  const expectedNowX = marginLeft + (2 / (2 + 6)) * innerW;
+  assert.ok(Math.abs(nowX - expectedNowX) < 0.5, `expected now-line at ${expectedNowX}, got ${nowX}`);
+});
+
+test("a chart_hours_future spanning several midnights labels each day boundary distinctly", () => {
+  // 6h past (default) + 48h future always spans at least 2 midnights regardless of the current
+  // time of day, so this exercises the duplicate-"Tomorrow" bug deterministically.
+  const card = buildCard();
+  card._config.chart_hours_future = 48;
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  const labels = [...html.matchAll(/class="axis-label day-label">([^<]*)</g)].map((m) => m[1]);
+  assert.ok(labels.length >= 2, `expected at least two day boundaries with a 48h future window, got ${JSON.stringify(labels)}`);
+  assert.equal(labels[0], "Tomorrow", `expected the first boundary labeled Tomorrow, got ${labels[0]}`);
+  assert.equal(new Set(labels).size, labels.length, `expected every day boundary to have a distinct label, got ${JSON.stringify(labels)}`);
 });
 
 test("a daily fixed load also shows tomorrow's occurrence once forecast_tomorrow_entity is set", () => {
@@ -437,7 +482,7 @@ test("a full-day fixed load doesn't pull the default view back to midnight", () 
   const html = card.shadowRoot.innerHTML;
   const nowX = parseFloat(/x1="([\d.]+)"[^>]*class="now-line"/.exec(html)?.[1] ?? "NaN");
   assert.ok(!Number.isNaN(nowX), "expected a now-line to render");
-  const marginLeft = 44;
+  const marginLeft = 28;
   assert.ok(nowX - marginLeft <= 260, `expected "now" within ~6h of the left margin, got ${nowX - marginLeft}px past it`);
   assert.ok(nowX - marginLeft >= 0, `expected "now" at or after the left margin, got ${nowX - marginLeft}`);
 });
