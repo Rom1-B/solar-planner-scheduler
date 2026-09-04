@@ -361,7 +361,7 @@ def test_reusable_committed_reuses_an_imminent_slot(hass):
 
     slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
 
-    assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False, "cost": None}
+    assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False, "cost": None, "seen_running": False}
     assert forced is False
     assert should_search is False
     assert dormant is False
@@ -414,7 +414,7 @@ def test_reusable_committed_keeps_showing_an_elapsed_slot_on_the_same_day(hass):
 
     slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
 
-    assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False, "cost": None}
+    assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False, "cost": None, "seen_running": False}
     assert should_search is False
     assert dormant is False
 
@@ -431,7 +431,7 @@ def test_reusable_committed_stays_in_progress_for_a_slot_crossing_midnight(hass)
 
     slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", {}, 90, now, [])
 
-    assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False, "cost": None}
+    assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False, "cost": None, "seen_running": False}
     assert should_search is False
     assert dormant is False
 
@@ -509,6 +509,72 @@ def test_reusable_committed_ignores_the_power_sensor_when_forced(hass):
     assert should_search is False
     assert failed_to_start is False
     assert forced is True
+
+
+def test_reusable_committed_does_not_unlock_once_seen_running(hass):
+    """Regression: a real appliance can finish its actual cycle faster than the configured
+    power_profile. A later poll seeing low power must not undo an earlier confirmed run."""
+    coordinator = _coordinator(hass)
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    start = now - timedelta(minutes=20)
+    end = start + timedelta(minutes=150)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
+    coordinator._state["lave_linge"]["Eco"]["committed"]["seen_running"] = True
+    hass.states.async_set("sensor.lave_linge_power", "0")  # idle now, but already confirmed running
+
+    device = {CONF_POWER_SENSOR: "sensor.lave_linge_power"}
+    slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", device, 150, now, [])
+
+    assert should_search is False
+    assert failed_to_start is False
+
+
+async def test_update_seen_running_latches_once_power_exceeds_idle_threshold(hass):
+    coordinator = _coordinator(hass)
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    start = now - timedelta(minutes=5)
+    end = start + timedelta(minutes=150)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
+    hass.states.async_set("sensor.lave_linge_power", "1600")
+
+    await coordinator._update_seen_running("lave_linge", "Eco", {CONF_POWER_SENSOR: "sensor.lave_linge_power"}, now)
+
+    assert coordinator._get_committed("lave_linge", "Eco")["seen_running"] is True
+
+
+async def test_update_seen_running_does_nothing_below_idle_threshold(hass):
+    coordinator = _coordinator(hass)
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    start = now - timedelta(minutes=5)
+    end = start + timedelta(minutes=150)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
+    hass.states.async_set("sensor.lave_linge_power", "0")
+
+    await coordinator._update_seen_running("lave_linge", "Eco", {CONF_POWER_SENSOR: "sensor.lave_linge_power"}, now)
+
+    assert coordinator._get_committed("lave_linge", "Eco")["seen_running"] is False
+
+
+async def test_a_short_real_cycle_does_not_get_flagged_as_failed_to_start_later(hass):
+    """End-to-end reproduction of the live incident: power spikes shortly after start, then drops
+    back to idle well before the configured window elapses. A later cycle must still reuse the slot.
+    """
+    coordinator = _coordinator(hass)
+    start = datetime(2026, 9, 4, 11, 50, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=150)
+    _seed_committed(coordinator, "pac", "Eau chaude", DeviceSchedule("pac", start, end, 54))
+    device = {CONF_POWER_SENSOR: "sensor.pac_power"}
+
+    hass.states.async_set("sensor.pac_power", "1069")  # the real appliance just ramped up
+    await coordinator._update_seen_running("pac", "Eau chaude", device, start + timedelta(minutes=4))
+
+    hass.states.async_set("sensor.pac_power", "5")  # it finished its real, shorter cycle
+    later = start + timedelta(minutes=33)
+    await coordinator._update_seen_running("pac", "Eau chaude", device, later)
+    slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("pac", "Eau chaude", device, 150, later, [])
+
+    assert should_search is False
+    assert failed_to_start is False
 
 
 # --- _note_failed_to_start() --------------------------------------------------------------------

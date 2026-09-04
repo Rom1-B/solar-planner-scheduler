@@ -288,6 +288,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             "coverage_pct": raw["coverage_pct"],
             "forced": raw.get("forced", False),
             "cost": raw.get("cost"),
+            "seen_running": raw.get("seen_running", False),
         }
 
     async def _set_committed(
@@ -307,25 +308,57 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             "coverage_pct": coverage_pct,
             "forced": forced,
             "cost": cost,
+            "seen_running": False,
         }
         state.pop("pending_forced_start", None)
         self._state.setdefault(device_name, {})[program_name] = state
         await self._store.async_save(self._state)
 
-    def _failed_to_start(self, device: dict, now: datetime) -> bool:
-        """True only if a power sensor is configured and reads below the idle threshold."""
-        power_sensor = device.get(CONF_POWER_SENSOR)
+    def _current_power(self, power_sensor: str | None) -> float | None:
         if not power_sensor:
-            return False
+            return None
         state = self.hass.states.get(power_sensor)
         if state is None or state.state in ("unknown", "unavailable"):
-            return False
+            return None
         try:
-            power = float(state.state)
+            return float(state.state)
         except ValueError:
+            return None
+
+    def _failed_to_start(self, device: dict, committed: dict, now: datetime) -> bool:
+        """True only if power has never reached the idle threshold since this slot's committed start.
+
+        Checking the instant reading alone breaks once the real appliance finishes its actual cycle
+        faster than the configured power_profile: a later poll would see it back at idle and wrongly
+        conclude it never ran. `committed["seen_running"]` (set by `_update_seen_running`) latches the
+        first observed run so a later dip is never mistaken for a failed start.
+        """
+        if committed.get("seen_running"):
+            return False
+        power = self._current_power(device.get(CONF_POWER_SENSOR))
+        if power is None:
             return False
         idle_threshold = self.entry.data.get(CONF_IDLE_POWER_THRESHOLD, DEFAULT_IDLE_POWER_THRESHOLD)
         return power < idle_threshold
+
+    async def _update_seen_running(self, device_name: str, program_name: str, device: dict, now: datetime) -> None:
+        """Latch committed["seen_running"] the first time power reaches idle threshold while in progress."""
+        existing = self._program_state(device_name, program_name)
+        committed = existing.get("committed")
+        if committed is None or committed.get("seen_running"):
+            return
+        start = dt_util.parse_datetime(committed["start"])
+        end = dt_util.parse_datetime(committed["end"])
+        if start is None or end is None or not (start <= now < end):
+            return
+        power = self._current_power(device.get(CONF_POWER_SENSOR))
+        if power is None:
+            return
+        idle_threshold = self.entry.data.get(CONF_IDLE_POWER_THRESHOLD, DEFAULT_IDLE_POWER_THRESHOLD)
+        if power < idle_threshold:
+            return
+        self._state.setdefault(device_name, {})[program_name] = {**existing, "committed": {**committed, "seen_running": True}}
+        await self._store.async_save(self._state)
 
     @staticmethod
     def _failed_to_start_issue_id(device_name: str, program_name: str) -> str:
@@ -382,7 +415,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         if now >= committed["start"]:
             if now < committed["end"]:
                 # In progress — even overnight, this is never a day rollover.
-                if not committed["forced"] and self._failed_to_start(device, now):
+                if not committed["forced"] and self._failed_to_start(device, committed, now):
                     return None, False, True, False, True  # unlock: recompute instead of waiting forever
                 return committed, committed["forced"], False, False, False
             if committed["start"].date() != now.date():
@@ -513,6 +546,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                     continue
 
                 auto_days = program.get(CONF_AUTO_DAYS, [])
+                await self._update_seen_running(device_name, program_name, device, now)
                 slot, forced, should_search, dormant, failed_to_start = self._reusable_committed(
                     device_name, program_name, device, duration_min, now, auto_days
                 )
