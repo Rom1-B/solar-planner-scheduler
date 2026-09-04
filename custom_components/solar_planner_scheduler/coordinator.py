@@ -6,6 +6,7 @@ import logging
 import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -15,12 +16,16 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 
+if TYPE_CHECKING:
+    from .pv_forecast import PvForecastCoordinator
+
 from .const import (
     CONF_AUTO_DAYS,
     CONF_DEVICES,
     CONF_DURATION_MIN,
     CONF_FIXED_LOADS,
     CONF_FORECAST_ENTITY,
+    CONF_FORECAST_SOURCE,
     CONF_FORECAST_TOMORROW_ENTITY,
     CONF_IDLE_POWER_THRESHOLD,
     CONF_MAX_SIMULTANEOUS_POWER,
@@ -35,6 +40,7 @@ from .const import (
     DEFAULT_IDLE_POWER_THRESHOLD,
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
+    FORECAST_SOURCE_COMPUTED,
     NONE_PROGRAM,
     WEEKDAYS,
 )
@@ -206,14 +212,24 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         self.entry = entry
         self._store = Store(hass, STORAGE_VERSION, f"{DOMAIN}_{entry.entry_id}")
         self._state: dict[str, dict] = {}
+        # Set from __init__.py right after construction, only when PV params are configured,
+        # independent of forecast_source, so it can run for comparison even while an external
+        # entity (e.g. Solcast) is the one actually driving scheduling.
+        self.pv_forecast_coordinator: "PvForecastCoordinator | None" = None
 
     def diagnostics_snapshot(self) -> dict:
         """Everything diagnostics.py exposes: the persisted Store plus the last update's outcome."""
-        return {
+        snapshot = {
             "store": self._state,
             "last_update_success": self.last_update_success,
             "last_exception": repr(self.last_exception) if self.last_exception else None,
         }
+        if self.pv_forecast_coordinator is not None:
+            snapshot["pv_forecast_last_update_success"] = self.pv_forecast_coordinator.last_update_success
+            snapshot["pv_forecast_last_exception"] = (
+                repr(self.pv_forecast_coordinator.last_exception) if self.pv_forecast_coordinator.last_exception else None
+            )
+        return snapshot
 
     async def async_load_state(self) -> None:
         """Load persisted per-device-per-program state. Call once before the first refresh."""
@@ -446,8 +462,12 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         data = self.entry.data
         options = self.entry.options
 
-        points = _read_forecast_points(self.hass, data.get(CONF_FORECAST_ENTITY))
-        tomorrow_points = _read_forecast_points(self.hass, data.get(CONF_FORECAST_TOMORROW_ENTITY))
+        if data.get(CONF_FORECAST_SOURCE) == FORECAST_SOURCE_COMPUTED:
+            points = list(self.pv_forecast_coordinator.data or []) if self.pv_forecast_coordinator else []
+            tomorrow_points = []
+        else:
+            points = _read_forecast_points(self.hass, data.get(CONF_FORECAST_ENTITY))
+            tomorrow_points = _read_forecast_points(self.hass, data.get(CONF_FORECAST_TOMORROW_ENTITY))
         points = sorted(points + tomorrow_points, key=lambda pt: pt["time"])
 
         now = dt_util.now()

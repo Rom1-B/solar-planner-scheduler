@@ -15,6 +15,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.solar_planner_scheduler.config_flow import (
+    SolarPlannerSchedulerConfigFlow,
     _base_schema,
     _device_schema,
     _parse_tariff_bands,
@@ -27,6 +28,7 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_DEVICES,
     CONF_FIXED_LOADS,
     CONF_FORECAST_ENTITY,
+    CONF_FORECAST_SOURCE,
     CONF_FORECAST_TOMORROW_ENTITY,
     CONF_MAX_SIMULTANEOUS_POWER,
     CONF_NAME,
@@ -35,10 +37,17 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_PRICE_TRACKING_ENABLED,
     CONF_PRODUCTION_ENTITY,
     CONF_PROGRAMS,
+    CONF_PV_AZIMUTH,
+    CONF_PV_CAPACITY_KWC,
+    CONF_PV_LOSS_PCT,
+    CONF_PV_TILT,
     CONF_START_TIME,
     CONF_SUBSCRIPTION_PRICE_MONTHLY,
     CONF_TARIFF_BANDS,
+    DEFAULT_PV_LOSS_PCT,
     DOMAIN,
+    FORECAST_SOURCE_COMPUTED,
+    FORECAST_SOURCE_ENTITY,
 )
 
 BASE_DATA = {
@@ -238,6 +247,66 @@ async def test_edit_base_accepts_omitted_optional_entities(hass, enable_custom_i
     assert result["type"] == "menu"
     assert entry.data[CONF_MAX_SIMULTANEOUS_POWER] == 3000
     assert entry.data.get("production_entity") is None
+
+
+# --- forecast_source (entity vs computed) --------------------------------------------------------
+
+
+async def test_user_flow_with_entity_source_requires_forecast_entity(hass):
+    # Run through _base_schema() first (voluptuous defaulting/coercion, exactly what a real form
+    # submission goes through), then call the step handler directly rather than via
+    # hass.config_entries.flow: reaching async_create_entry() through the real flow manager
+    # triggers a genuine async_setup_entry(), which is integration-wiring territory, not this
+    # schema-validation unit's concern.
+    flow = SolarPlannerSchedulerConfigFlow()
+    flow.hass = hass
+    user_input = _base_schema()({CONF_FORECAST_SOURCE: FORECAST_SOURCE_ENTITY, CONF_MAX_SIMULTANEOUS_POWER: 4000})
+    result = await flow.async_step_user(user_input)
+
+    assert result["type"] == "form"
+    assert result["errors"] == {CONF_FORECAST_ENTITY: "forecast_entity_required"}
+
+
+async def test_user_flow_with_computed_source_requires_pv_params(hass):
+    flow = SolarPlannerSchedulerConfigFlow()
+    flow.hass = hass
+    user_input = _base_schema()({CONF_FORECAST_SOURCE: FORECAST_SOURCE_COMPUTED, CONF_MAX_SIMULTANEOUS_POWER: 4000})
+    result = await flow.async_step_user(user_input)
+
+    assert result["type"] == "form"
+    assert result["errors"] == {CONF_PV_CAPACITY_KWC: "pv_params_required"}
+
+
+async def test_user_flow_with_computed_source_creates_entry_with_pv_params(hass):
+    flow = SolarPlannerSchedulerConfigFlow()
+    flow.hass = hass
+    user_input = _base_schema()(
+        {
+            CONF_FORECAST_SOURCE: FORECAST_SOURCE_COMPUTED,
+            CONF_MAX_SIMULTANEOUS_POWER: 4000,
+            CONF_PV_CAPACITY_KWC: 4.0,
+            CONF_PV_AZIMUTH: 156.0,
+            CONF_PV_TILT: 35.0,
+        }
+    )
+    result = await flow.async_step_user(user_input)
+
+    assert result["type"] == "create_entry"
+    assert result["data"][CONF_FORECAST_SOURCE] == FORECAST_SOURCE_COMPUTED
+    assert result["data"][CONF_PV_CAPACITY_KWC] == 4.0
+    assert result["data"][CONF_PV_AZIMUTH] == 156.0
+    assert result["data"][CONF_PV_TILT] == 35.0
+    assert result["data"][CONF_PV_LOSS_PCT] == DEFAULT_PV_LOSS_PCT
+
+
+def test_base_schema_accepts_defaults_without_a_forecast_source_key():
+    """Regression test: an already-installed entry's entry.data has no CONF_FORECAST_SOURCE key
+    yet (added by this change). _base_schema(entry.data) must not raise, and must default the
+    field to "entity" so the form itself still reflects today's only behavior.
+    """
+    schema = _base_schema({CONF_FORECAST_ENTITY: "sensor.forecast"})
+    field = next(key for key in schema.schema if str(key) == CONF_FORECAST_SOURCE)
+    assert field.default() == FORECAST_SOURCE_ENTITY
 
 
 async def test_edit_tariff_writes_price_tracking_config_to_entry_data(hass, enable_custom_integrations):

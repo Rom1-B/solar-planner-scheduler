@@ -34,8 +34,12 @@ async def system_health_info(hass: HomeAssistant) -> dict:
     # recomputed/duplicated threshold check — this is the same registry the Repairs page reads.
     open_repairs = sum(1 for (domain, _issue_id) in ir.async_get(hass).issues if domain == DOMAIN)
 
-    return {
+    info = {
         "last_update_success": all(coordinator.last_update_success for coordinator in coordinators),
         "active_programs": active_programs,
         "open_repairs": open_repairs,
     }
+    pv_forecast_coordinators = [c.pv_forecast_coordinator for c in coordinators if c.pv_forecast_coordinator is not None]
+    if pv_forecast_coordinators:
+        info["pv_forecast_last_update_success"] = all(c.last_update_success for c in pv_forecast_coordinators)
+    return info

@@ -13,6 +13,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Check pvlib version matches between requirements-dev.txt and manifest.json
+        run: |
+          DEV_VERSION=$(grep -oP '(?<=^pvlib==)\S+' requirements-dev.txt)
+          MANIFEST_VERSION=$(jq -r '.requirements[] | select(startswith("pvlib=="))' custom_components/solar_planner_scheduler/manifest.json | cut -d= -f3)
+          if [ "$DEV_VERSION" != "$MANIFEST_VERSION" ]; then
+            echo "::error::pvlib version mismatch: requirements-dev.txt has $DEV_VERSION, manifest.json has $MANIFEST_VERSION. Dependabot only updates requirements-dev.txt, bump manifest.json's requirements to match by hand."
+            exit 1
+          fi
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from homeassistant.helpers import config_validation as cv
 
-from .const import DOMAIN
+from .const import CONF_PV_CAPACITY_KWC, DOMAIN
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -96,6 +96,15 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
 
     coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
     await coordinator.async_load_state()
+
+    # Independent of forecast_source: PV params configured is enough to run the computed forecast
+    # for comparison, even while an external entity (e.g. Solcast) actually drives scheduling.
+    if entry.data.get(CONF_PV_CAPACITY_KWC) is not None:
+        from .pv_forecast import PvForecastCoordinator
+
+        coordinator.pv_forecast_coordinator = PvForecastCoordinator(hass, entry)
+        await coordinator.pv_forecast_coordinator.async_config_entry_first_refresh()
+
     await coordinator.async_config_entry_first_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

@@ -7,6 +7,6 @@
   "documentation": "https://github.com/Rom1-B/solar-planner-scheduler",
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/Rom1-B/solar-planner-scheduler/issues",
-  "requirements": [],
+  "requirements": ["pvlib==0.15.2"],
   "version": "0.4.1"
 }

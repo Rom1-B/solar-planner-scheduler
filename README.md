@@ -10,7 +10,8 @@ cheapest, solar or off-peak grid).
 ## Requirements
 
 A solar forecast entity already set up in Home Assistant (e.g.
-[Solcast](https://github.com/BJReplay/ha-solcast-solar)).
+[Solcast](https://github.com/BJReplay/ha-solcast-solar)), unless you use the built-in
+self-computed forecast instead (see "Forecast source" below).
 
 ## Installation
 
@@ -29,6 +30,14 @@ Or manually: copy `custom_components/solar_planner_scheduler/` into your HA
 Initial setup asks for the shared entities (forecast, forecast tomorrow, production, consumption,
 max simultaneous power). Devices, programs and fixed loads are managed via "Configure":
 
+- **Forecast source**: "Entity" (default, unchanged) uses a forecast entity like today. "Computed"
+  calculates production itself from your panels' capacity (kWc), azimuth, tilt and a system loss %
+  (your position is read from Home Assistant's own configured location), fetching an irradiance
+  forecast from [Open-Meteo](https://open-meteo.com/) (free, no API key; pick a weather model,
+  e.g. Météo-France's AROME for high resolution in France). Filling in the panel parameters starts
+  this computation regardless of which source is actually selected, so you can compare it (via
+  `sensor.solar_planner_scheduler_computed_forecast`, a plain History graph card next to your
+  existing forecast entity and `production_entity`) before switching over.
 - **Device**: name + optional power sensor.
 - **Program**: pick a device, name it, then list its phases, i.e. its power draw over time, one
   line per step (e.g. a washing machine: `20min@150W` to heat, then `1.5h@800W` to spin), and
@@ -56,6 +65,10 @@ Per (device, program) pair: `datetime.<device>_<program>_start`,
 
 `sensor.solar_planner_scheduler_current_price` exposes the live €/kWh price (when tariff tracking
 is enabled), usable as the Energy dashboard's "current price" source for grid-consumption cost.
+
+`sensor.solar_planner_scheduler_computed_forecast` exposes the self-computed forecast (see
+"Forecast source" above) whenever panel parameters are configured: current power plus the full
+hourly curve as a `detailedForecast` attribute, in the same shape a Solcast entity exposes it.
 
 The integration never turns a device on/off itself: react to `should_run` in an automation.
 

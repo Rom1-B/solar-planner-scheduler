@@ -31,6 +31,26 @@ CONF_PRICE_TRACKING_ENABLED = "price_tracking_enabled"
 CONF_SUBSCRIPTION_PRICE_MONTHLY = "subscription_price_monthly"
 CONF_TARIFF_BANDS = "tariff_bands"
 
+CONF_FORECAST_SOURCE = "forecast_source"
+FORECAST_SOURCE_ENTITY = "entity"
+FORECAST_SOURCE_COMPUTED = "computed"
+
+CONF_PV_CAPACITY_KWC = "pv_capacity_kwc"
+CONF_PV_AZIMUTH = "pv_azimuth"
+CONF_PV_TILT = "pv_tilt"
+CONF_PV_LOSS_PCT = "pv_loss_pct"
+CONF_PV_WEATHER_MODEL = "pv_weather_model"
+
+DEFAULT_PV_LOSS_PCT = 14.0
+# Verified live against Open-Meteo (2026-09-04): "best_match" is a sentinel meaning "send no
+# `models` param" (Open-Meteo picks itself), not a real model id. meteofrance_arome_france_hd (the
+# high-res variant) returns HTTP 200 but null for every irradiance field; the coarser
+# meteofrance_arome_france actually returns data.
+PV_WEATHER_MODELS = ["best_match", "meteofrance_arome_france", "ecmwf_ifs025", "gfs_seamless"]
+# Irradiance forecasts don't change fast enough to justify the 15-min scheduling cycle, and this
+# avoids hammering Open-Meteo's free tier.
+PV_FORECAST_UPDATE_INTERVAL_MINUTES = 60
+
 NONE_PROGRAM = "None"
 
 DEFAULT_MAX_SIMULTANEOUS_POWER = 4000

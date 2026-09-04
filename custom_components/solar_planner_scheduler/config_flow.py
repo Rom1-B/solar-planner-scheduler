@@ -21,6 +21,7 @@ from .const import (
     CONF_DEVICES,
     CONF_FIXED_LOADS,
     CONF_FORECAST_ENTITY,
+    CONF_FORECAST_SOURCE,
     CONF_FORECAST_TOMORROW_ENTITY,
     CONF_MAX_SIMULTANEOUS_POWER,
     CONF_MINUTES,
@@ -31,11 +32,20 @@ from .const import (
     CONF_PRICE_TRACKING_ENABLED,
     CONF_PRODUCTION_ENTITY,
     CONF_PROGRAMS,
+    CONF_PV_AZIMUTH,
+    CONF_PV_CAPACITY_KWC,
+    CONF_PV_LOSS_PCT,
+    CONF_PV_TILT,
+    CONF_PV_WEATHER_MODEL,
     CONF_START_TIME,
     CONF_SUBSCRIPTION_PRICE_MONTHLY,
     CONF_TARIFF_BANDS,
     DEFAULT_MAX_SIMULTANEOUS_POWER,
+    DEFAULT_PV_LOSS_PCT,
     DOMAIN,
+    FORECAST_SOURCE_COMPUTED,
+    FORECAST_SOURCE_ENTITY,
+    PV_WEATHER_MODELS,
     WEEKDAYS,
 )
 
@@ -49,7 +59,18 @@ def _base_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     power_sensor = selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="power"))
     return vol.Schema(
         {
+            # Required with a default, not Optional: always shown so "entity" (the pre-existing,
+            # only behavior) stays the explicit default for an already-installed entry (no key yet
+            # in entry.data means .get(CONF_FORECAST_SOURCE) is None, which the coordinator already
+            # treats as "entity" too, this default just keeps the form itself consistent).
             vol.Required(
+                CONF_FORECAST_SOURCE, default=defaults.get(CONF_FORECAST_SOURCE, FORECAST_SOURCE_ENTITY)
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(options=[FORECAST_SOURCE_ENTITY, FORECAST_SOURCE_COMPUTED])
+            ),
+            # Optional now, not Required: only actually needed when forecast_source is "entity",
+            # enforced in the step handler, not here (same reasoning as _tariff_schema()'s fields).
+            vol.Optional(
                 CONF_FORECAST_ENTITY, description={"suggested_value": defaults.get(CONF_FORECAST_ENTITY)}
             ): energy_sensor,
             vol.Optional(
@@ -66,8 +87,37 @@ def _base_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
                 CONF_MAX_SIMULTANEOUS_POWER,
                 default=defaults.get(CONF_MAX_SIMULTANEOUS_POWER, DEFAULT_MAX_SIMULTANEOUS_POWER),
             ): vol.Coerce(int),
+            # Only meaningful once forecast_source is "computed", enforced in the step handler.
+            vol.Optional(
+                CONF_PV_CAPACITY_KWC, description={"suggested_value": defaults.get(CONF_PV_CAPACITY_KWC)}
+            ): vol.Coerce(float),
+            vol.Optional(CONF_PV_AZIMUTH, description={"suggested_value": defaults.get(CONF_PV_AZIMUTH)}): vol.Coerce(
+                float
+            ),
+            vol.Optional(CONF_PV_TILT, description={"suggested_value": defaults.get(CONF_PV_TILT)}): vol.Coerce(float),
+            vol.Optional(
+                CONF_PV_LOSS_PCT, default=defaults.get(CONF_PV_LOSS_PCT, DEFAULT_PV_LOSS_PCT)
+            ): vol.Coerce(float),
+            vol.Optional(
+                CONF_PV_WEATHER_MODEL, default=defaults.get(CONF_PV_WEATHER_MODEL, "best_match")
+            ): selector.SelectSelector(selector.SelectSelectorConfig(options=PV_WEATHER_MODELS)),
         }
     )
+
+
+def _base_input_errors(user_input: dict[str, Any]) -> dict[str, str]:
+    """Only the fields the chosen forecast_source actually needs are required. Everything else in
+    _base_schema() is Optional at the schema level so the other mode's fields can stay populated
+    (e.g. switching back and forth) without tripping voluptuous itself.
+    """
+    if user_input[CONF_FORECAST_SOURCE] == FORECAST_SOURCE_ENTITY:
+        if not user_input.get(CONF_FORECAST_ENTITY):
+            return {CONF_FORECAST_ENTITY: "forecast_entity_required"}
+    else:
+        for field in (CONF_PV_CAPACITY_KWC, CONF_PV_AZIMUTH, CONF_PV_TILT):
+            if user_input.get(field) is None:
+                return {field: "pv_params_required"}
+    return {}
 
 
 def _device_schema() -> vol.Schema:
@@ -201,11 +251,14 @@ class SolarPlannerSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
-            return self.async_create_entry(
-                title="Solar Planner Scheduler",
-                data=user_input,
-                options={CONF_DEVICES: [], CONF_FIXED_LOADS: []},
-            )
+            errors = _base_input_errors(user_input)
+            if not errors:
+                return self.async_create_entry(
+                    title="Solar Planner Scheduler",
+                    data=user_input,
+                    options={CONF_DEVICES: [], CONF_FIXED_LOADS: []},
+                )
+            return self.async_show_form(step_id="user", data_schema=_base_schema(user_input), errors=errors)
         return self.async_show_form(step_id="user", data_schema=_base_schema())
 
     @staticmethod
@@ -244,10 +297,13 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_edit_base(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
-            # Merged, not replaced: entry.data also holds the tariff fields from async_step_edit_tariff.
-            new_data = {**self.config_entry.data, **user_input}
-            self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
-            return await self.async_step_init()
+            errors = _base_input_errors(user_input)
+            if not errors:
+                # Merged, not replaced: entry.data also holds the tariff fields from async_step_edit_tariff.
+                new_data = {**self.config_entry.data, **user_input}
+                self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
+                return await self.async_step_init()
+            return self.async_show_form(step_id="edit_base", data_schema=_base_schema(user_input), errors=errors)
         return self.async_show_form(step_id="edit_base", data_schema=_base_schema(self.config_entry.data))
 
     async def async_step_edit_tariff(self, user_input: dict[str, Any] | None = None):
