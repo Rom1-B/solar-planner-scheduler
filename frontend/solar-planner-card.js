@@ -5,13 +5,17 @@ const COLORS = {
   dark: { forecast: "#3987e5", actual: "#d95926", consumption: "#199e70" },
 };
 
-// Red-first, not green, to avoid a slot-3 aqua CVD clash — re-validate with validate_palette.js.
+// Red-first, not green, to avoid a slot-3 aqua CVD clash. Re-validate with validate_palette.js.
 const DEVICE_COLORS = {
   light: ["#e34948", "#008300", "#4a3aa7", "#eda100", "#e87ba4"],
   dark: ["#e66767", "#008300", "#9085e9", "#c98500", "#d55181"],
 };
 
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+// A countdown's minute figure would otherwise only advance every REFRESH_INTERVAL_MS (5 min):
+// entity states driving _relevantSignature() don't change just from time passing, only _refresh()'s
+// own timer forces a re-render. A cheap re-render (no history fetch) keeps it visibly live instead.
+const COUNTDOWN_REFRESH_INTERVAL_MS = 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 export const SMOOTH_BUCKET_MS = 5 * 60 * 1000;
 export const DRAG_SNAP_MS = 5 * 60 * 1000;
@@ -40,6 +44,16 @@ function fmtWTick(w) {
 
 function fmtTime(d) {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// null once `target` is no longer in the future (started/passed), not just "0m".
+function fmtCountdown(target, now) {
+  const totalMin = Math.round((target.getTime() - now.getTime()) / 60000);
+  if (totalMin <= 0) return null;
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  if (h > 0) return m > 0 ? `in ${h}h ${m}m` : `in ${h}h`;
+  return `in ${m}m`;
 }
 
 function startOfDay(d) {
@@ -99,7 +113,7 @@ function powerAt(segments, t) {
   return sum;
 }
 
-// Sub-buckets at most SMOOTH_BUCKET_MS wide, never straddling an item/other phase boundary — a
+// Sub-buckets at most SMOOTH_BUCKET_MS wide, never straddling an item/other phase boundary. A
 // bucket spanning a short phase's boundary used to misattribute the whole bucket to whichever
 // side its midpoint landed in, over- or under-counting deficit.
 function* instantSteps(itemSegments, otherSegments, start, end) {
@@ -180,7 +194,7 @@ class SolarPlannerCard extends HTMLElement {
     this._consumptionCurve = [];
     this._lastRefresh = 0;
     this._lastSignature = null;
-    // Drag state, not re-rendered per pointermove — see _bindGanttDrag.
+    // Drag state, not re-rendered per pointermove (see _bindGanttDrag).
     this._drag = null;
   }
 
@@ -196,6 +210,8 @@ class SolarPlannerCard extends HTMLElement {
       }
     }
     this._config = config;
+    this._showChart = config.chart_expanded !== false;
+    this._showTable = !!config.table_expanded;
     this._lastRefresh = 0;
     this._lastSignature = null;
   }
@@ -251,7 +267,7 @@ class SolarPlannerCard extends HTMLElement {
   _requestRender() {
     const active = this.shadowRoot.activeElement;
     if (active instanceof HTMLInputElement) {
-      // Don't rebuild the DOM under an active input — retry on blur.
+      // Don't rebuild the DOM under an active input, retry on blur.
       this._renderDirty = true;
       active.addEventListener(
         "blur",
@@ -270,10 +286,12 @@ class SolarPlannerCard extends HTMLElement {
 
   connectedCallback() {
     this._interval = setInterval(() => this._refresh(), REFRESH_INTERVAL_MS);
+    this._countdownInterval = setInterval(() => this._requestRender(), COUNTDOWN_REFRESH_INTERVAL_MS);
   }
 
   disconnectedCallback() {
     clearInterval(this._interval);
+    clearInterval(this._countdownInterval);
   }
 
   getCardSize() {
@@ -443,7 +461,7 @@ class SolarPlannerCard extends HTMLElement {
 
   _render() {
     if (!this._hass || !this._config) return;
-    // Rebuilds the whole DOM each call — restore scrollLeft or it snaps back to the start.
+    // Rebuilds the whole DOM each call, so restore scrollLeft or it snaps back to the start.
     const scrollLeft = this.shadowRoot.querySelector(".chart-scroll")?.scrollLeft;
     this._lastSignature = this._relevantSignature();
     const base = this._baseConfig();
@@ -529,7 +547,7 @@ class SolarPlannerCard extends HTMLElement {
     // Must be width/600 to keep 1 SVG unit a constant real-px size regardless of `width` (see .chart-scroll/svg.chart CSS).
     const chartWidthPercent = ((width / 600) * 100).toFixed(2);
 
-    // Grid cut at exact phase boundaries, not a fixed step — avoids diluting short spikes (see CLAUDE.local.md).
+    // Grid cut at exact phase boundaries, not a fixed step: avoids diluting short spikes (see CLAUDE.local.md).
     const stackLayersWithSegments = stackLayers.map((layer) => ({
       ...layer,
       bars: layer.bars.filter((b) => b.start && b.end).map((b) => ({ ...b, segments: phaseSegments(b) })),
@@ -563,7 +581,7 @@ class SolarPlannerCard extends HTMLElement {
       stackedBuckets.push({ start: new Date(t), end: new Date(bEnd), segments, total });
     }
 
-    // Today-only forecast points, not the tomorrow-merged ones, so a sunnier tomorrow can't rescale today's curves — tomorrow's curve just clips at this ceiling.
+    // Today-only forecast points, not the tomorrow-merged ones, so a sunnier tomorrow can't rescale today's curves: tomorrow's curve just clips at this ceiling.
     const maxW =
       [
         ...points.filter((p) => p.time < todayEnd).map((p) => p.w),
@@ -665,7 +683,7 @@ class SolarPlannerCard extends HTMLElement {
         // Profile-based programs have no flat powerW; sum each phase's own minutes*power_w instead.
         const energyWh = ds.profile ? ds.profile.reduce((s, p) => s + (p.minutes * p.power_w) / 60, 0) : (ds.powerW * durationMin) / 60;
         const powerLabel = ds.profile ? `${fmtWh(energyWh)} · peak ${fmtW(Math.max(...ds.profile.map((p) => p.power_w)))}` : fmtWh(energyWh);
-        const label = `${ds.name} · ${ds.programName} · ${fmtTime(ds.start)}–${fmtTime(ds.end)} · ${powerLabel}`;
+        const label = `${ds.name} · ${ds.programName} · ${fmtTime(ds.start)}-${fmtTime(ds.end)} · ${powerLabel}`;
         const bx = x(ds.start);
         const bw = Math.max(2, x(ds.end) - bx);
         bars.push(
@@ -685,7 +703,7 @@ class SolarPlannerCard extends HTMLElement {
           const loadPowerLabel = load.profile
             ? `${fmtWh((load.powerW * load.durationMin) / 60)} · peak ${fmtW(Math.max(...load.profile.map((p) => p.power_w)))}`
             : fmtWh((load.powerW * load.durationMin) / 60);
-          const label = `${load.programName} (external) · ${fmtTime(load.start)}–${fmtTime(load.end)} · ${loadPowerLabel}`;
+          const label = `${load.programName} (external) · ${fmtTime(load.start)}-${fmtTime(load.end)} · ${loadPowerLabel}`;
           return `<g class="bar-group"><rect x="${bx.toFixed(1)}" y="${laneY}" width="${bw.toFixed(1)}" height="${laneHeight}" rx="2" style="fill:${fixedLoadColor(i)}" class="bar fixed"/><title>${label}</title></g>`;
         })
         .join("");
@@ -716,6 +734,11 @@ class SolarPlannerCard extends HTMLElement {
                 ${
                   ds.estimatedCost != null
                     ? `<span class="estimated-cost">~${ds.estimatedCost.toFixed(2)} ${ds.currency ?? ""}</span>`
+                    : ""
+                }
+                ${
+                  ds.start && !ds.shouldRun && fmtCountdown(ds.start, now)
+                    ? `<span class="countdown">${fmtCountdown(ds.start, now)}</span>`
                     : ""
                 }`
               : "";
@@ -751,24 +774,42 @@ class SolarPlannerCard extends HTMLElement {
           programName: ds.programName,
           start: ds.start,
           end: ds.end,
-          // A profile has no single flat powerW — sum each phase's own minutes*power_w instead.
+          // A profile has no single flat powerW, so sum each phase's own minutes*power_w instead.
           energyWh: ds.profile ? ds.profile.reduce((s, p) => s + (p.minutes * p.power_w) / 60, 0) : (ds.powerW * durationMin) / 60,
           estimatedCost: ds.estimatedCost,
           currency: ds.currency,
         };
       });
     // Distinguishes today's/tomorrow's occurrence of a recurring fixed load.
-    const tableRows = [
+    const allTableRows = [
       ...deviceTableRows,
       ...fixedLoads.map((p) => ({ ...p, energyWh: (p.powerW * p.durationMin) / 60 })),
-    ]
+    ];
+    // A fixed load spanning a full day (or an exact multiple of one) renders an identical row for
+    // "today" and "tomorrow" (same clock time, same energy): keep only the first occurrence.
+    // A shorter, genuinely daily-recurring load (e.g. an hour at 22:00) must keep both rows: its
+    // today/tomorrow occurrences are real, distinct runs, not a rendering artifact.
+    const seenRowKeys = new Set();
+    const dedupedTableRows = allTableRows.filter((p) => {
+      if (!p.start) return true;
+      const durationMin = (p.end.getTime() - p.start.getTime()) / 60000;
+      if (durationMin % 1440 !== 0) return true;
+      const key = `${p.deviceName}|${p.programName}|${fmtTime(p.start)}|${fmtTime(p.end)}|${p.energyWh}`;
+      if (seenRowKeys.has(key)) return false;
+      seenRowKeys.add(key);
+      return true;
+    });
+    const showEnergyColumn = this._config.table_show_energy !== false;
+    const showCostColumn = this._config.table_show_cost !== false;
+    const tableRows = dedupedTableRows
       .map((p) => {
         const dayLabel = p.start && p.start >= todayEnd ? "Tomorrow " : "";
+        const countdown = p.start ? fmtCountdown(p.start, now) : null;
         return `<tr>
-          <td>${p.deviceName}${p.fixed ? " (external)" : ""}</td><td>${p.fixed ? "-" : p.programName}</td>
-          <td>${p.start ? `${dayLabel}${fmtTime(p.start)} – ${fmtTime(p.end)}` : "no window"}</td>
-          <td>${fmtWh(p.energyWh)}</td>
-          <td>${p.estimatedCost != null ? `~${p.estimatedCost.toFixed(2)} ${p.currency ?? ""}` : "-"}</td>
+          <td>${p.deviceName}${p.fixed ? " (external)" : ` - ${p.programName}`}</td>
+          <td>${p.start ? `${dayLabel}${fmtTime(p.start)} - ${fmtTime(p.end)}${countdown ? ` (${countdown})` : ""}` : "no window"}</td>
+          ${showEnergyColumn ? `<td>${fmtWh(p.energyWh)}</td>` : ""}
+          ${showCostColumn ? `<td>${p.estimatedCost != null ? `~${p.estimatedCost.toFixed(2)} ${p.currency ?? ""}` : "-"}</td>` : ""}
         </tr>`;
       })
       .join("");
@@ -831,23 +872,39 @@ class SolarPlannerCard extends HTMLElement {
         .coverage-pct.coverage-good { color: var(--success-color, #4caf50); }
         .coverage-pct.coverage-low { color: var(--warning-color, #fab219); }
         .estimated-cost { font-size: 0.8em; font-weight: 500; color: var(--secondary-text-color); }
+        .countdown { font-size: 0.8em; color: var(--secondary-text-color); }
         .warnings { margin-top: 10px; font-size: 0.85em; color: var(--warning-color, #fab219); }
         .warnings div { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
-        .table-toggle { margin-top: 10px; cursor: pointer; font-size: 0.85em; color: var(--primary-color); background: none; border: none; padding: 0; }
+        .title-row { display: flex; align-items: center; gap: 4px; }
+        .icon-toggle { cursor: pointer; color: var(--primary-color); background: none; border: none; padding: 0; display: inline-flex; align-items: center; }
+        .icon-toggle ha-icon { --mdc-icon-size: 20px; }
+        .table-toggle-row { margin-top: 10px; }
         table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 0.85em; }
         th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--divider-color); }
       </style>
       <ha-card>
         <div class="header">
-          <span class="title">Solar Planner</span>
-          <span class="legend">
+          <span class="title-row">
+            <span class="title">Solar Planner</span>
+            <button class="icon-toggle" id="toggle-chart" title="${this._showChart ? "Hide" : "Show"} planning">
+              <ha-icon icon="mdi:chevron-${this._showChart ? "up" : "down"}"></ha-icon>
+              <ha-icon icon="mdi:chart-bell-curve"></ha-icon>
+            </button>
+          </span>
+          ${
+            this._showChart
+              ? `<span class="legend">
             <span><span class="swatch" style="background:${colors.forecast}"></span>Forecast</span>
             ${hasConfidenceBand ? `<span><span class="swatch confidence-swatch" style="background:${colors.forecast}"></span>Confidence (P10-P90)</span>` : ""}
             ${this._actualPoints.length ? `<span><span class="swatch" style="background:${colors.actual}"></span>Real production</span>` : ""}
             ${this._consumptionPoints.length ? `<span><span class="swatch" style="background:${colors.consumption}"></span>Consumption</span>` : ""}
-          </span>
+          </span>`
+              : ""
+          }
         </div>
-        <div class="chart-scroll">
+        ${
+          this._showChart
+            ? `<div class="chart-scroll">
           <svg class="chart" viewBox="0 0 ${width} ${height}" style="width: ${chartWidthPercent}%">
             ${wTicks.join("")}
             ${hourTicks.join("")}
@@ -869,8 +926,8 @@ class SolarPlannerCard extends HTMLElement {
             <rect id="hover-catch" class="hover-catch" x="${marginLeft}" y="${marginTop}" width="${innerW}" height="${innerH}"/>
           </svg>
           <svg class="gantt" viewBox="0 0 ${width} ${ganttHeight}" style="width: ${chartWidthPercent}%">${laneBars.join(
-            ""
-          )}<g class="drag-pct-group" style="opacity:0" pointer-events="none"><rect class="drag-pct-bg" width="60" height="14" rx="2"/><text class="drag-pct" x="30" y="10.5" text-anchor="middle"></text></g></svg>
+                ""
+              )}<g class="drag-pct-group" style="opacity:0" pointer-events="none"><rect class="drag-pct-bg" width="60" height="14" rx="2"/><text class="drag-pct" x="30" y="10.5" text-anchor="middle"></text></g></svg>
         </div>
         ${deviceRows}
         ${fixedLoadsLegend}
@@ -880,9 +937,20 @@ class SolarPlannerCard extends HTMLElement {
                 .map((ds) => `<div><ha-icon icon="mdi:alert"></ha-icon>No sufficient solar window today for ${ds.name}.</div>`)
                 .join("")}</div>`
             : ""
+        }`
+            : ""
         }
-        <button class="table-toggle" id="toggle-table">${this._showTable ? "Hide" : "Show"} as table</button>
-        ${this._showTable ? `<table><thead><tr><th>Device</th><th>Program</th><th>Window</th><th>Energy</th><th>Cost</th></tr></thead><tbody>${tableRows}</tbody></table>` : ""}
+        <div class="table-toggle-row">
+          <button class="icon-toggle" id="toggle-table" title="${this._showTable ? "Hide" : "Show"} as table">
+            <ha-icon icon="mdi:chevron-${this._showTable ? "up" : "down"}"></ha-icon>
+            <ha-icon icon="mdi:table"></ha-icon>
+          </button>
+        </div>
+        ${
+          this._showTable
+            ? `<table><thead><tr><th>Device</th><th>Window</th>${showEnergyColumn ? "<th>Energy</th>" : ""}${showCostColumn ? "<th>Cost</th>" : ""}</tr></thead><tbody>${tableRows}</tbody></table>`
+            : ""
+        }
       </ha-card>`;
 
     // Deferred via double requestAnimationFrame: HA's grid layout may still be settling.
@@ -897,6 +965,10 @@ class SolarPlannerCard extends HTMLElement {
       }
     }
 
+    this.shadowRoot.getElementById("toggle-chart")?.addEventListener("click", () => {
+      this._showChart = !this._showChart;
+      this._render();
+    });
     this.shadowRoot.getElementById("toggle-table")?.addEventListener("click", () => {
       this._showTable = !this._showTable;
       this._render();
@@ -1076,7 +1148,7 @@ class SolarPlannerCard extends HTMLElement {
       }
       timeText.textContent = fmtTime(t);
       forecastText.textContent = wForecast != null ? `Forecast: ${fmtW(wForecast)}` : "";
-      confidenceText.textContent = w10 != null && w90 != null && w90 > w10 ? `Confidence: ${fmtW(w10)} – ${fmtW(w90)}` : "";
+      confidenceText.textContent = w10 != null && w90 != null && w90 > w10 ? `Confidence: ${fmtW(w10)} - ${fmtW(w90)}` : "";
       actualText.textContent = wActual != null ? `Real production: ${fmtW(wActual)}` : "";
       consumptionText.textContent = wConsumption != null ? `Consumption: ${fmtW(wConsumption)}` : "";
       // Flips against the scrolled viewport's edge, not the total SVG width.

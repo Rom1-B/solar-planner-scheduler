@@ -1,5 +1,5 @@
 import "./dom-shim.js";
-import { test } from "node:test";
+import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { getCardClass } from "./dom-shim.js";
 
@@ -11,7 +11,7 @@ function pad(n) {
 }
 
 // The card reads forecast/production/consumption/max_simultaneous_power from this sensor's
-// attributes instead of its own config — spread into every test's `states` object.
+// attributes instead of its own config: spread into every test's `states` object.
 const BASE_CONFIG_ENTITY = {
   "sensor.solar_planner_scheduler_config": {
     state: "4000",
@@ -27,15 +27,15 @@ const BASE_CONFIG_ENTITY = {
 };
 
 // One program named "Eco" per device slug, with the program's own row-slug equal to the device
-// slug — matches the real integration when a device has exactly one program, and keeps this
+// slug: matches the real integration when a device has exactly one program, and keeps this
 // suite's entity_ids (datetime.<slug>_start etc.) unchanged from before per-program rows existed.
-// `names` overrides the display name per slug (defaults to the slug itself) — matches
+// `names` overrides the display name per slug (defaults to the slug itself), matching
 // sensor.py's real "name" field (the device's configured CONF_NAME, not its entity_id slug).
 function singleProgramDevices(slugs, { programName = "Eco", names = {} } = {}) {
   return slugs.map((slug) => ({ name: names[slug] ?? slug, slug, programs: [{ name: programName, slug }] }));
 }
 
-// Overwrites the config sensor's devices attribute — call after setConfig({devices: [...]}) with
+// Overwrites the config sensor's devices attribute: call after setConfig({devices: [...]}) with
 // a matching list of slugs, or _programRows() finds nothing to render.
 function setDevicesAttr(card, devices) {
   const entity = card._hass.states["sensor.solar_planner_scheduler_config"];
@@ -45,7 +45,7 @@ function setDevicesAttr(card, devices) {
   };
 }
 
-// Card no longer reads forecast_tomorrow_entity from its own config — flips it on in the shared
+// Card no longer reads forecast_tomorrow_entity from its own config, flips it on in the shared
 // config sensor's attributes instead.
 function enableTomorrowForecast(card) {
   const entity = card._hass.states["sensor.solar_planner_scheduler_config"];
@@ -55,7 +55,7 @@ function enableTomorrowForecast(card) {
   };
 }
 
-// Card no longer reads fixed_loads from its own config either — set them on the shared config
+// Card no longer reads fixed_loads from its own config either, set them on the shared config
 // sensor's attributes instead. Each load is {name, start_time, power_profile}, matching what
 // BaseConfigSensor exposes (already wrapped as a single-phase profile server-side).
 function setFixedLoads(card, fixedLoads) {
@@ -126,9 +126,9 @@ function baseConfig() {
   return { devices: ["lave_linge", "lave_vaisselle"] };
 }
 
-// Two devices (Lave-linge 120min@1800W, Lave-vaisselle 90min@1200W) plus one PAC fixed load —
+// Two devices (Lave-linge 120min@1800W, Lave-vaisselle 90min@1200W) plus one PAC fixed load:
 // the baseline most tests build on. withActiveSelections=false gives both programs an inactive switch.
-// PAC's start_time is computed relative to the real current time, not hardcoded — a fixed "13:00"
+// PAC's start_time is computed relative to the real current time, not hardcoded, since a fixed "13:00"
 // eventually falls outside the forecast's 6h-20h daylight window during a long test/dev session.
 function buildCard({ withActiveSelections = true } = {}) {
   const dayStart = new Date();
@@ -209,21 +209,21 @@ test("power labels show total energy (Wh/kWh), not an uninformative average watt
   const html = card.shadowRoot.innerHTML;
   // Lave-linge: 120 min @ 1800 W -> 3600 Wh (3.6 kWh) total, no "peak" (no profile to break down).
   assert.ok(html.includes("3.6 kWh"), "expected the slot-row/gantt label to show total energy, not avg watts");
-  // PAC (fixed_loads) always carries its config's own power_profile — 60 min @ 1500 W -> 1500 Wh
+  // PAC (fixed_loads) always carries its config's own power_profile: 60 min @ 1500 W -> 1500 Wh
   // (1.5 kWh) total, 1.5 kW peak.
   assert.ok(html.includes("1.5 kWh · peak 1.5 kW"), "expected the fixed-load label to show total energy plus peak");
 });
 
-test('the table shows energy in kWh and "-" for a fixed load\'s program column', () => {
+test("the table shows energy in kWh, merging the Device and Program columns", () => {
   const card = buildCard();
   card._showTable = true;
   card._render();
   const html = card.shadowRoot.innerHTML;
   assert.ok(html.includes("<th>Energy</th>"), "expected the table header to read Energy, not Power");
   assert.ok(!html.includes("<th>Power</th>"), "expected no leftover Power header");
-  assert.match(html, /<td>PAC \(external\)<\/td><td>-<\/td>/);
-  assert.match(html, /<td>PAC \(external\)<\/td><td>-<\/td>\s*<td>[^<]*<\/td>\s*<td>1\.5 kWh<\/td>/);
-  assert.match(html, /<td>Lave-linge<\/td><td>Eco<\/td>/);
+  assert.ok(!html.includes("<th>Program</th>"), "expected the Program column merged into Device");
+  assert.match(html, /<td>PAC \(external\)<\/td>\s*<td>[^<]*<\/td>\s*<td>1\.5 kWh<\/td>/);
+  assert.match(html, /<td>Lave-linge - Eco<\/td>/);
 });
 
 test("the table's Cost column shows estimated_cost when present, \"-\" otherwise", () => {
@@ -370,7 +370,7 @@ test("the table marks tomorrow's fixed-load occurrence so it doesn't read as an 
   card._showTable = true;
   card._render();
   const html = card.shadowRoot.innerHTML;
-  const rows = [...html.matchAll(/<td>PAC[^<]*<\/td><td>[^<]*<\/td>\s*<td>([^<]*)<\/td>/g)].map((m) => m[1]);
+  const rows = [...html.matchAll(/<td>PAC[^<]*<\/td>\s*<td>([^<]*)<\/td>/g)].map((m) => m[1]);
   assert.equal(rows.length, 2, `expected two PAC rows (today + tomorrow), got ${rows.length}`);
   assert.ok(
     rows.some((r) => r.startsWith("Tomorrow ")) && rows.some((r) => !r.startsWith("Tomorrow ")),
@@ -426,8 +426,8 @@ test("a full-day fixed load doesn't pull the default view back to midnight", () 
 });
 
 test("each device's coverage badge reflects its own sensor attribute independently", () => {
-  // Coverage subtraction between overlapping devices is now computed server-side (coordinator.py) —
-  // this only checks the card renders each device's own reported number, not the subtraction math itself.
+  // Coverage subtraction between overlapping devices is now computed server-side (coordinator.py).
+  // This only checks the card renders each device's own reported number, not the subtraction math itself.
   const card = buildCard();
   card._hass.states = {
     ...card._hass.states,
@@ -549,7 +549,7 @@ test("stacked chart segments render at exact phase-boundary granularity, not a f
 
 test("a profile-based program's energy label sums its phases, not durationMin times a null powerW", () => {
   // Regression: profile-based programs have powerW=null (the flat-power field is only meaningful
-  // for non-profile programs) — the energy label must sum minutes*power_w per phase instead of
+  // for non-profile programs). The energy label must sum minutes*power_w per phase instead of
   // multiplying durationMin by a null powerW (which silently renders "0.0 kWh").
   const dayStart = new Date();
   dayStart.setHours(0, 0, 0, 0);
@@ -706,7 +706,7 @@ test("an unlocked slot renders no Auto button", () => {
 
 test("gantt markup includes a hidden live-percentage label for drag feedback", () => {
   // _bindGanttDrag can't be exercised here (dom-shim's querySelector/querySelectorAll are stubs, no
-  // real pointer events) — this only guards the static markup _bindGanttDrag depends on: a single
+  // real pointer events). This only guards the static markup _bindGanttDrag depends on: a single
   // drag-pct-group (shared across bars, only one drag happens at a time), starting hidden, plus a
   // draggable class on the confirmed bar it's meant to follow.
   const card = buildCard();
@@ -772,4 +772,119 @@ test("a forecast entity without P10/P90 draws no confidence band or legend", () 
   const html = card.shadowRoot.innerHTML;
   assert.ok(!html.includes('class="confidence-band"'), "expected no confidence-band path without percentiles");
   assert.ok(!html.includes("Confidence (P10-P90)"), "expected no confidence legend entry without percentiles");
+});
+
+test("an active program's slot shows a countdown to its start, hidden once it's running", () => {
+  const card = buildCard();
+  card._render();
+  // buildCard() schedules Lave-linge 10 minutes from now.
+  assert.match(card.shadowRoot.innerHTML, /<span class="countdown">in \d+m<\/span>/, "expected a countdown span for a future start");
+
+  // buildCard() schedules both devices at the same slotStart, flip both to running.
+  card._hass.states["binary_sensor.lave_linge_should_run"] = { state: "on" };
+  card._hass.states["binary_sensor.lave_vaisselle_should_run"] = { state: "on" };
+  card._render();
+  assert.ok(!card.shadowRoot.innerHTML.includes('class="countdown"'), "expected no countdown once the program is running");
+});
+
+test("the table's Window column includes a countdown to a future fixed load's start", () => {
+  const card = buildCard();
+  card._showTable = true;
+  card._render();
+  // PAC (buildCard()'s fixed load) starts 20 minutes from now.
+  assert.match(card.shadowRoot.innerHTML, /PAC \(external\)<\/td>\s*<td>[\d:]+ - [\d:]+ \(in \d+m\)<\/td>/);
+});
+
+test("a full-day fixed load's tomorrow occurrence is deduped out of the table, unlike a shorter daily one", () => {
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const tomorrowStart = new Date(dayStart);
+  tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+
+  const card = buildCard();
+  enableTomorrowForecast(card);
+  card._hass.states["sensor.forecast_tomorrow"] = { state: "3", attributes: { detailedForecast: buildForecast(tomorrowStart) } };
+  setFixedLoads(card, [
+    { name: "Conso de base", start_time: "00:00", power_profile: [{ minutes: 1440, power_w: 110 }] },
+    { name: "PAC", start_time: "14:00", power_profile: [{ minutes: 60, power_w: 1500 }] },
+  ]);
+  card._showTable = true;
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+
+  const baseRows = [...html.matchAll(/<td>Conso de base[^<]*<\/td>\s*<td>([^<]*)<\/td>/g)];
+  assert.equal(baseRows.length, 1, `expected the full-day load's duplicate "Tomorrow" row removed, got ${baseRows.length} rows`);
+
+  const pacRows = [...html.matchAll(/<td>PAC[^<]*<\/td>\s*<td>([^<]*)<\/td>/g)];
+  assert.equal(pacRows.length, 2, `expected a genuinely daily-recurring load to still show both today and tomorrow, got ${pacRows.length}`);
+});
+
+test("chart_expanded/table_expanded config defaults drive which section renders open", () => {
+  const cardDefault = buildCard();
+  cardDefault._render();
+  let html = cardDefault.shadowRoot.innerHTML;
+  assert.ok(html.includes('class="chart-scroll"'), "expected the chart section open by default");
+  assert.ok(!html.includes("<table>"), "expected the table closed by default");
+
+  const cardTableOnly = new Card();
+  cardTableOnly.setConfig({ devices: ["lave_linge", "lave_vaisselle"], chart_expanded: false, table_expanded: true });
+  cardTableOnly._hass = cardDefault._hass;
+  cardTableOnly._render();
+  html = cardTableOnly.shadowRoot.innerHTML;
+  assert.ok(!html.includes('class="chart-scroll"'), "expected the chart section closed when chart_expanded: false");
+  assert.ok(html.includes("<table>"), "expected the table open when table_expanded: true");
+});
+
+test("the chart and table sections toggle independently of each other", () => {
+  const card = buildCard();
+  card._render();
+  assert.match(card.shadowRoot.innerHTML, /id="toggle-chart" title="Hide planning"/, "expected an open-state icon by default");
+
+  card._showChart = false;
+  card._render();
+  let html = card.shadowRoot.innerHTML;
+  assert.match(html, /id="toggle-chart" title="Show planning"/);
+  assert.ok(html.includes("mdi:chevron-down"), "expected the collapsed chart toggle to show a down chevron");
+  assert.ok(!html.includes('class="chart-scroll"'), "expected the chart section removed once collapsed");
+  assert.ok(html.includes('id="toggle-table"'), "expected the (still closed) table toggle to keep rendering");
+  assert.ok(!html.includes("<table>"), "expected the table to stay closed, collapsing the chart must not open it");
+});
+
+test("connectedCallback re-renders periodically so a displayed countdown keeps advancing, not just every full refresh", (t) => {
+  mock.timers.enable({ apis: ["setInterval"] });
+  t.after(() => mock.timers.reset());
+
+  const card = buildCard();
+  card._render();
+  let renderCount = 0;
+  card._render = () => renderCount++;
+
+  card.connectedCallback();
+  mock.timers.tick(60 * 1000);
+  assert.ok(renderCount >= 1, "expected a re-render within 60s, well under the 5-minute full-refresh interval");
+
+  const countIn60s = renderCount;
+  card.disconnectedCallback();
+  mock.timers.tick(5 * 60 * 1000);
+  assert.equal(renderCount, countIn60s, "expected disconnectedCallback to stop the countdown timer too");
+});
+
+test("table_show_energy/table_show_cost hide their respective table columns", () => {
+  const card = new Card();
+  card.setConfig({ devices: ["lave_linge"], table_expanded: true, table_show_energy: false, table_show_cost: false });
+  card._hass = buildCard()._hass;
+  setDevicesAttr(card, singleProgramDevices(["lave_linge"], { names: { lave_linge: "Lave-linge" } }));
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  assert.ok(!html.includes("<th>Energy</th>"), "expected the Energy header hidden");
+  assert.ok(!html.includes("<th>Cost</th>"), "expected the Cost header hidden");
+  assert.ok(html.includes("<th>Device</th>") && html.includes("<th>Window</th>"), "expected the other headers to still render");
+});
+
+test("table_show_energy/table_show_cost default to shown when unset", () => {
+  const card = buildCard();
+  card._showTable = true;
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  assert.ok(html.includes("<th>Energy</th>") && html.includes("<th>Cost</th>"), "expected both columns shown by default");
 });

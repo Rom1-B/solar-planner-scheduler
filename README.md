@@ -1,7 +1,9 @@
 # Solar Planner Scheduler
 
 Home Assistant integration that schedules devices around your solar forecast and shows them on a
-bundled Lovelace card.
+bundled Lovelace card. Example: tell it your washing machine takes 2h, and it picks the best
+2h window today to run it on solar surplus (or, with tariff tracking on, whichever window is
+cheapest, solar or off-peak grid).
 
 ![Solar Planner card](docs/card.png)
 
@@ -28,11 +30,13 @@ Initial setup asks for the shared entities (forecast, forecast tomorrow, product
 max simultaneous power). Devices, programs and fixed loads are managed via "Configure":
 
 - **Device**: name + optional power sensor.
-- **Program**: pick a device, name it, then list its phases, one per line, e.g. `20min@150W` or
-  `1.5h@800W`, and optionally check which days it should auto-repeat on. A device can have several
-  programs active at once; `switch.<device>_<program>_active` turns each one on or off.
-- **Fixed load**: a recurring non-schedulable load (start time + phases), subtracted from
-  available solar capacity.
+- **Program**: pick a device, name it, then list its phases, i.e. its power draw over time, one
+  line per step (e.g. a washing machine: `20min@150W` to heat, then `1.5h@800W` to spin), and
+  optionally check which days it should auto-repeat on. A device can have several programs active
+  at once; `switch.<device>_<program>_active` turns each one on or off.
+- **Fixed load**: something that also draws power but that this integration can't move or
+  control (a pool pump, a fridge cycle), so it's just subtracted from available solar capacity
+  when scheduling everything else.
 - **Tariffs** (optional): enable tariff tracking, set a monthly subscription price and price bands
   (`HH:MM@price`, one per line, e.g. `22:00@0.1589`). Slot selection always minimizes estimated
   cost, falling back to solar coverage when tracking is off; the real price only shows once enabled.
@@ -69,14 +73,22 @@ automation:
 
 ## The bundled card
 
-Served and registered automatically, no separate install. Its config only lists devices:
+Served and registered automatically, no separate install.
 
 ```yaml
 type: custom:solar-planner-card
 devices:
   - lave_linge
   - lave_vaisselle
+chart_expanded: true    # optional, default true (the forecast chart/gantt/device rows)
+table_expanded: false   # optional, default false (the summary table)
+table_show_energy: true # optional, default true (the table's Energy column)
+table_show_cost: true   # optional, default true (the table's Cost column)
 ```
+
+Each section has its own toggle icon in the card itself; `chart_expanded`/`table_expanded`
+only set which state it starts in. The table's Window column shows a countdown to a future start
+(e.g. `08:30 - 10:00 (in 2h15m)`).
 
 ## Development
 
