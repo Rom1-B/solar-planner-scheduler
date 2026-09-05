@@ -721,6 +721,68 @@ async def test_power_detection_in_the_imminent_window_recalibrates_without_forci
     assert committed["forced"] is False
 
 
+async def test_update_seen_running_uses_the_pending_power_detected_at_timestamp(hass):
+    """A precise minute recorded by async_check_power_detection() takes priority over the live
+    power check at this cycle's own `now`, for better than DEFAULT_UPDATE_INTERVAL_MINUTES
+    precision."""
+    coordinator = _coordinator(hass)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=150)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
+    detected_at = start - timedelta(minutes=12)
+    coordinator._state["lave_linge"]["Eco"]["pending_power_detected_at"] = detected_at.isoformat()
+    hass.states.async_set("sensor.lave_linge_power", "0")  # live reading no longer matters
+    item = {"profile": [{CONF_MINUTES: 150, CONF_POWER_W: 1600}]}
+    now = start + timedelta(minutes=2)  # cycle runs well after the recorded detection
+
+    await coordinator._update_seen_running(
+        "lave_linge",
+        "Eco",
+        {CONF_POWER_SENSOR: "sensor.lave_linge_power"},
+        item,
+        150,
+        [],
+        0.0,
+        [],
+        DEFAULT_IDLE_POWER_THRESHOLD,
+        now,
+    )
+
+    committed = coordinator._get_committed("lave_linge", "Eco")
+    assert committed["start"] == detected_at
+    assert committed["seen_running"] is True
+    assert "pending_power_detected_at" not in coordinator._state["lave_linge"]["Eco"]
+
+
+async def test_update_seen_running_ignores_a_stale_pending_power_detected_at(hass):
+    """A pending_power_detected_at recorded outside the current window (e.g. against a
+    since-replaced commitment) must not be blindly trusted — falls back to a live check."""
+    coordinator = _coordinator(hass)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=150)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
+    coordinator._state["lave_linge"]["Eco"]["pending_power_detected_at"] = (start - timedelta(hours=5)).isoformat()
+    hass.states.async_set("sensor.lave_linge_power", "1600")
+    item = {"profile": [{CONF_MINUTES: 150, CONF_POWER_W: 1600}]}
+    now = start + timedelta(minutes=2)
+
+    await coordinator._update_seen_running(
+        "lave_linge",
+        "Eco",
+        {CONF_POWER_SENSOR: "sensor.lave_linge_power"},
+        item,
+        150,
+        [],
+        0.0,
+        [],
+        DEFAULT_IDLE_POWER_THRESHOLD,
+        now,
+    )
+
+    committed = coordinator._get_committed("lave_linge", "Eco")
+    assert committed["start"] == now
+
+
 # --- _idle_threshold_for() -----------------------------------------------------------------------
 
 
@@ -752,6 +814,133 @@ def test_reusable_committed_uses_the_passed_idle_threshold(hass):
     )
 
     assert failed_to_start is True
+
+
+# --- async_check_power_detection() ---------------------------------------------------------------
+
+
+def _device_options_with_sensor(
+    name="lave_linge", power_sensor="sensor.lave_linge_power", power_w=1600, duration_min=150, auto_days=None
+):
+    return {
+        CONF_DEVICES: [
+            {
+                CONF_NAME: name,
+                CONF_POWER_SENSOR: power_sensor,
+                CONF_PROGRAMS: [
+                    {
+                        CONF_NAME: "Eco",
+                        CONF_POWER_PROFILE: [{CONF_MINUTES: duration_min, CONF_POWER_W: power_w}],
+                        CONF_DURATION_MIN: duration_min,
+                        CONF_AUTO_DAYS: auto_days or [],
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def _active_coordinator_with_sensor(hass, **kwargs) -> SolarPlannerSchedulerCoordinator:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options=_device_options_with_sensor(**kwargs),
+    )
+    entry.add_to_hass(hass)
+    return SolarPlannerSchedulerCoordinator(hass, entry)
+
+
+async def test_check_power_detection_records_the_precise_minute(hass):
+    coordinator = _active_coordinator_with_sensor(hass)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_linge", "Eco", True)
+    await _flush(coordinator)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=150)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
+    hass.states.async_set("sensor.lave_linge_power", "1600")
+    now = start - timedelta(minutes=12)
+
+    await coordinator.async_check_power_detection(now)
+
+    assert coordinator._state["lave_linge"]["Eco"]["pending_power_detected_at"] == now.isoformat()
+
+
+async def test_check_power_detection_skips_when_already_seen_running(hass):
+    coordinator = _active_coordinator_with_sensor(hass)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_linge", "Eco", True)
+    await _flush(coordinator)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=150)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
+    coordinator._state["lave_linge"]["Eco"]["committed"]["seen_running"] = True
+    hass.states.async_set("sensor.lave_linge_power", "1600")
+
+    await coordinator.async_check_power_detection(start)
+
+    assert "pending_power_detected_at" not in coordinator._state["lave_linge"]["Eco"]
+
+
+async def test_check_power_detection_does_not_overwrite_an_existing_pending_timestamp(hass):
+    coordinator = _active_coordinator_with_sensor(hass)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_linge", "Eco", True)
+    await _flush(coordinator)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=150)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
+    first_detection = start - timedelta(minutes=10)
+    coordinator._state["lave_linge"]["Eco"]["pending_power_detected_at"] = first_detection.isoformat()
+    hass.states.async_set("sensor.lave_linge_power", "1600")
+
+    await coordinator.async_check_power_detection(start - timedelta(minutes=5))
+
+    assert coordinator._state["lave_linge"]["Eco"]["pending_power_detected_at"] == first_detection.isoformat()
+
+
+async def test_check_power_detection_skips_when_program_inactive(hass):
+    coordinator = _active_coordinator_with_sensor(hass)
+    await coordinator.async_load_state()
+    # Deliberately not activated: switch.lave_linge_eco_active stays off.
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=150)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
+    hass.states.async_set("sensor.lave_linge_power", "1600")
+
+    await coordinator.async_check_power_detection(start)
+
+    assert "pending_power_detected_at" not in coordinator._state["lave_linge"]["Eco"]
+
+
+async def test_check_power_detection_skips_outside_the_tolerance_window(hass):
+    coordinator = _active_coordinator_with_sensor(hass)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_linge", "Eco", True)
+    await _flush(coordinator)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=150)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
+    hass.states.async_set("sensor.lave_linge_power", "1600")
+
+    await coordinator.async_check_power_detection(start - timedelta(minutes=50))
+
+    assert "pending_power_detected_at" not in coordinator._state["lave_linge"]["Eco"]
+
+
+async def test_check_power_detection_skips_below_the_derived_threshold(hass):
+    coordinator = _active_coordinator_with_sensor(hass, power_w=1600)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_linge", "Eco", True)
+    await _flush(coordinator)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=150)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
+    hass.states.async_set("sensor.lave_linge_power", "500")  # below max(10, 1600 * 0.5) = 800
+
+    await coordinator.async_check_power_detection(start)
+
+    assert "pending_power_detected_at" not in coordinator._state["lave_linge"]["Eco"]
 
 
 # --- _note_failed_to_start() --------------------------------------------------------------------

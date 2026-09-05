@@ -103,10 +103,13 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
 
     # Refreshes should_run/locked every minute without re-running the search (both are pure
     # functions of "now"). Must be @callback, not a bare lambda, or HA's thread-safety check
-    # silently drops the update.
+    # silently drops the update. Also schedules the lightweight power-detection pass (records the
+    # exact minute a program's power crosses its idle threshold) at the same cadence, without
+    # touching the full search/tariff/Repair cycle's own interval.
     @callback
     def _refresh_listeners(_now: datetime) -> None:
         coordinator.async_update_listeners()
+        hass.async_create_task(coordinator.async_check_power_detection(_now))
 
     entry.async_on_unload(async_track_time_interval(hass, _refresh_listeners, timedelta(minutes=1)))
     return True

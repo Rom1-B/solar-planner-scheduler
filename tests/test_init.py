@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from homeassistant.core import is_callback
@@ -41,3 +42,35 @@ async def test_the_per_minute_refresh_timer_is_a_real_hass_callback(hass):
 
     callback_fn = mock_track.call_args.args[1]
     assert is_callback(callback_fn)
+
+
+async def test_the_per_minute_timer_also_schedules_a_power_detection_check(hass):
+    """The same 1-minute timer that refreshes should_run/locked also schedules
+    async_check_power_detection(), so a manually-started program gets caught within about a minute
+    instead of waiting for the next full DEFAULT_UPDATE_INTERVAL_MINUTES cycle."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options={},
+    )
+    entry.add_to_hass(hass)
+
+    with (
+        patch(
+            "custom_components.solar_planner_scheduler.coordinator."
+            "SolarPlannerSchedulerCoordinator.async_config_entry_first_refresh"
+        ),
+        patch("homeassistant.config_entries.ConfigEntries.async_forward_entry_setups"),
+        patch("homeassistant.helpers.event.async_track_time_interval") as mock_track,
+        patch(
+            "custom_components.solar_planner_scheduler.coordinator."
+            "SolarPlannerSchedulerCoordinator.async_check_power_detection"
+        ) as mock_check,
+    ):
+        await async_setup_entry(hass, entry)
+        callback_fn = mock_track.call_args.args[1]
+        now = datetime(2026, 9, 5, 12, 0, tzinfo=timezone.utc)
+        callback_fn(now)
+        await hass.async_block_till_done()
+
+    mock_check.assert_called_once_with(now)

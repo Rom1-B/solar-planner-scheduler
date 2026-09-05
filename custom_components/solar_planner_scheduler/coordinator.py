@@ -58,6 +58,7 @@ _LOGGER = logging.getLogger(__name__)
 #       "active": True,
 #       "active_set_on": "2026-01-01",
 #       "pending_forced_start": "2026-...",
+#       "pending_power_detected_at": "2026-...",
 #       "committed": {"start": "2026-...", "end": "2026-...", "coverage_pct": 95, "forced": False},
 #     },
 #   },
@@ -331,6 +332,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             "seen_running": seen_running,
         }
         state.pop("pending_forced_start", None)
+        state.pop("pending_power_detected_at", None)
         self._state.setdefault(device_name, {})[program_name] = state
         await self._store.async_save(self._state)
 
@@ -394,6 +396,12 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         trusted from MANUAL_START_TOLERANCE_MINUTES before the planned start onward, up to the
         planned end: earlier than that, a power reading is assumed unrelated to this program.
 
+        `async_check_power_detection()`, a lighter per-minute pass, may have already recorded the
+        precise minute a crossing happened in `pending_power_detected_at`; when present and still
+        within the trusted window, it's used instead of this cycle's own `now`, for better than
+        DEFAULT_UPDATE_INTERVAL_MINUTES precision without running the full cycle more often. Falls
+        back to a live check at `now` otherwise (the very first cycle to see it, or a missed beat).
+
         Recalibrating sets forced=True for a genuinely early detection (more than
         DEFAULT_UPDATE_INTERVAL_MINUTES before the planned start) or once in progress (now >=
         start): in both cases "was this auto or manual" stops mattering, only "it's running, leave
@@ -411,16 +419,22 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         if start is None or end is None:
             return
         window_start = start - timedelta(minutes=MANUAL_START_TOLERANCE_MINUTES)
-        if not (window_start <= now < end):
-            return
-        power = self._current_power(device.get(CONF_POWER_SENSOR))
-        if power is None:
-            return
-        if power < idle_threshold:
-            return
+
+        detected_raw = existing.get("pending_power_detected_at")
+        detected_at = dt_util.parse_datetime(detected_raw) if detected_raw else None
+        if detected_at is not None and window_start <= detected_at < end:
+            effective_now = detected_at
+        else:
+            if not (window_start <= now < end):
+                return
+            power = self._current_power(device.get(CONF_POWER_SENSOR))
+            if power is None or power < idle_threshold:
+                return
+            effective_now = now
+
         imminent_start = start - timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES)
-        forced = True if now < imminent_start or now >= start else committed_raw.get("forced", False)
-        slot = self._compute_slot_from_start(item, duration_min, now, points, base_load, committed)
+        forced = True if effective_now < imminent_start or effective_now >= start else committed_raw.get("forced", False)
+        slot = self._compute_slot_from_start(item, duration_min, effective_now, points, base_load, committed)
         await self._set_committed(
             device_name,
             program_name,
@@ -431,6 +445,49 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             slot["cost"],
             seen_running=True,
         )
+
+    async def async_check_power_detection(self, now: datetime) -> None:
+        """Lightweight per-minute pass: record the exact minute a program's power first crosses its
+        idle threshold, without the full per-cycle work (search, tariffs, Repair tracking).
+
+        Only ever writes one Store field, `pending_power_detected_at`, consumed by
+        `_update_seen_running()` on the next normal coordinator cycle to do the actual
+        recalibration — this keeps DEFAULT_UPDATE_INTERVAL_MINUTES free to control search/tariff/
+        Repair cadence while still catching a real start within about a minute, not up to a full
+        cycle late.
+        """
+        for device in self.entry.options.get(CONF_DEVICES, []):
+            device_name = device[CONF_NAME]
+            for program in device.get(CONF_PROGRAMS, []):
+                program_name = program[CONF_NAME]
+                if not self.is_program_active(device_name, program_name, program):
+                    continue
+                existing = self._program_state(device_name, program_name)
+                committed_raw = existing.get("committed")
+                if (
+                    committed_raw is None
+                    or committed_raw.get("seen_running")
+                    or existing.get("pending_power_detected_at")
+                ):
+                    continue
+                start = dt_util.parse_datetime(committed_raw["start"])
+                end = dt_util.parse_datetime(committed_raw["end"])
+                if start is None or end is None:
+                    continue
+                window_start = start - timedelta(minutes=MANUAL_START_TOLERANCE_MINUTES)
+                if not (window_start <= now < end):
+                    continue
+                power = self._current_power(device.get(CONF_POWER_SENSOR))
+                if power is None:
+                    continue
+                idle_threshold = self._idle_threshold_for(program.get(CONF_POWER_PROFILE, []))
+                if power < idle_threshold:
+                    continue
+                self._state.setdefault(device_name, {})[program_name] = {
+                    **existing,
+                    "pending_power_detected_at": now.isoformat(),
+                }
+                await self._store.async_save(self._state)
 
     @staticmethod
     def _failed_to_start_issue_id(device_name: str, program_name: str) -> str:
