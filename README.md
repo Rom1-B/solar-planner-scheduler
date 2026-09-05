@@ -135,14 +135,3 @@ locally.
 Bump `version` in `custom_components/solar_planner_scheduler/manifest.json` and push to `main`.
 CI tags that version and creates a matching GitHub release.
 
-## Local testing
-
-The dev docker-compose lives one level up, in `../` (shared across HA projects, not specific to
-this repo):
-
-```bash
-cd .. && docker compose up -d
-```
-
-Open `http://localhost:8123`, finish onboarding, and add the integration. After each code change:
-`docker compose restart` (from `../`), then reload the page.
