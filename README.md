@@ -137,9 +137,12 @@ CI tags that version and creates a matching GitHub release.
 
 ## Local testing
 
+The dev docker-compose lives one level up, in `../` (shared across HA projects, not specific to
+this repo):
+
 ```bash
-docker compose up -d
+cd .. && docker compose up -d
 ```
 
 Open `http://localhost:8123`, finish onboarding, and add the integration. After each code change:
-`docker compose restart`, then reload the page.
+`docker compose restart` (from `../`), then reload the page.

@@ -1123,6 +1123,28 @@ async def test_a_pending_forced_start_is_applied_and_committed(hass):
     committed = coordinator._get_committed("lave_vaisselle", "Eco")
     assert committed["forced"] is True
     assert coordinator._pending_forced_start("lave_vaisselle", "Eco") is None
+    assert committed["seen_running"] is False
+
+
+async def test_a_pending_forced_start_marks_seen_running_when_already_drawing_power(hass):
+    """Live incident: forcing a start while the device is already running (e.g. re-forcing 10:58
+    after the machine already started) must not reset seen_running to False — otherwise the very
+    next cycle's still-live power reading looks like a fresh detection and recalibrates straight
+    past the forced time, chasing "now" every time the user re-forces it.
+    """
+    coordinator = _active_coordinator_with_sensor(hass)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_linge", "Eco", True)
+    hass.states.async_set("sensor.lave_linge_power", "1600")
+    forced_start = dt_util.now() - timedelta(minutes=12)
+    await coordinator.async_set_forced_start("lave_linge", "Eco", forced_start)
+    await _flush(coordinator)
+
+    results = await coordinator._async_update_data()
+
+    assert results[("lave_linge", "Eco")].start == forced_start
+    committed = coordinator._get_committed("lave_linge", "Eco")
+    assert committed["seen_running"] is True
 
 
 async def test_two_active_programs_of_the_same_device_never_get_overlapping_slots(hass):

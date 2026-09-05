@@ -674,8 +674,22 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                 pending_start = self._pending_forced_start(device_name, program_name)
                 if pending_start is not None:
                     slot = self._compute_slot_from_start(item, duration_min, pending_start, points, base_load, committed)
+                    # If the device is already drawing power right now, it's already running (e.g.
+                    # the user is forcing the time to match a start that already happened) — commit
+                    # it as seen_running immediately, or the next cycle's still-live power reading
+                    # would look like a fresh detection and recalibrate straight past this forced
+                    # time, chasing "now" forever every time it gets forced again.
+                    power = self._current_power(device.get(CONF_POWER_SENSOR))
+                    already_running = power is not None and power >= idle_threshold
                     await self._set_committed(
-                        device_name, program_name, slot["start"], slot["end"], slot["coverage_pct"], True, slot["cost"]
+                        device_name,
+                        program_name,
+                        slot["start"],
+                        slot["end"],
+                        slot["coverage_pct"],
+                        True,
+                        slot["cost"],
+                        seen_running=already_running,
                     )
                     await self._note_failed_to_start(device_name, program_name, False)
                     _finalize(slot)
