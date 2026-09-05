@@ -817,7 +817,7 @@ test("stack order mirrors the gantt's top-to-bottom config order, not reversed",
   assert.ok(yA < yB, `expected A (first in config, gantt's top lane) drawn above B in the stack, got yA=${yA} vs yB=${yB}`);
 });
 
-test("a forecast entity with P10/P90 percentiles renders a confidence band and its legend", () => {
+test("a forecast entity with P10/P90 percentiles renders a confidence band", () => {
   const dayStart = new Date();
   dayStart.setHours(0, 0, 0, 0);
   const card = buildCard();
@@ -825,15 +825,13 @@ test("a forecast entity with P10/P90 percentiles renders a confidence band and i
   card._render();
   const html = card.shadowRoot.innerHTML;
   assert.ok(/<path d="M[^"]+Z" class="confidence-band"/.test(html), "expected a closed confidence-band path");
-  assert.ok(html.includes("Confidence (P10-P90)"), "expected a confidence legend entry");
 });
 
-test("a forecast entity without P10/P90 draws no confidence band or legend", () => {
+test("a forecast entity without P10/P90 draws no confidence band", () => {
   const card = buildCard();
   card._render();
   const html = card.shadowRoot.innerHTML;
   assert.ok(!html.includes('class="confidence-band"'), "expected no confidence-band path without percentiles");
-  assert.ok(!html.includes("Confidence (P10-P90)"), "expected no confidence legend entry without percentiles");
 });
 
 test("an active program's slot shows a countdown to its start, hidden once it's running", () => {

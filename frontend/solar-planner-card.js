@@ -886,7 +886,6 @@ class SolarPlannerCard extends HTMLElement {
             this._showChart
               ? `<span class="legend">
             <span><span class="swatch" style="background:${colors.forecast}"></span>Forecast</span>
-            ${hasConfidenceBand ? `<span><span class="swatch confidence-swatch" style="background:${colors.forecast}"></span>Confidence (P10-P90)</span>` : ""}
             ${this._actualPoints.length ? `<span><span class="swatch" style="background:${colors.actual}"></span>Real production</span>` : ""}
             ${this._consumptionPoints.length ? `<span><span class="swatch" style="background:${colors.consumption}"></span>Consumption</span>` : ""}
           </span>`
