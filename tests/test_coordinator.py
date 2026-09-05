@@ -30,12 +30,14 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_PROGRAMS,
     CONF_START_TIME,
     CONF_TARIFF_BANDS,
+    DEFAULT_IDLE_POWER_THRESHOLD,
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
     NONE_PROGRAM,
 )
 from custom_components.solar_planner_scheduler.coordinator import (
     FAILED_TO_START_REPAIR_THRESHOLD,
+    MANUAL_START_TOLERANCE_MINUTES,
     NIGHT_EXTENSION_HOURS,
     DeviceSchedule,
     SolarPlannerSchedulerCoordinator,
@@ -549,10 +551,24 @@ async def test_update_seen_running_latches_once_power_exceeds_idle_threshold(has
     end = start + timedelta(minutes=150)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
     hass.states.async_set("sensor.lave_linge_power", "1600")
+    item = {"profile": [{CONF_MINUTES: 150, CONF_POWER_W: 1600}]}
 
-    await coordinator._update_seen_running("lave_linge", "Eco", {CONF_POWER_SENSOR: "sensor.lave_linge_power"}, now)
+    await coordinator._update_seen_running(
+        "lave_linge",
+        "Eco",
+        {CONF_POWER_SENSOR: "sensor.lave_linge_power"},
+        item,
+        150,
+        [],
+        0.0,
+        [],
+        DEFAULT_IDLE_POWER_THRESHOLD,
+        now,
+    )
 
-    assert coordinator._get_committed("lave_linge", "Eco")["seen_running"] is True
+    committed = coordinator._get_committed("lave_linge", "Eco")
+    assert committed["seen_running"] is True
+    assert committed["start"] == now
 
 
 async def test_update_seen_running_does_nothing_below_idle_threshold(hass):
@@ -562,10 +578,24 @@ async def test_update_seen_running_does_nothing_below_idle_threshold(hass):
     end = start + timedelta(minutes=150)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
     hass.states.async_set("sensor.lave_linge_power", "0")
+    item = {"profile": [{CONF_MINUTES: 150, CONF_POWER_W: 1600}]}
 
-    await coordinator._update_seen_running("lave_linge", "Eco", {CONF_POWER_SENSOR: "sensor.lave_linge_power"}, now)
+    await coordinator._update_seen_running(
+        "lave_linge",
+        "Eco",
+        {CONF_POWER_SENSOR: "sensor.lave_linge_power"},
+        item,
+        150,
+        [],
+        0.0,
+        [],
+        DEFAULT_IDLE_POWER_THRESHOLD,
+        now,
+    )
 
-    assert coordinator._get_committed("lave_linge", "Eco")["seen_running"] is False
+    committed = coordinator._get_committed("lave_linge", "Eco")
+    assert committed["seen_running"] is False
+    assert committed["start"] == start
 
 
 async def test_a_short_real_cycle_does_not_get_flagged_as_failed_to_start_later(hass):
@@ -577,17 +607,151 @@ async def test_a_short_real_cycle_does_not_get_flagged_as_failed_to_start_later(
     end = start + timedelta(minutes=150)
     _seed_committed(coordinator, "pac", "Eau chaude", DeviceSchedule("pac", start, end, 54))
     device = {CONF_POWER_SENSOR: "sensor.pac_power"}
+    item = {"profile": [{CONF_MINUTES: 150, CONF_POWER_W: 1069}]}
 
     hass.states.async_set("sensor.pac_power", "1069")  # the real appliance just ramped up
-    await coordinator._update_seen_running("pac", "Eau chaude", device, start + timedelta(minutes=4))
+    await coordinator._update_seen_running(
+        "pac", "Eau chaude", device, item, 150, [], 0.0, [], DEFAULT_IDLE_POWER_THRESHOLD, start + timedelta(minutes=4)
+    )
 
     hass.states.async_set("sensor.pac_power", "5")  # it finished its real, shorter cycle
     later = start + timedelta(minutes=33)
-    await coordinator._update_seen_running("pac", "Eau chaude", device, later)
+    await coordinator._update_seen_running(
+        "pac", "Eau chaude", device, item, 150, [], 0.0, [], DEFAULT_IDLE_POWER_THRESHOLD, later
+    )
     slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("pac", "Eau chaude", device, 150, later, [])
 
     assert should_search is False
     assert failed_to_start is False
+
+
+async def test_early_power_detection_recalibrates_the_committed_start(hass):
+    coordinator = _coordinator(hass)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=150)
+    _seed_committed(coordinator, "pac", "Eau chaude", DeviceSchedule("pac", start, end, 54))
+    hass.states.async_set("sensor.pac_power", "1069")
+    item = {"profile": [{CONF_MINUTES: 150, CONF_POWER_W: 1069}]}
+    now = start - timedelta(minutes=30)
+
+    await coordinator._update_seen_running(
+        "pac", "Eau chaude", {CONF_POWER_SENSOR: "sensor.pac_power"}, item, 150, [], 0.0, [], DEFAULT_IDLE_POWER_THRESHOLD, now
+    )
+
+    committed = coordinator._get_committed("pac", "Eau chaude")
+    assert committed["start"] == now
+    assert committed["end"] == now + timedelta(minutes=150)
+    assert committed["seen_running"] is True
+    assert committed["forced"] is True
+
+
+async def test_late_power_detection_within_tolerance_also_recalibrates(hass):
+    coordinator = _coordinator(hass)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=150)
+    _seed_committed(coordinator, "pac", "Eau chaude", DeviceSchedule("pac", start, end, 54))
+    hass.states.async_set("sensor.pac_power", "1069")
+    item = {"profile": [{CONF_MINUTES: 150, CONF_POWER_W: 1069}]}
+    now = start + timedelta(minutes=10)
+
+    await coordinator._update_seen_running(
+        "pac", "Eau chaude", {CONF_POWER_SENSOR: "sensor.pac_power"}, item, 150, [], 0.0, [], DEFAULT_IDLE_POWER_THRESHOLD, now
+    )
+
+    committed = coordinator._get_committed("pac", "Eau chaude")
+    assert committed["start"] == now
+    assert committed["end"] == now + timedelta(minutes=150)
+    assert committed["seen_running"] is True
+    assert committed["forced"] is True
+
+
+async def test_power_detection_well_after_the_planned_start_still_recalibrates(hass):
+    coordinator = _coordinator(hass)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=150)
+    _seed_committed(coordinator, "pac", "Eau chaude", DeviceSchedule("pac", start, end, 54))
+    hass.states.async_set("sensor.pac_power", "1069")
+    item = {"profile": [{CONF_MINUTES: 150, CONF_POWER_W: 1069}]}
+    now = start + timedelta(minutes=50)
+
+    await coordinator._update_seen_running(
+        "pac", "Eau chaude", {CONF_POWER_SENSOR: "sensor.pac_power"}, item, 150, [], 0.0, [], DEFAULT_IDLE_POWER_THRESHOLD, now
+    )
+
+    committed = coordinator._get_committed("pac", "Eau chaude")
+    assert committed["start"] == now
+    assert committed["end"] == now + timedelta(minutes=150)
+
+
+async def test_power_detection_well_before_the_window_does_nothing(hass):
+    coordinator = _coordinator(hass)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=150)
+    _seed_committed(coordinator, "pac", "Eau chaude", DeviceSchedule("pac", start, end, 54))
+    hass.states.async_set("sensor.pac_power", "1069")
+    item = {"profile": [{CONF_MINUTES: 150, CONF_POWER_W: 1069}]}
+    now = start - timedelta(minutes=50)
+
+    await coordinator._update_seen_running(
+        "pac", "Eau chaude", {CONF_POWER_SENSOR: "sensor.pac_power"}, item, 150, [], 0.0, [], DEFAULT_IDLE_POWER_THRESHOLD, now
+    )
+
+    committed = coordinator._get_committed("pac", "Eau chaude")
+    assert committed["start"] == start
+    assert committed["end"] == end
+    assert committed["seen_running"] is False
+
+
+async def test_power_detection_in_the_imminent_window_recalibrates_without_forcing(hass):
+    coordinator = _coordinator(hass)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=150)
+    _seed_committed(coordinator, "pac", "Eau chaude", DeviceSchedule("pac", start, end, 54), forced=False)
+    hass.states.async_set("sensor.pac_power", "1069")
+    item = {"profile": [{CONF_MINUTES: 150, CONF_POWER_W: 1069}]}
+    now = start - timedelta(minutes=3)
+
+    await coordinator._update_seen_running(
+        "pac", "Eau chaude", {CONF_POWER_SENSOR: "sensor.pac_power"}, item, 150, [], 0.0, [], DEFAULT_IDLE_POWER_THRESHOLD, now
+    )
+
+    committed = coordinator._get_committed("pac", "Eau chaude")
+    assert committed["start"] == now
+    assert committed["seen_running"] is True
+    assert committed["forced"] is False
+
+
+# --- _idle_threshold_for() -----------------------------------------------------------------------
+
+
+def test_idle_threshold_for_stays_at_the_floor_for_a_low_first_phase(hass):
+    coordinator = _coordinator(hass)
+    profile = [{CONF_MINUTES: 20, CONF_POWER_W: 16}]
+
+    assert coordinator._idle_threshold_for(profile) == DEFAULT_IDLE_POWER_THRESHOLD
+
+
+def test_idle_threshold_for_scales_with_a_high_first_phase(hass):
+    coordinator = _coordinator(hass)
+    profile = [{CONF_MINUTES: 30, CONF_POWER_W: 1600}]
+
+    assert coordinator._idle_threshold_for(profile) == 800.0
+
+
+def test_reusable_committed_uses_the_passed_idle_threshold(hass):
+    coordinator = _coordinator(hass)
+    now = datetime(2026, 9, 5, 13, 0, tzinfo=timezone.utc)
+    start = now - timedelta(minutes=10)
+    end = start + timedelta(minutes=150)
+    _seed_committed(coordinator, "pac", "Eau chaude", DeviceSchedule("pac", start, end, 54))
+    hass.states.async_set("sensor.pac_power", "500")
+    device = {CONF_POWER_SENSOR: "sensor.pac_power"}
+
+    slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed(
+        "pac", "Eau chaude", device, 150, now, [], idle_threshold=800
+    )
+
+    assert failed_to_start is True
 
 
 # --- _note_failed_to_start() --------------------------------------------------------------------

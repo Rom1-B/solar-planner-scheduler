@@ -28,6 +28,7 @@ from .const import (
     CONF_NAME,
     CONF_POWER_PROFILE,
     CONF_POWER_SENSOR,
+    CONF_POWER_W,
     CONF_PRICE_TRACKING_ENABLED,
     CONF_PROGRAMS,
     CONF_START_TIME,
@@ -68,10 +69,15 @@ _LOGGER = logging.getLogger(__name__)
 STORAGE_VERSION = 1
 
 # One failed_to_start unlock is normal (startup lag); this many in a row means it never started.
-FAILED_TO_START_REPAIR_THRESHOLD = 2
+# At DEFAULT_UPDATE_INTERVAL_MINUTES (5 min) this is ~15 min of grace before raising a Repair.
+FAILED_TO_START_REPAIR_THRESHOLD = 3
 
 # How far today's search extends past midnight, e.g. to reach a cheap overnight tariff band.
 NIGHT_EXTENSION_HOURS = 5
+
+# How far from a program's planned start (before or after) a power reading is still trusted as
+# belonging to that same run, for recalibrating the committed slot onto the real start time.
+MANUAL_START_TOLERANCE_MINUTES = 30
 
 
 def _migrate_legacy_state(raw: dict) -> dict:
@@ -313,6 +319,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         coverage_pct: int | None,
         forced: bool,
         cost: float | None = None,
+        seen_running: bool = False,
     ) -> None:
         state = {**self._program_state(device_name, program_name)}
         state["committed"] = {
@@ -321,7 +328,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             "coverage_pct": coverage_pct,
             "forced": forced,
             "cost": cost,
-            "seen_running": False,
+            "seen_running": seen_running,
         }
         state.pop("pending_forced_start", None)
         self._state.setdefault(device_name, {})[program_name] = state
@@ -338,7 +345,19 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         except ValueError:
             return None
 
-    def _failed_to_start(self, device: dict, committed: dict, now: datetime) -> bool:
+    def _idle_threshold_for(self, profile: list[dict]) -> float:
+        """max(configured floor, half the program's first phase power).
+
+        A slow-starting program (low first phase) stays at the floor, unchanged from before; a
+        program that jumps straight to a peak gets a stricter, more accurate threshold instead of
+        the same flat floor for everyone.
+        """
+        floor = self.entry.data.get(CONF_IDLE_POWER_THRESHOLD, DEFAULT_IDLE_POWER_THRESHOLD)
+        if not profile:
+            return floor
+        return max(floor, profile[0][CONF_POWER_W] * 0.5)
+
+    def _failed_to_start(self, device: dict, committed: dict, now: datetime, idle_threshold: float) -> bool:
         """True only if power has never reached the idle threshold since this slot's committed start.
 
         Checking the instant reading alone breaks once the real appliance finishes its actual cycle
@@ -351,27 +370,67 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         power = self._current_power(device.get(CONF_POWER_SENSOR))
         if power is None:
             return False
-        idle_threshold = self.entry.data.get(CONF_IDLE_POWER_THRESHOLD, DEFAULT_IDLE_POWER_THRESHOLD)
         return power < idle_threshold
 
-    async def _update_seen_running(self, device_name: str, program_name: str, device: dict, now: datetime) -> None:
-        """Latch committed["seen_running"] the first time power reaches idle threshold while in progress."""
+    async def _update_seen_running(
+        self,
+        device_name: str,
+        program_name: str,
+        device: dict,
+        item: dict,
+        duration_min: float,
+        points: list[dict],
+        base_load: float,
+        committed: list[dict],
+        idle_threshold: float,
+        now: datetime,
+    ) -> None:
+        """Latch committed["seen_running"] the first time power reaches idle threshold, and
+        recalibrate the committed start/end to that real detection time.
+
+        A program started by hand rarely begins at the exact planned minute; a stale start/end
+        otherwise keeps other auto-scheduled programs' power-budget checks blind to the real
+        overlap, and the gantt keeps showing a time that never actually happened. Detection is
+        trusted from MANUAL_START_TOLERANCE_MINUTES before the planned start onward, up to the
+        planned end: earlier than that, a power reading is assumed unrelated to this program.
+
+        Recalibrating sets forced=True for a genuinely early detection (more than
+        DEFAULT_UPDATE_INTERVAL_MINUTES before the planned start) or once in progress (now >=
+        start): in both cases "was this auto or manual" stops mattering, only "it's running, leave
+        it alone" does. Within DEFAULT_UPDATE_INTERVAL_MINUTES right before the planned start,
+        forced is left as it already was: the existing imminent-window logic in
+        `_reusable_committed()` and `compute_locked()` already freezes the slot there regardless of
+        forced, so marking it forced would change nothing but the stored value's honesty.
+        """
         existing = self._program_state(device_name, program_name)
-        committed = existing.get("committed")
-        if committed is None or committed.get("seen_running"):
+        committed_raw = existing.get("committed")
+        if committed_raw is None or committed_raw.get("seen_running"):
             return
-        start = dt_util.parse_datetime(committed["start"])
-        end = dt_util.parse_datetime(committed["end"])
-        if start is None or end is None or not (start <= now < end):
+        start = dt_util.parse_datetime(committed_raw["start"])
+        end = dt_util.parse_datetime(committed_raw["end"])
+        if start is None or end is None:
+            return
+        window_start = start - timedelta(minutes=MANUAL_START_TOLERANCE_MINUTES)
+        if not (window_start <= now < end):
             return
         power = self._current_power(device.get(CONF_POWER_SENSOR))
         if power is None:
             return
-        idle_threshold = self.entry.data.get(CONF_IDLE_POWER_THRESHOLD, DEFAULT_IDLE_POWER_THRESHOLD)
         if power < idle_threshold:
             return
-        self._state.setdefault(device_name, {})[program_name] = {**existing, "committed": {**committed, "seen_running": True}}
-        await self._store.async_save(self._state)
+        imminent_start = start - timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES)
+        forced = True if now < imminent_start or now >= start else committed_raw.get("forced", False)
+        slot = self._compute_slot_from_start(item, duration_min, now, points, base_load, committed)
+        await self._set_committed(
+            device_name,
+            program_name,
+            slot["start"],
+            slot["end"],
+            slot["coverage_pct"],
+            forced,
+            slot["cost"],
+            seen_running=True,
+        )
 
     @staticmethod
     def _failed_to_start_issue_id(device_name: str, program_name: str) -> str:
@@ -404,7 +463,14 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             ir.async_delete_issue(self.hass, DOMAIN, issue_id)
 
     def _reusable_committed(
-        self, device_name: str, program_name: str, device: dict, duration_min: float, now: datetime, auto_days: list[str]
+        self,
+        device_name: str,
+        program_name: str,
+        device: dict,
+        duration_min: float,
+        now: datetime,
+        auto_days: list[str],
+        idle_threshold: float = DEFAULT_IDLE_POWER_THRESHOLD,
     ) -> tuple[dict | None, bool, bool, bool, bool]:
         """Decide whether to reuse the already-committed slot instead of searching fresh.
 
@@ -428,7 +494,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         if now >= committed["start"]:
             if now < committed["end"]:
                 # In progress — even overnight, this is never a day rollover.
-                if not committed["forced"] and self._failed_to_start(device, committed, now):
+                if not committed["forced"] and self._failed_to_start(device, committed, now, idle_threshold):
                     return None, False, True, False, True  # unlock: recompute instead of waiting forever
                 return committed, committed["forced"], False, False, False
             if committed["start"].date() != now.date():
@@ -536,6 +602,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                 if duration_min is None:
                     duration_min = sum(phase[CONF_MINUTES] for phase in profile)
                 item = {"profile": profile, "duration_min": duration_min}
+                idle_threshold = self._idle_threshold_for(profile)
                 blocked = [
                     {"start": slot["start"], "end": slot["end"]}
                     for name, slot in device_slots.items()
@@ -559,9 +626,11 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                     continue
 
                 auto_days = program.get(CONF_AUTO_DAYS, [])
-                await self._update_seen_running(device_name, program_name, device, now)
+                await self._update_seen_running(
+                    device_name, program_name, device, item, duration_min, points, base_load, committed, idle_threshold, now
+                )
                 slot, forced, should_search, dormant, failed_to_start = self._reusable_committed(
-                    device_name, program_name, device, duration_min, now, auto_days
+                    device_name, program_name, device, duration_min, now, auto_days, idle_threshold
                 )
                 await self._note_failed_to_start(device_name, program_name, failed_to_start)
                 if dormant:
