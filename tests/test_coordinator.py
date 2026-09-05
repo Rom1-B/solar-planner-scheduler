@@ -313,14 +313,27 @@ def test_is_program_active_defaults_to_false_with_empty_auto_days(hass):
 
 
 async def test_is_program_active_honors_an_explicit_false_over_the_auto_days_default(hass):
-    """The user turning a program off on purpose (e.g. "no wash today") must stick, even though it
-    declares auto_days — the default only applies when nothing was ever stored."""
+    """The user turning a program off on purpose (e.g. "no wash today") must stick for the rest of
+    that day, even though it declares auto_days — the default only applies when nothing was ever
+    stored (or the stored False is stale, see the "ignores a stale false" test below)."""
     coordinator = _coordinator(hass)
     program = {CONF_NAME: "Chauffe", CONF_AUTO_DAYS: ["mon"]}
     await coordinator.async_set_program_active("ballon", "Chauffe", False)
     await _flush(coordinator)
 
     assert coordinator.is_program_active("ballon", "Chauffe", program) is False
+
+
+async def test_is_program_active_ignores_a_stale_false_from_a_previous_day(hass):
+    """The point of auto_days is to run every one of those days unattended — deactivating "just for
+    today" must not silence every following auto_day too, only the day it was actually set on."""
+    coordinator = _coordinator(hass)
+    program = {CONF_NAME: "Chauffe", CONF_AUTO_DAYS: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]}
+    await coordinator.async_set_program_active("ballon", "Chauffe", False)
+    await _flush(coordinator)
+    coordinator._state["ballon"]["Chauffe"]["active_set_on"] = "2000-01-01"
+
+    assert coordinator.is_program_active("ballon", "Chauffe", program) is True
 
 
 async def test_set_forced_start_is_readable_before_a_refresh_folds_it_in(hass):

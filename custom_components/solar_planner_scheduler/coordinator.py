@@ -55,6 +55,7 @@ _LOGGER = logging.getLogger(__name__)
 #   "<device_name>": {
 #     "<program_name>": {
 #       "active": True,
+#       "active_set_on": "2026-01-01",
 #       "pending_forced_start": "2026-...",
 #       "committed": {"start": "2026-...", "end": "2026-...", "coverage_pct": 95, "forced": False},
 #     },
@@ -233,14 +234,26 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         return self._state.get(device_name, {}).get(program_name, {})
 
     def is_program_active(self, device_name: str, program_name: str, program: dict) -> bool:
-        """Stored activation, or True if never stored and auto_days is non-empty."""
-        stored = self._program_state(device_name, program_name).get("active")
-        if stored is not None:
-            return stored
-        return bool(program.get(CONF_AUTO_DAYS))
+        """Stored activation, or True if never stored and auto_days is non-empty.
+
+        A manual deactivation only holds for the day it was set: an auto_days program is meant to
+        run every one of those days, so switching it off "just for today" must not silence every
+        following auto_day too — once the calendar day rolls over, a stale False is ignored.
+        """
+        state = self._program_state(device_name, program_name)
+        stored = state.get("active")
+        if stored is None:
+            return bool(program.get(CONF_AUTO_DAYS))
+        if not stored and program.get(CONF_AUTO_DAYS) and state.get("active_set_on") != dt_util.now().date().isoformat():
+            return True
+        return stored
 
     async def async_set_program_active(self, device_name: str, program_name: str, active: bool) -> None:
-        state = {**self._program_state(device_name, program_name), "active": active}
+        state = {
+            **self._program_state(device_name, program_name),
+            "active": active,
+            "active_set_on": dt_util.now().date().isoformat(),
+        }
         if not active:
             state.pop("committed", None)
             state.pop("pending_forced_start", None)
