@@ -1,0 +1,102 @@
+name: Rapport de bug / Bug report
+description: Signaler un problème sur l'intégration ou la carte Lovelace / Report a problem with the integration or the Lovelace card
+labels: ["bug"]
+body:
+  - type: checkboxes
+    attributes:
+      label: Checklist
+      options:
+        - label: J'ai cherché dans les issues existantes et je n'ai pas trouvé de doublon / I searched existing issues and didn't find a duplicate
+          required: true
+        - label: J'utilise la dernière version (voir `manifest.json` ou HACS) / I'm running the latest release (check `manifest.json` or HACS)
+          required: true
+
+  - type: dropdown
+    attributes:
+      label: Où se situe le problème ? / Where does the problem show up?
+      options:
+        - Planification / Scheduling / backend
+        - Carte Lovelace / Lovelace card
+        - Configuration / Config flow
+        - Installation (HACS)
+        - Autre / Other
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Que s'est-il passé ? / What happened?
+      description: Décris le problème le plus clairement possible. / Describe the bug as clearly as possible.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: À quoi tu t'attendais à la place / What did you expect to happen instead?
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Étapes pour reproduire / Steps to reproduce
+      placeholder: |
+        1. Configurer un appareil avec... / Configure a device with...
+        2. Activer le programme... / Activate program...
+        3. ...
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: Version de Home Assistant Core / Home Assistant Core version
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: Version de Solar Planner Scheduler / Solar Planner Scheduler version
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Logs pertinents / Relevant logs
+      description: >
+        Réglages > Système > Journaux, filtré sur `solar_planner`. Copier le texte complet de
+        l'erreur/warning, pas juste la ligne résumée.
+
+
+        Settings > System > Logs, filtered on `solar_planner`. Include the full error/warning
+        text, not just the summary line.
+      render: text
+
+  - type: textarea
+    attributes:
+      label: Dump de diagnostic / Diagnostics dump
+      description: >
+        Réglages > Appareils et services > Solar Planner Scheduler > menu "..." sur l'entrée >
+        Télécharger les diagnostics. Glisser le fichier JSON téléchargé ici. C'est en général la
+        pièce jointe la plus utile pour un problème de planification : elle contient tout l'état
+        persisté (programme actif, créneau engagé, forcé ou non, compteur d'échecs) sans avoir à
+        le redécrire à la main.
+
+
+        Settings > Devices & services > Solar Planner Scheduler > the "..." menu on the entry >
+        Download diagnostics. Drag the downloaded JSON file here. This is usually the single most
+        useful attachment for a scheduling/backend issue: it includes the full persisted state
+        (per-device/program active flag, committed slot, forced flag, failure streak) without you
+        having to describe it by hand.
+
+  - type: textarea
+    attributes:
+      label: Configuration concernée / Relevant configuration
+      description: >
+        Pour un problème de planification, les définitions des appareils/programmes/charges fixes
+        concernés (depuis la configuration, ou la section `options` du dump de diagnostic) :
+        profil de puissance, auto_days, max_simultaneous_power.
+
+
+        For a scheduling issue, the device/program/fixed-load definitions involved (from the
+        options flow, or the diagnostics dump's `options` section) — power profile, auto_days,
+        max_simultaneous_power.
+      render: yaml
