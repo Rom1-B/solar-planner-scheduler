@@ -58,11 +58,13 @@ Per (device, program) pair: `datetime.<device>_<program>_start`,
 `sensor.solar_planner_scheduler_current_price` exposes the live €/kWh price (when tariff tracking
 is enabled), usable as the Energy dashboard's "current price" source for grid-consumption cost.
 
-The integration never turns a device on/off itself: react to `should_run` in an automation.
+The integration never turns a device on/off itself. Two examples:
+
+1. A device HA controls directly: start it when `should_run` turns on.
 
 ```yaml
 automation:
-  - alias: "Water heater ON"
+  - alias: "Water heater - force heat"
     trigger:
       - platform: state
         entity_id: binary_sensor.water_heater_should_run
@@ -71,6 +73,29 @@ automation:
       - service: switch.turn_on
         target: { entity_id: switch.water_heater_boost }
 ```
+
+2. A device you start by hand (not controlled by HA): notify 15 minutes before, so there's time to
+   load the washing machine and press its own start button.
+
+```yaml
+automation:
+  - alias: "Washing machine - notify 15 min before start"
+    trigger:
+      - platform: template
+        value_template: >
+          {% set start_ts = as_timestamp(states('datetime.washing_machine_start'), 0) %}
+          {% set remaining_s = start_ts - as_timestamp(now()) %}
+          {{ 0 <= remaining_s < 900 }}
+    action:
+      - service: notify.mobile_app_my_phone
+        data:
+          message: >
+            {% set start_ts = as_timestamp(states('datetime.washing_machine_start')) %}
+            {% set eta_min = ((start_ts - as_timestamp(now())) / 60) | round(0) %}
+            Washing machine starts at {{ start_ts | timestamp_custom('%H:%M') }} (in {{ eta_min }} min)
+```
+
+Change `900` (15 minutes, in seconds) to whatever lead time you want.
 
 ## The bundled card
 
