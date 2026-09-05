@@ -918,7 +918,7 @@ class SolarPlannerCard extends HTMLElement {
           </svg>
           <svg class="gantt" viewBox="0 0 ${width} ${ganttHeight}" style="width: ${chartWidthPercent}%">${laneBars.join(
                 ""
-              )}<g class="drag-pct-group" style="opacity:0" pointer-events="none"><rect class="drag-pct-bg" width="60" height="14" rx="2"/><text class="drag-pct" x="30" y="10.5" text-anchor="middle"></text></g></svg>
+              )}<line x1="${nowX}" y1="0" x2="${nowX}" y2="${ganttHeight}" class="now-line"/><g class="drag-pct-group" style="opacity:0" pointer-events="none"><rect class="drag-pct-bg" width="60" height="14" rx="2"/><text class="drag-pct" x="30" y="10.5" text-anchor="middle"></text></g></svg>
         </div>
         ${deviceRows}
         ${fixedLoadsLegend}
