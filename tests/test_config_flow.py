@@ -27,6 +27,7 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_DEVICES,
     CONF_FIXED_LOADS,
     CONF_FORECAST_ENTITY,
+    CONF_FORECAST_PROVIDER,
     CONF_FORECAST_TOMORROW_ENTITY,
     CONF_MAX_SIMULTANEOUS_POWER,
     CONF_NAME,
@@ -39,6 +40,8 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_SUBSCRIPTION_PRICE_MONTHLY,
     CONF_TARIFF_BANDS,
     DOMAIN,
+    FORECAST_PROVIDER_HELIOS,
+    FORECAST_PROVIDER_SOLCAST,
 )
 
 BASE_DATA = {
@@ -56,6 +59,13 @@ def _entry(hass, devices, fixed_loads=None):
     )
     entry.add_to_hass(hass)
     return entry
+
+
+def _set_solcast_state(hass, entity_id: str = "sensor.forecast") -> None:
+    """A minimal state that detect_forecast_provider() recognizes as Solcast: the flow now needs
+    the forecast entity to already exist and match a known shape before it accepts it.
+    """
+    hass.states.async_set(entity_id, "3", {"detailedForecast": []})
 
 
 async def test_add_program_phases_parses_valid_multiline_text(hass, enable_custom_integrations):
@@ -239,6 +249,7 @@ async def test_add_device_without_a_power_sensor_does_not_crash(hass, enable_cus
 async def test_edit_base_accepts_omitted_optional_entities(hass, enable_custom_integrations):
     """Regression test: same default="" bug as add_device, in the base-settings form."""
     entry = _entry(hass, [])
+    _set_solcast_state(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_base"})
@@ -250,6 +261,7 @@ async def test_edit_base_accepts_omitted_optional_entities(hass, enable_custom_i
     assert result["type"] == "menu"
     assert entry.data[CONF_MAX_SIMULTANEOUS_POWER] == 3000
     assert entry.data.get("production_entity") is None
+    assert entry.data[CONF_FORECAST_PROVIDER] == FORECAST_PROVIDER_SOLCAST
 
 
 async def test_edit_tariff_writes_price_tracking_config_to_entry_data(hass, enable_custom_integrations):
@@ -298,6 +310,7 @@ async def test_editing_base_settings_does_not_wipe_previously_configured_tariff_
     never carries those fields. It must merge instead.
     """
     entry = _entry(hass, [])
+    _set_solcast_state(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_tariff"})
@@ -451,16 +464,71 @@ def _selector_for(schema, field_name):
     raise KeyError(field_name)
 
 
-def test_forecast_entity_pickers_filter_to_energy_sensors():
-    """Regression test for the device_class filter added to the entity pickers — Solcast's
-    forecast sensors report device_class "energy" (confirmed against a real instance, see
-    CLAUDE.local.md), not "power": filtering to the wrong class would silently empty the picker.
+def test_forecast_entity_pickers_filter_to_known_provider_device_classes():
+    """Regression test: Solcast's forecast entity reports device_class "energy", Helios
+    Forecast's reports "power" (both confirmed against real installs, see CLAUDE.local.md).
+    A single device_class can't cover both, but the selector accepts a list.
     """
     schema = _base_schema()
     for field in (CONF_FORECAST_ENTITY, CONF_FORECAST_TOMORROW_ENTITY):
         selector = _selector_for(schema, field)
         assert selector.config["domain"] == ["sensor"]
-        assert selector.config["device_class"] == ["energy"]
+        assert selector.config["device_class"] == ["energy", "power"]
+
+
+# --- forecast provider detection ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+async def test_setup_detects_solcast_from_the_chosen_entity(hass, enable_custom_integrations):
+    """create_entry() really sets the entry up (real coordinator, real HA-core setup timers from
+    the frontend/lovelace resource registration in __init__.py), unrelated to the detection logic
+    under test, hence the lingering-timer allowance instead of a full integration-setup teardown.
+    """
+    hass.states.async_set("sensor.forecast", "3", {"detailedForecast": []})
+
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000}
+    )
+
+    assert result["type"] == "create_entry"
+    assert result["data"][CONF_FORECAST_PROVIDER] == FORECAST_PROVIDER_SOLCAST
+
+
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+async def test_setup_detects_helios_from_the_chosen_entity(hass, enable_custom_integrations):
+    hass.states.async_set("sensor.helios_power_now", "1200", {"forecast": []})
+
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_FORECAST_ENTITY: "sensor.helios_power_now", CONF_MAX_SIMULTANEOUS_POWER: 4000}
+    )
+
+    assert result["type"] == "create_entry"
+    assert result["data"][CONF_FORECAST_PROVIDER] == FORECAST_PROVIDER_HELIOS
+
+
+async def test_setup_rejects_an_entity_matching_no_known_provider(hass, enable_custom_integrations):
+    hass.states.async_set("sensor.unrelated", "42", {})
+
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_FORECAST_ENTITY: "sensor.unrelated", CONF_MAX_SIMULTANEOUS_POWER: 4000}
+    )
+
+    assert result["type"] == "form"
+    assert result["errors"] == {CONF_FORECAST_ENTITY: "forecast_entity_not_ready"}
+
+
+async def test_setup_rejects_an_entity_with_no_state_yet(hass, enable_custom_integrations):
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_FORECAST_ENTITY: "sensor.does_not_exist", CONF_MAX_SIMULTANEOUS_POWER: 4000}
+    )
+
+    assert result["type"] == "form"
+    assert result["errors"] == {CONF_FORECAST_ENTITY: "forecast_entity_not_ready"}
 
 
 def test_production_and_consumption_pickers_filter_to_power_sensors():

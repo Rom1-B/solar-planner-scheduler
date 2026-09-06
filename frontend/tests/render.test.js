@@ -22,9 +22,33 @@ const BASE_CONFIG_ENTITY = {
       consumption_entity: null,
       fixed_loads: [],
       devices: [],
+      theoretical_forecast: [],
     },
   },
 };
+
+// theoretical_forecast is server-normalized (coordinator.py's theoretical_forecast_points()):
+// {time, w, w10, w90}, regardless of which forecast provider produced it. Overrides (not merges)
+// the config sensor's theoretical_forecast attribute — use addForecastPoints() to append instead
+// (e.g. a "tomorrow" entity's points on top of today's).
+function configEntityWithForecast(points) {
+  const base = BASE_CONFIG_ENTITY["sensor.solar_planner_scheduler_config"];
+  return { "sensor.solar_planner_scheduler_config": { ...base, attributes: { ...base.attributes, theoretical_forecast: points } } };
+}
+
+function setForecastPoints(card, points) {
+  const entity = card._hass.states["sensor.solar_planner_scheduler_config"];
+  card._hass.states["sensor.solar_planner_scheduler_config"] = {
+    ...entity,
+    attributes: { ...entity.attributes, theoretical_forecast: points },
+  };
+}
+
+function addForecastPoints(card, points) {
+  const entity = card._hass.states["sensor.solar_planner_scheduler_config"];
+  const merged = [...(entity.attributes.theoretical_forecast || []), ...points].sort((a, b) => new Date(a.time) - new Date(b.time));
+  setForecastPoints(card, merged);
+}
 
 // One program named "Eco" per device slug, with the program's own row-slug equal to the device
 // slug: matches the real integration when a device has exactly one program, and keeps this
@@ -66,23 +90,20 @@ function setFixedLoads(card, fixedLoads) {
   };
 }
 
+// Server-normalized shape (coordinator.py's theoretical_forecast_points()): {time, w, w10, w90},
+// watts already in W. w10/w90 default to w (no confidence band) unless withConfidence is set.
 function buildForecast(dayStart, peakKw = 3, withConfidence = false) {
-  const detailedForecast = [];
+  const points = [];
   for (let h = 6; h <= 20; h++) {
     for (const m of [0, 30]) {
       const t = new Date(dayStart);
       t.setHours(h, m, 0, 0);
       const sunFactor = Math.max(0, Math.sin(((h + m / 60 - 6) / 14) * Math.PI));
-      const pvEstimate = sunFactor * peakKw;
-      const point = { period_start: t.toISOString(), pv_estimate: pvEstimate };
-      if (withConfidence) {
-        point.pv_estimate10 = pvEstimate * 0.7;
-        point.pv_estimate90 = pvEstimate * 1.3;
-      }
-      detailedForecast.push(point);
+      const w = sunFactor * peakKw * 1000;
+      points.push({ time: t.toISOString(), w, w10: withConfidence ? w * 0.7 : w, w90: withConfidence ? w * 1.3 : w });
     }
   }
-  return detailedForecast;
+  return points;
 }
 
 // The 3 entities solar_planner_scheduler exposes for one program row, matching what
@@ -146,7 +167,7 @@ function buildCard({ withActiveSelections = true } = {}) {
     callWS: async () => ({}),
     states: {
       ...BASE_CONFIG_ENTITY,
-      "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(dayStart) } },
+      ...configEntityWithForecast(buildForecast(dayStart)),
       ...deviceEntities(
         "lave_linge",
         withActiveSelections
@@ -357,7 +378,7 @@ test("forecast_tomorrow_entity does not change the fixed display window or today
 
   const withTomorrow = buildCard();
   enableTomorrowForecast(withTomorrow);
-  withTomorrow._hass.states["sensor.forecast_tomorrow"] = { state: "3", attributes: { detailedForecast: buildForecast(tomorrowStart) } };
+  addForecastPoints(withTomorrow, buildForecast(tomorrowStart));
   withTomorrow._render();
   const htmlWith = withTomorrow.shadowRoot.innerHTML;
   const barWith = ganttBarGeometry(htmlWith, "lave_linge");
@@ -409,7 +430,7 @@ test("a daily fixed load also shows tomorrow's occurrence once forecast_tomorrow
 
   const withTomorrow = buildCard();
   enableTomorrowForecast(withTomorrow);
-  withTomorrow._hass.states["sensor.forecast_tomorrow"] = { state: "3", attributes: { detailedForecast: buildForecast(tomorrowStart) } };
+  addForecastPoints(withTomorrow, buildForecast(tomorrowStart));
   withTomorrow._render();
   const htmlWith = withTomorrow.shadowRoot.innerHTML;
   const fixedRectsWith = rectsWithClass(htmlWith, "fixed");
@@ -428,7 +449,7 @@ test("the table marks tomorrow's fixed-load occurrence so it doesn't read as an 
 
   const card = buildCard();
   enableTomorrowForecast(card);
-  card._hass.states["sensor.forecast_tomorrow"] = { state: "3", attributes: { detailedForecast: buildForecast(tomorrowStart) } };
+  addForecastPoints(card, buildForecast(tomorrowStart));
   card._showTable = true;
   card._render();
   const html = card.shadowRoot.innerHTML;
@@ -453,10 +474,7 @@ test("a sunnier tomorrow doesn't rescale today's Y-axis", () => {
 
   const withSunnyTomorrow = buildCard();
   enableTomorrowForecast(withSunnyTomorrow);
-  withSunnyTomorrow._hass.states["sensor.forecast_tomorrow"] = {
-    state: "8",
-    attributes: { detailedForecast: buildForecast(tomorrowStart, 8) },
-  };
+  addForecastPoints(withSunnyTomorrow, buildForecast(tomorrowStart, 8));
   withSunnyTomorrow._render();
   const maxLineYWith = parseFloat(/y1="([\d.]+)"[^>]*class="max-line"/.exec(withSunnyTomorrow.shadowRoot.innerHTML)?.[1] ?? "NaN");
 
@@ -472,7 +490,7 @@ test("a full-day fixed load doesn't pull the default view back to midnight", () 
     themes: { darkMode: false },
     states: {
       ...BASE_CONFIG_ENTITY,
-      "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(dayStart) } },
+      ...configEntityWithForecast(buildForecast(dayStart)),
       ...deviceEntities("lave_linge", { name: "Lave-linge", active: false }),
     },
   };
@@ -591,7 +609,7 @@ test("stacked chart segments render at exact phase-boundary granularity, not a f
     themes: { darkMode: false },
     states: {
       ...BASE_CONFIG_ENTITY,
-      "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(dayStart) } },
+      ...configEntityWithForecast(buildForecast(dayStart)),
       ...deviceEntities("lave_vaisselle", {
         name: "Lave-vaisselle",
         start: slotStart,
@@ -634,7 +652,7 @@ test("a profile-based program's energy label sums its phases, not durationMin ti
     themes: { darkMode: false },
     states: {
       ...BASE_CONFIG_ENTITY,
-      "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(dayStart) } },
+      ...configEntityWithForecast(buildForecast(dayStart)),
       ...deviceEntities("lave_vaisselle", {
         name: "Lave-vaisselle",
         start: slotStart,
@@ -671,7 +689,7 @@ test("a short power spike renders at its true peak, not diluted by a bucket aver
     themes: { darkMode: false },
     states: {
       ...BASE_CONFIG_ENTITY,
-      "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(dayStart) } },
+      ...configEntityWithForecast(buildForecast(dayStart)),
       ...deviceEntities("lave_vaisselle", {
         name: "Lave-vaisselle",
         start: slotStart,
@@ -696,7 +714,7 @@ test("fixed loads get distinct colors, not a shared gray", () => {
     themes: { darkMode: false },
     states: {
       ...BASE_CONFIG_ENTITY,
-      "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(new Date()) } },
+      ...configEntityWithForecast(buildForecast(new Date())),
       ...deviceEntities("lave_linge", { name: "Lave-linge", active: false }),
     },
   };
@@ -794,7 +812,7 @@ test("stack order mirrors the gantt's top-to-bottom config order, not reversed",
     themes: { darkMode: false },
     states: {
       ...BASE_CONFIG_ENTITY,
-      "sensor.forecast": { state: "3", attributes: { detailedForecast: buildForecast(dayStart) } },
+      ...configEntityWithForecast(buildForecast(dayStart)),
       ...deviceEntities("a", { name: "A", start: slotStart, end: new Date(slotStart.getTime() + 60 * 60000), powerW: 500, coveragePct: 90 }),
       ...deviceEntities("b", { name: "B", start: slotStart, end: new Date(slotStart.getTime() + 60 * 60000), powerW: 800, coveragePct: 90 }),
     },
@@ -821,7 +839,7 @@ test("a forecast entity with P10/P90 percentiles renders a confidence band", () 
   const dayStart = new Date();
   dayStart.setHours(0, 0, 0, 0);
   const card = buildCard();
-  card._hass.states["sensor.forecast"] = { state: "3", attributes: { detailedForecast: buildForecast(dayStart, 3, true) } };
+  setForecastPoints(card, buildForecast(dayStart, 3, true));
   card._render();
   const html = card.shadowRoot.innerHTML;
   assert.ok(/<path d="M[^"]+Z" class="confidence-band"/.test(html), "expected a closed confidence-band path");
@@ -863,7 +881,7 @@ test("a full-day fixed load's tomorrow occurrence is deduped out of the table, u
 
   const card = buildCard();
   enableTomorrowForecast(card);
-  card._hass.states["sensor.forecast_tomorrow"] = { state: "3", attributes: { detailedForecast: buildForecast(tomorrowStart) } };
+  addForecastPoints(card, buildForecast(tomorrowStart));
   setFixedLoads(card, [
     { name: "Conso de base", start_time: "00:00", power_profile: [{ minutes: 1440, power_w: 110 }] },
     { name: "PAC", start_time: "14:00", power_profile: [{ minutes: 60, power_w: 1500 }] },

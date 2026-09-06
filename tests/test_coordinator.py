@@ -33,6 +33,8 @@ from custom_components.solar_planner_scheduler.const import (
     DEFAULT_IDLE_POWER_THRESHOLD,
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
+    FORECAST_PROVIDER_HELIOS,
+    FORECAST_PROVIDER_SOLCAST,
     NONE_PROGRAM,
 )
 from custom_components.solar_planner_scheduler.coordinator import (
@@ -47,6 +49,7 @@ from custom_components.solar_planner_scheduler.coordinator import (
     _migrate_legacy_state,
     _read_forecast_points,
     compute_locked,
+    detect_forecast_provider,
 )
 
 
@@ -98,9 +101,70 @@ async def test_read_forecast_points_handles_a_raw_datetime_period_start(hass):
         {"detailedForecast": [{"period_start": period_start, "pv_estimate": 1.5}]},
     )
 
-    points = _read_forecast_points(hass, "sensor.forecast")
+    points = _read_forecast_points(hass, "sensor.forecast", FORECAST_PROVIDER_SOLCAST)
 
-    assert points == [{"time": period_start, "w": 1500.0}]
+    assert points == [{"time": period_start, "w": 1500.0, "w10": 1500.0, "w90": 1500.0}]
+
+
+async def test_read_forecast_points_parses_helios_forecast_shape(hass):
+    """Helios Forecast's own shape, confirmed against its real source (forecast.py's
+    forecast_point_dict()): a "forecast" attribute (not "detailedForecast"), watts already in W
+    (not kW), keys "datetime"/"watts"/"p10"/"p90" (not "period_start"/"pv_estimate*").
+    """
+    point_time = datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)
+    hass.states.async_set(
+        "sensor.helios_power_now",
+        "1200",
+        {"forecast": [{"datetime": point_time.isoformat(), "watts": 1200.0, "p10": 900.0, "p90": 1500.0}]},
+    )
+
+    points = _read_forecast_points(hass, "sensor.helios_power_now", FORECAST_PROVIDER_HELIOS)
+
+    assert points == [{"time": point_time, "w": 1200.0, "w10": 900.0, "w90": 1500.0}]
+
+
+async def test_read_forecast_points_falls_back_to_solcast_for_unknown_provider(hass):
+    """An entry stored before CONF_FORECAST_PROVIDER existed has no value for it at all: the
+    dispatch must fall back to Solcast parsing, not raise or silently return nothing.
+    """
+    period_start = datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)
+    hass.states.async_set(
+        "sensor.forecast",
+        "3",
+        {"detailedForecast": [{"period_start": period_start, "pv_estimate": 1.5}]},
+    )
+
+    points = _read_forecast_points(hass, "sensor.forecast", "not_a_real_provider")
+
+    assert points == [{"time": period_start, "w": 1500.0, "w10": 1500.0, "w90": 1500.0}]
+
+
+async def test_detect_forecast_provider_recognizes_solcast_shape(hass):
+    hass.states.async_set("sensor.forecast", "3", {"detailedForecast": []})
+    assert detect_forecast_provider(hass.states.get("sensor.forecast")) == FORECAST_PROVIDER_SOLCAST
+
+
+async def test_detect_forecast_provider_recognizes_helios_shape(hass):
+    hass.states.async_set("sensor.helios_power_now", "1200", {"forecast": []})
+    assert detect_forecast_provider(hass.states.get("sensor.helios_power_now")) == FORECAST_PROVIDER_HELIOS
+
+
+async def test_detect_forecast_provider_returns_none_for_an_unrelated_entity(hass):
+    hass.states.async_set("sensor.unrelated", "42", {})
+    assert detect_forecast_provider(hass.states.get("sensor.unrelated")) is None
+
+
+def test_theoretical_forecast_points_carries_percentiles(hass):
+    """theoretical_forecast_points() must expose w10/w90 (not just w), ISO-serialized, for the
+    card's confidence band, not just whatever _async_update_data() last computed for scheduling.
+    """
+    coordinator = _coordinator(hass)
+    point_time = datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)
+    coordinator._theoretical_points = [{"time": point_time, "w": 1000.0, "w10": 700.0, "w90": 1300.0}]
+
+    assert coordinator.theoretical_forecast_points() == [
+        {"time": point_time.isoformat(), "w": 1000.0, "w10": 700.0, "w90": 1300.0}
+    ]
 
 
 # --- compute_locked() -------------------------------------------------------------------------

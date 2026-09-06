@@ -21,6 +21,7 @@ from .const import (
     CONF_DURATION_MIN,
     CONF_FIXED_LOADS,
     CONF_FORECAST_ENTITY,
+    CONF_FORECAST_PROVIDER,
     CONF_FORECAST_TOMORROW_ENTITY,
     CONF_IDLE_POWER_THRESHOLD,
     CONF_MAX_SIMULTANEOUS_POWER,
@@ -36,6 +37,8 @@ from .const import (
     DEFAULT_IDLE_POWER_THRESHOLD,
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
+    FORECAST_PROVIDER_HELIOS,
+    FORECAST_PROVIDER_SOLCAST,
     NONE_PROGRAM,
     WEEKDAYS,
 )
@@ -140,12 +143,7 @@ def _is_relevant_today(committed: dict | None, now: datetime) -> bool:
     return committed["start"].date() == now.date() or now < committed["end"]
 
 
-def _read_forecast_points(hass: HomeAssistant, entity_id: str | None) -> list[dict]:
-    if not entity_id:
-        return []
-    state = hass.states.get(entity_id)
-    if state is None:
-        return []
+def _parse_solcast_points(state) -> list[dict]:
     detailed = state.attributes.get("detailedForecast")
     if not isinstance(detailed, list):
         return []
@@ -158,10 +156,75 @@ def _read_forecast_points(hass: HomeAssistant, entity_id: str | None) -> list[di
                 period_start = dt_util.parse_datetime(period_start)
             if period_start is None:
                 continue
-            points.append({"time": period_start, "w": float(p.get("pv_estimate", 0)) * 1000})
+            w = float(p.get("pv_estimate", 0)) * 1000
+            points.append(
+                {
+                    "time": period_start,
+                    "w": w,
+                    "w10": float(p["pv_estimate10"]) * 1000 if p.get("pv_estimate10") is not None else w,
+                    "w90": float(p["pv_estimate90"]) * 1000 if p.get("pv_estimate90") is not None else w,
+                }
+            )
         except (KeyError, TypeError, ValueError):
             continue
-    return sorted(points, key=lambda pt: pt["time"])
+    return points
+
+
+def _parse_helios_points(state) -> list[dict]:
+    forecast = state.attributes.get("forecast")
+    if not isinstance(forecast, list):
+        return []
+    points = []
+    for p in forecast:
+        try:
+            raw_time = p["datetime"]
+            time = dt_util.parse_datetime(raw_time) if isinstance(raw_time, str) else raw_time
+            if time is None:
+                continue
+            w = float(p.get("watts", 0))
+            points.append(
+                {
+                    "time": time,
+                    "w": w,
+                    "w10": float(p["p10"]) if p.get("p10") is not None else w,
+                    "w90": float(p["p90"]) if p.get("p90") is not None else w,
+                }
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return points
+
+
+_FORECAST_PARSERS = {
+    FORECAST_PROVIDER_SOLCAST: _parse_solcast_points,
+    FORECAST_PROVIDER_HELIOS: _parse_helios_points,
+}
+
+
+def detect_forecast_provider(state) -> str | None:
+    """Which known provider's shape a forecast entity's live state matches, or None if neither.
+
+    Used by config_flow.py to fill CONF_FORECAST_PROVIDER from the chosen entity itself, instead
+    of asking the user to pick it explicitly.
+    """
+    if isinstance(state.attributes.get("detailedForecast"), list):
+        return FORECAST_PROVIDER_SOLCAST
+    if isinstance(state.attributes.get("forecast"), list):
+        return FORECAST_PROVIDER_HELIOS
+    return None
+
+
+def _read_forecast_points(hass: HomeAssistant, entity_id: str | None, provider: str) -> list[dict]:
+    if not entity_id:
+        return []
+    state = hass.states.get(entity_id)
+    if state is None:
+        return []
+    parser = _FORECAST_PARSERS.get(provider)
+    if parser is None:
+        _LOGGER.warning("Unknown forecast provider %r, falling back to Solcast parsing", provider)
+        parser = _parse_solcast_points
+    return sorted(parser(state), key=lambda pt: pt["time"])
 
 
 def _ceil_to_five_minutes(dt: datetime) -> datetime:
@@ -217,10 +280,21 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         # Recomputed every _async_update_data() cycle, never persisted — same "always derived,
         # never stale-cached across restarts" choice as `results` itself.
         self._fixed_load_costs: dict[str, float] = {}
+        # Today+tomorrow forecast curve, normalized regardless of provider, for the card's
+        # confidence band. Initialized empty so theoretical_forecast_points() is safe to call
+        # before the first successful _async_update_data().
+        self._theoretical_points: list[dict] = []
 
     def fixed_load_cost(self, name: str) -> float | None:
         """€ cost of a fixed load's daily window, or None if tariff tracking is off."""
         return self._fixed_load_costs.get(name)
+
+    def theoretical_forecast_points(self) -> list[dict]:
+        """Today+tomorrow forecast curve (time/w/w10/w90), normalized regardless of provider."""
+        return [
+            {"time": pt["time"].isoformat(), "w": pt["w"], "w10": pt["w10"], "w90": pt["w90"]}
+            for pt in self._theoretical_points
+        ]
 
     def diagnostics_snapshot(self) -> dict:
         """Everything diagnostics.py exposes: the persisted Store plus the last update's outcome."""
@@ -622,9 +696,11 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         data = self.entry.data
         options = self.entry.options
 
-        points = _read_forecast_points(self.hass, data.get(CONF_FORECAST_ENTITY))
-        tomorrow_points = _read_forecast_points(self.hass, data.get(CONF_FORECAST_TOMORROW_ENTITY))
+        provider = data.get(CONF_FORECAST_PROVIDER, FORECAST_PROVIDER_SOLCAST)
+        points = _read_forecast_points(self.hass, data.get(CONF_FORECAST_ENTITY), provider)
+        tomorrow_points = _read_forecast_points(self.hass, data.get(CONF_FORECAST_TOMORROW_ENTITY), provider)
         points = sorted(points + tomorrow_points, key=lambda pt: pt["time"])
+        self._theoretical_points = points
 
         now = dt_util.now()
         # No live background-consumption estimate: only declared consumers are deducted.

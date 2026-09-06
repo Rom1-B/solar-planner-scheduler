@@ -4,6 +4,10 @@ DOMAIN = "solar_planner_scheduler"
 
 CONF_FORECAST_ENTITY = "forecast_entity"
 CONF_FORECAST_TOMORROW_ENTITY = "forecast_tomorrow_entity"
+CONF_FORECAST_PROVIDER = "forecast_provider"
+FORECAST_PROVIDER_SOLCAST = "solcast"
+FORECAST_PROVIDER_HELIOS = "helios_forecast"
+FORECAST_PROVIDERS = [FORECAST_PROVIDER_SOLCAST, FORECAST_PROVIDER_HELIOS]
 CONF_PRODUCTION_ENTITY = "production_entity"
 CONF_CONSUMPTION_ENTITY = "consumption_entity"
 CONF_MAX_SIMULTANEOUS_POWER = "max_simultaneous_power"

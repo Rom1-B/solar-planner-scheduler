@@ -4,13 +4,20 @@
       "user": {
         "title": "Solar Planner Scheduler",
         "data": {
-          "forecast_entity": "Entité de prévision (ex. Solcast aujourd'hui)",
+          "forecast_entity": "Entité de prévision",
           "forecast_tomorrow_entity": "Entité de prévision pour demain (optionnel)",
           "production_entity": "Entité de production solaire (optionnel)",
           "consumption_entity": "Entité de consommation de la maison (optionnel)",
           "max_simultaneous_power": "Puissance simultanée max (W)"
+        },
+        "data_description": {
+          "forecast_entity": "Ex. l'entité \"aujourd'hui\" de Solcast, ou le capteur de puissance de Helios Forecast.",
+          "forecast_tomorrow_entity": "Solcast uniquement. Helios Forecast couvre déjà plusieurs jours dans une seule entité."
         }
       }
+    },
+    "error": {
+      "forecast_entity_not_ready": "Cette entité ne ressemble pas encore à une entité Solcast ou Helios Forecast. Vérifiez qu'elle a déjà de vraies données, puis réessayez."
     }
   },
   "options": {
@@ -57,20 +64,26 @@
       "edit_base": {
         "title": "Paramètres de base",
         "data": {
-          "forecast_entity": "Entité de prévision (ex. Solcast aujourd'hui)",
+          "forecast_entity": "Entité de prévision",
           "forecast_tomorrow_entity": "Entité de prévision pour demain (optionnel)",
           "production_entity": "Entité de production solaire (optionnel)",
           "consumption_entity": "Entité de consommation de la maison (optionnel)",
           "max_simultaneous_power": "Puissance simultanée max (W)"
+        },
+        "data_description": {
+          "forecast_entity": "Ex. l'entité \"aujourd'hui\" de Solcast, ou le capteur de puissance de Helios Forecast.",
+          "forecast_tomorrow_entity": "Solcast uniquement. Helios Forecast couvre déjà plusieurs jours dans une seule entité."
         }
       },
       "edit_tariff": {
         "title": "Configurer les tarifs",
-        "description": "Une plage par ligne : `HH:MM@prix`, ex. `22:00@0.1589`.",
         "data": {
           "price_tracking_enabled": "Activer le suivi tarifaire",
           "subscription_price_monthly": "Prix d'abonnement mensuel",
           "tariff_bands_text": "Plages de prix (kWh)"
+        },
+        "data_description": {
+          "tariff_bands_text": "Une plage par ligne : `HH:MM@prix`, ex. `22:00@0.1589`."
         }
       },
       "add_device": {
@@ -97,8 +110,11 @@
       },
       "add_program_phases": {
         "title": "Phases du programme",
-        "description": "Une phase par ligne : `20min@150W` ou `1.5h@150W`. Cochez les jours de planification auto.",
-        "data": { "phases": "Phases", "auto_days": "Planification auto le" }
+        "data": { "phases": "Phases", "auto_days": "Planification auto le" },
+        "data_description": {
+          "phases": "Une phase par ligne : `20min@150W` ou `1.5h@150W`.",
+          "auto_days": "Cochez les jours de planification auto."
+        }
       },
       "edit_program": {
         "title": "Modifier un programme",
@@ -107,8 +123,11 @@
       },
       "edit_program_phases": {
         "title": "Phases du programme",
-        "description": "Une phase par ligne : `20min@150W` ou `1.5h@150W`. Remplace toute la liste. Cochez les jours de planification auto.",
-        "data": { "phases": "Phases", "auto_days": "Planification auto le" }
+        "data": { "phases": "Phases", "auto_days": "Planification auto le" },
+        "data_description": {
+          "phases": "Une phase par ligne : `20min@150W` ou `1.5h@150W`. Remplace toute la liste.",
+          "auto_days": "Cochez les jours de planification auto."
+        }
       },
       "remove_program": {
         "title": "Supprimer un programme",
@@ -125,8 +144,10 @@
       },
       "add_fixed_load_phases": {
         "title": "Phases de la charge fixe",
-        "description": "Une phase par ligne : `20min@150W` ou `1.5h@150W`.",
-        "data": { "phases": "Phases" }
+        "data": { "phases": "Phases" },
+        "data_description": {
+          "phases": "Une phase par ligne : `20min@150W` ou `1.5h@150W`."
+        }
       },
       "edit_fixed_load": {
         "title": "Modifier une charge fixe",
@@ -135,8 +156,10 @@
       },
       "edit_fixed_load_phases": {
         "title": "Phases de la charge fixe",
-        "description": "Une phase par ligne : `20min@150W` ou `1.5h@150W`. Remplace toute la liste.",
-        "data": { "phases": "Phases" }
+        "data": { "phases": "Phases" },
+        "data_description": {
+          "phases": "Une phase par ligne : `20min@150W` ou `1.5h@150W`. Remplace toute la liste."
+        }
       },
       "remove_fixed_load": {
         "title": "Supprimer une charge fixe",
@@ -155,7 +178,8 @@
       "invalid_phase_line": "Chaque ligne doit ressembler à `20min@150W` ou `1.5h@150W`.",
       "empty_phases": "Entrez au moins une phase.",
       "invalid_tariff_line": "Chaque ligne doit ressembler à `22:00@0.1589` (HH:MM@prix).",
-      "empty_tariff_bands": "Entrez au moins une plage de prix."
+      "empty_tariff_bands": "Entrez au moins une plage de prix.",
+      "forecast_entity_not_ready": "Cette entité ne ressemble pas encore à une entité Solcast ou Helios Forecast. Vérifiez qu'elle a déjà de vraies données, puis réessayez."
     }
   },
   "issues": {

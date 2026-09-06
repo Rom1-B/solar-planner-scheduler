@@ -9,8 +9,10 @@ cheapest, solar or off-peak grid).
 
 ## Requirements
 
-A solar forecast entity already set up in Home Assistant (e.g.
-[Solcast](https://github.com/BJReplay/ha-solcast-solar)).
+A solar forecast entity already set up in Home Assistant, from a supported provider:
+[Solcast](https://github.com/BJReplay/ha-solcast-solar) or
+[Helios Forecast](https://github.com/ReikanYsora/Helios-Forecast). Pick the matching provider in
+the integration's base settings.
 
 ## Installation
 

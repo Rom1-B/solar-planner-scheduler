@@ -4,13 +4,20 @@
       "user": {
         "title": "Solar Planner Scheduler",
         "data": {
-          "forecast_entity": "Forecast entity (e.g. Solcast today)",
+          "forecast_entity": "Forecast entity",
           "forecast_tomorrow_entity": "Forecast entity for tomorrow (optional)",
           "production_entity": "Solar production entity (optional)",
           "consumption_entity": "House consumption entity (optional)",
           "max_simultaneous_power": "Max simultaneous power (W)"
+        },
+        "data_description": {
+          "forecast_entity": "E.g. Solcast's today entity, or Helios Forecast's power sensor.",
+          "forecast_tomorrow_entity": "Solcast only. Helios Forecast already covers several days in one entity."
         }
       }
+    },
+    "error": {
+      "forecast_entity_not_ready": "This entity doesn't look like a Solcast or Helios Forecast entity yet. Make sure it already has real data, then try again."
     }
   },
   "options": {
@@ -57,20 +64,26 @@
       "edit_base": {
         "title": "Base settings",
         "data": {
-          "forecast_entity": "Forecast entity (e.g. Solcast today)",
+          "forecast_entity": "Forecast entity",
           "forecast_tomorrow_entity": "Forecast entity for tomorrow (optional)",
           "production_entity": "Solar production entity (optional)",
           "consumption_entity": "House consumption entity (optional)",
           "max_simultaneous_power": "Max simultaneous power (W)"
+        },
+        "data_description": {
+          "forecast_entity": "E.g. Solcast's today entity, or Helios Forecast's power sensor.",
+          "forecast_tomorrow_entity": "Solcast only. Helios Forecast already covers several days in one entity."
         }
       },
       "edit_tariff": {
         "title": "Configure tariffs",
-        "description": "One band per line: `HH:MM@price`, e.g. `22:00@0.1589`.",
         "data": {
           "price_tracking_enabled": "Enable tariff tracking",
           "subscription_price_monthly": "Monthly subscription price",
           "tariff_bands_text": "Price bands (kWh)"
+        },
+        "data_description": {
+          "tariff_bands_text": "One band per line: `HH:MM@price`, e.g. `22:00@0.1589`."
         }
       },
       "add_device": {
@@ -97,8 +110,11 @@
       },
       "add_program_phases": {
         "title": "Program phases",
-        "description": "One phase per line: `20min@150W` or `1.5h@150W`. Check days for auto-scheduling.",
-        "data": { "phases": "Phases", "auto_days": "Auto-schedule on" }
+        "data": { "phases": "Phases", "auto_days": "Auto-schedule on" },
+        "data_description": {
+          "phases": "One phase per line: `20min@150W` or `1.5h@150W`.",
+          "auto_days": "Check days for auto-scheduling."
+        }
       },
       "edit_program": {
         "title": "Edit a program",
@@ -107,8 +123,11 @@
       },
       "edit_program_phases": {
         "title": "Program phases",
-        "description": "One phase per line: `20min@150W` or `1.5h@150W`. Replaces the whole list. Check days for auto-scheduling.",
-        "data": { "phases": "Phases", "auto_days": "Auto-schedule on" }
+        "data": { "phases": "Phases", "auto_days": "Auto-schedule on" },
+        "data_description": {
+          "phases": "One phase per line: `20min@150W` or `1.5h@150W`. Replaces the whole list.",
+          "auto_days": "Check days for auto-scheduling."
+        }
       },
       "remove_program": {
         "title": "Remove a program",
@@ -125,8 +144,10 @@
       },
       "add_fixed_load_phases": {
         "title": "Fixed load phases",
-        "description": "One phase per line: `20min@150W` or `1.5h@150W`.",
-        "data": { "phases": "Phases" }
+        "data": { "phases": "Phases" },
+        "data_description": {
+          "phases": "One phase per line: `20min@150W` or `1.5h@150W`."
+        }
       },
       "edit_fixed_load": {
         "title": "Edit a fixed load",
@@ -135,8 +156,10 @@
       },
       "edit_fixed_load_phases": {
         "title": "Fixed load phases",
-        "description": "One phase per line: `20min@150W` or `1.5h@150W`. Replaces the whole list.",
-        "data": { "phases": "Phases" }
+        "data": { "phases": "Phases" },
+        "data_description": {
+          "phases": "One phase per line: `20min@150W` or `1.5h@150W`. Replaces the whole list."
+        }
       },
       "remove_fixed_load": {
         "title": "Remove a fixed load",
@@ -155,7 +178,8 @@
       "invalid_phase_line": "Each line must look like `20min@150W` or `1.5h@150W`.",
       "empty_phases": "Enter at least one phase.",
       "invalid_tariff_line": "Each line must look like `22:00@0.1589` (HH:MM@price).",
-      "empty_tariff_bands": "Enter at least one price band."
+      "empty_tariff_bands": "Enter at least one price band.",
+      "forecast_entity_not_ready": "This entity doesn't look like a Solcast or Helios Forecast entity yet. Make sure it already has real data, then try again."
     }
   },
   "issues": {

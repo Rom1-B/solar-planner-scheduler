@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.solar_planner_scheduler.const import (
@@ -89,3 +91,12 @@ async def test_base_config_sensor_fixed_load_cost_is_none_when_tracking_disabled
     fixed_load = sensor.extra_state_attributes["fixed_loads"][0]
     assert fixed_load["estimated_cost"] is None
     assert fixed_load["currency"] is None
+
+
+async def test_base_config_sensor_exposes_theoretical_forecast(hass):
+    sensor, coordinator = _set_up_base_config_sensor(hass)
+    coordinator._theoretical_points = [{"time": datetime(2026, 8, 30, 10, tzinfo=timezone.utc), "w": 1000.0, "w10": 700.0, "w90": 1300.0}]
+
+    assert sensor.extra_state_attributes["theoretical_forecast"] == [
+        {"time": "2026-08-30T10:00:00+00:00", "w": 1000.0, "w10": 700.0, "w90": 1300.0}
+    ]

@@ -368,25 +368,14 @@ class SolarPlannerCard extends HTMLElement {
     this._requestRender();
   }
 
+  // Server-normalized regardless of forecast provider (Solcast, Helios Forecast, ...): the card
+  // never needs to know a provider's raw attribute shape, see coordinator.py's
+  // theoretical_forecast_points().
   _theoreticalPoints() {
-    const base = this._baseConfig();
-    const state = this._hass.states[base.forecast_entity];
-    const detailed = state?.attributes?.detailedForecast;
-    if (!Array.isArray(detailed)) return null;
-    const tomorrowState = base.forecast_tomorrow_entity ? this._hass.states[base.forecast_tomorrow_entity] : null;
-    const tomorrowDetailed = Array.isArray(tomorrowState?.attributes?.detailedForecast) ? tomorrowState.attributes.detailedForecast : [];
-    // w10/w90 default to w: no percentiles collapses the confidence band instead of misleading.
-    return [...detailed, ...tomorrowDetailed]
-      .map((p) => {
-        const w = (p.pv_estimate || 0) * 1000;
-        return {
-          time: new Date(p.period_start),
-          w,
-          w10: p.pv_estimate10 != null ? p.pv_estimate10 * 1000 : w,
-          w90: p.pv_estimate90 != null ? p.pv_estimate90 * 1000 : w,
-        };
-      })
-      .sort((a, b) => a.time - b.time);
+    const configState = this._hass.states["sensor.solar_planner_scheduler_config"];
+    const points = configState?.attributes?.theoretical_forecast;
+    if (!Array.isArray(points)) return null;
+    return points.map((p) => ({ time: new Date(p.time), w: p.w, w10: p.w10, w90: p.w90 })).sort((a, b) => a.time - b.time);
   }
 
   // days: offsets from today, e.g. [0, 1] for today + tomorrow.
@@ -478,7 +467,7 @@ class SolarPlannerCard extends HTMLElement {
 
     if (!points) {
       this.shadowRoot.innerHTML = `<ha-card><div style="padding:16px;color:var(--error-color)">
-        Entity ${base.forecast_entity} doesn't expose a "detailedForecast" attribute (Solcast required).
+        "sensor.solar_planner_scheduler_config" doesn't expose a "theoretical_forecast" attribute yet.
       </div></ha-card>`;
       return;
     }

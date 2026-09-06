@@ -90,6 +90,7 @@ class BaseConfigSensor(CoordinatorEntity[SolarPlannerSchedulerCoordinator], Sens
             "consumption_entity": data.get(CONF_CONSUMPTION_ENTITY),
             "fixed_loads": fixed_loads,
             "devices": devices,
+            "theoretical_forecast": self.coordinator.theoretical_forecast_points(),
         }
 
 
