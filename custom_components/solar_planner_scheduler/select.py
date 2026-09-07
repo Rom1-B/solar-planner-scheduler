@@ -1,0 +1,53 @@
+"""Select platform - which forecast provider (Solcast, Helios Forecast, ...) drives scheduling.
+
+Global to the entry, not per-device: the active source lives in the coordinator's own store, not
+entry.data, so switching it never reloads the whole integration (same reasoning as
+switch.<device>_<program>_active).
+"""
+
+from __future__ import annotations
+
+from homeassistant.components.select import SelectEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+from .const import DOMAIN
+from .coordinator import SolarPlannerSchedulerCoordinator, resolve_forecast_sources
+
+_PROVIDER_LABELS = {"solcast": "Solcast", "helios_forecast": "Helios Forecast"}
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
+    coordinator: SolarPlannerSchedulerCoordinator = hass.data[DOMAIN][entry.entry_id]
+    async_add_entities([ForecastSourceSelect(coordinator, entry)])
+
+
+class ForecastSourceSelect(CoordinatorEntity[SolarPlannerSchedulerCoordinator], SelectEntity):
+    """Which configured forecast provider is currently active for scheduling."""
+
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: SolarPlannerSchedulerCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_forecast_source"
+        self._attr_name = "Solar Planner Scheduler forecast source"
+
+    @property
+    def options(self) -> list[str]:
+        resolved = resolve_forecast_sources(self._entry.data)
+        return [_PROVIDER_LABELS.get(p, p) for p in resolved]
+
+    @property
+    def current_option(self) -> str | None:
+        resolved = resolve_forecast_sources(self._entry.data)
+        active = self.coordinator.active_forecast_source()
+        if active not in resolved:
+            active = next(iter(resolved), None)
+        return _PROVIDER_LABELS.get(active, active) if active else None
+
+    async def async_select_option(self, option: str) -> None:
+        provider = next((p for p, label in _PROVIDER_LABELS.items() if label == option), option)
+        await self.coordinator.async_set_forecast_source(provider)

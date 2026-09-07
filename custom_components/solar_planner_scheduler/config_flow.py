@@ -12,7 +12,7 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
@@ -20,9 +20,8 @@ from .const import (
     CONF_CONSUMPTION_ENTITY,
     CONF_DEVICES,
     CONF_FIXED_LOADS,
-    CONF_FORECAST_ENTITY,
-    CONF_FORECAST_PROVIDER,
-    CONF_FORECAST_TOMORROW_ENTITY,
+    CONF_FORECAST_ENTITIES_HELIOS,
+    CONF_FORECAST_ENTITIES_SOLCAST,
     CONF_MAX_SIMULTANEOUS_POWER,
     CONF_MINUTES,
     CONF_NAME,
@@ -39,29 +38,40 @@ from .const import (
     DOMAIN,
     WEEKDAYS,
 )
-from .coordinator import detect_forecast_provider
 
 
 def _base_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     # suggested_value, not default=: a plain default="" fails the selector's own validation
     # (neither a valid entity ID nor UUID) whenever the field is left blank.
     defaults = defaults or {}
-    # device_class filters a picker's suggestions only, not a validation constraint.
-    # A list, not a single value: Solcast's forecast entity reports "energy", Helios Forecast's
-    # reports "power". A future provider with a different device_class just extends this list.
-    forecast_sensor = selector.EntitySelector(
-        selector.EntitySelectorConfig(domain="sensor", device_class=["energy", "power"])
+    # device_class/integration filter a picker's suggestions only, not a validation constraint.
+    # integration narrows to that provider's own entities specifically (confirmed against the real
+    # instance: domains "solcast_solar"/"helios_forecast") — device_class alone would suggest every
+    # energy/power sensor in the house, not just the forecast ones. Solcast can expose several
+    # forecast entities (today, tomorrow, day 3, ...) at once, hence multiple=True; Helios Forecast
+    # only ever has one, hence a plain single-entity selector.
+    # No generic "other provider" fallback field: detect_forecast_provider() only ever recognizes
+    # these two shapes, so a third-provider entity could never pass that validation anyway — a
+    # field that can never actually be submitted successfully isn't a real fallback.
+    solcast_sensor = selector.EntitySelector(
+        selector.EntitySelectorConfig(
+            domain="sensor", device_class="energy", integration="solcast_solar", multiple=True
+        )
+    )
+    helios_sensor = selector.EntitySelector(
+        selector.EntitySelectorConfig(domain="sensor", device_class="power", integration="helios_forecast")
     )
     power_sensor = selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="power"))
     return vol.Schema(
         {
-            vol.Required(
-                CONF_FORECAST_ENTITY, description={"suggested_value": defaults.get(CONF_FORECAST_ENTITY)}
-            ): forecast_sensor,
             vol.Optional(
-                CONF_FORECAST_TOMORROW_ENTITY,
-                description={"suggested_value": defaults.get(CONF_FORECAST_TOMORROW_ENTITY)},
-            ): forecast_sensor,
+                CONF_FORECAST_ENTITIES_SOLCAST,
+                description={"suggested_value": defaults.get(CONF_FORECAST_ENTITIES_SOLCAST)},
+            ): solcast_sensor,
+            vol.Optional(
+                CONF_FORECAST_ENTITIES_HELIOS,
+                description={"suggested_value": defaults.get(CONF_FORECAST_ENTITIES_HELIOS)},
+            ): helios_sensor,
             vol.Optional(
                 CONF_PRODUCTION_ENTITY, description={"suggested_value": defaults.get(CONF_PRODUCTION_ENTITY)}
             ): power_sensor,
@@ -74,14 +84,6 @@ def _base_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
             ): vol.Coerce(int),
         }
     )
-
-
-def _detect_provider_or_none(hass: HomeAssistant, entity_id: str) -> str | None:
-    """CONF_FORECAST_PROVIDER, guessed from the chosen entity's own live state, so the user never
-    has to pick it explicitly. None if the entity has no state yet, or matches neither provider.
-    """
-    state = hass.states.get(entity_id)
-    return detect_forecast_provider(state) if state else None
 
 
 def _device_schema() -> vol.Schema:
@@ -225,16 +227,9 @@ class SolarPlannerSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
-            provider = _detect_provider_or_none(self.hass, user_input[CONF_FORECAST_ENTITY])
-            if provider is None:
-                return self.async_show_form(
-                    step_id="user",
-                    data_schema=_base_schema(user_input),
-                    errors={CONF_FORECAST_ENTITY: "forecast_entity_not_ready"},
-                )
             return self.async_create_entry(
                 title="Solar Planner Scheduler",
-                data={**user_input, CONF_FORECAST_PROVIDER: provider},
+                data=dict(user_input),
                 options={CONF_DEVICES: [], CONF_FIXED_LOADS: []},
             )
         return self.async_show_form(step_id="user", data_schema=_base_schema())
@@ -272,15 +267,11 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_edit_base(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
-            provider = _detect_provider_or_none(self.hass, user_input[CONF_FORECAST_ENTITY])
-            if provider is None:
-                return self.async_show_form(
-                    step_id="edit_base",
-                    data_schema=_base_schema(user_input),
-                    errors={CONF_FORECAST_ENTITY: "forecast_entity_not_ready"},
-                )
-            # Merged, not replaced: entry.data also holds the tariff fields from async_step_edit_tariff.
-            new_data = {**self.config_entry.data, **user_input, CONF_FORECAST_PROVIDER: provider}
+            # Merged, not replaced: entry.data also holds the tariff fields from async_step_edit_tariff,
+            # and any legacy forecast_entity/forecast_tomorrow_entity/forecast_provider from an entry
+            # installed before the dedicated per-provider fields existed (no longer in this form, but
+            # resolve_forecast_sources() still falls back to them, so they must not be dropped here).
+            new_data = {**self.config_entry.data, **user_input}
             self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
             return await self.async_step_init()
         return self.async_show_form(step_id="edit_base", data_schema=_base_schema(self.config_entry.data))

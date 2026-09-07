@@ -20,6 +20,8 @@ from .const import (
     CONF_DEVICES,
     CONF_DURATION_MIN,
     CONF_FIXED_LOADS,
+    CONF_FORECAST_ENTITIES_HELIOS,
+    CONF_FORECAST_ENTITIES_SOLCAST,
     CONF_FORECAST_ENTITY,
     CONF_FORECAST_PROVIDER,
     CONF_FORECAST_TOMORROW_ENTITY,
@@ -201,19 +203,6 @@ _FORECAST_PARSERS = {
 }
 
 
-def detect_forecast_provider(state) -> str | None:
-    """Which known provider's shape a forecast entity's live state matches, or None if neither.
-
-    Used by config_flow.py to fill CONF_FORECAST_PROVIDER from the chosen entity itself, instead
-    of asking the user to pick it explicitly.
-    """
-    if isinstance(state.attributes.get("detailedForecast"), list):
-        return FORECAST_PROVIDER_SOLCAST
-    if isinstance(state.attributes.get("forecast"), list):
-        return FORECAST_PROVIDER_HELIOS
-    return None
-
-
 def _read_forecast_points(hass: HomeAssistant, entity_id: str | None, provider: str) -> list[dict]:
     if not entity_id:
         return []
@@ -225,6 +214,30 @@ def _read_forecast_points(hass: HomeAssistant, entity_id: str | None, provider: 
         _LOGGER.warning("Unknown forecast provider %r, falling back to Solcast parsing", provider)
         parser = _parse_solcast_points
     return sorted(parser(state), key=lambda pt: pt["time"])
+
+
+def resolve_forecast_sources(data: dict) -> dict[str, list[str]]:
+    """Configured forecast providers, resolved from the dedicated per-provider fields (no
+    detection needed: the field itself says which provider its entities belong to):
+    {provider: [entity_id, ...]}. Solcast can carry several entities (today, tomorrow, day 3, ...)
+    via its multi-select field; Helios only ever has one (a plain single-entity field), repacked
+    into a one-element list here so the rest of the code (_async_update_data) treats both
+    providers uniformly. Falls back to the legacy single-entity field (CONF_FORECAST_ENTITY) for
+    an entry installed before these per-provider fields existed.
+    """
+    result: dict[str, list[str]] = {}
+    solcast_ids = data.get(CONF_FORECAST_ENTITIES_SOLCAST) or []
+    if solcast_ids:
+        result[FORECAST_PROVIDER_SOLCAST] = solcast_ids
+    helios_entity = data.get(CONF_FORECAST_ENTITIES_HELIOS)
+    if helios_entity:
+        result[FORECAST_PROVIDER_HELIOS] = [helios_entity]
+    if not result and data.get(CONF_FORECAST_ENTITY):
+        legacy_provider = data.get(CONF_FORECAST_PROVIDER, FORECAST_PROVIDER_SOLCAST)
+        result[legacy_provider] = [
+            e for e in [data.get(CONF_FORECAST_ENTITY), data.get(CONF_FORECAST_TOMORROW_ENTITY)] if e
+        ]
+    return result
 
 
 def _ceil_to_five_minutes(dt: datetime) -> datetime:
@@ -295,6 +308,20 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             {"time": pt["time"].isoformat(), "w": pt["w"], "w10": pt["w10"], "w90": pt["w90"]}
             for pt in self._theoretical_points
         ]
+
+    def active_forecast_source(self) -> str | None:
+        """Provider chosen via select.<entry>_forecast_source, or None if never chosen — the
+        caller then falls back to the first provider resolve_forecast_sources() finds. A global
+        choice for the entry, not nested under a device/program, hence a top-level Store key."""
+        return self._state.get("forecast_source")
+
+    async def async_set_forecast_source(self, provider: str) -> None:
+        """Stored in the coordinator's own Store, not entry.data: switching source must never
+        trigger the full entry reload an options/data change causes (same reasoning already
+        documented for switch.<device>_<program>_active)."""
+        self._state["forecast_source"] = provider
+        await self._store.async_save(self._state)
+        await self.async_request_refresh()
 
     def diagnostics_snapshot(self) -> dict:
         """Everything diagnostics.py exposes: the persisted Store plus the last update's outcome."""
@@ -696,10 +723,17 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         data = self.entry.data
         options = self.entry.options
 
-        provider = data.get(CONF_FORECAST_PROVIDER, FORECAST_PROVIDER_SOLCAST)
-        points = _read_forecast_points(self.hass, data.get(CONF_FORECAST_ENTITY), provider)
-        tomorrow_points = _read_forecast_points(self.hass, data.get(CONF_FORECAST_TOMORROW_ENTITY), provider)
-        points = sorted(points + tomorrow_points, key=lambda pt: pt["time"])
+        resolved_sources = resolve_forecast_sources(data)
+        active_source = self.active_forecast_source()
+        if active_source not in resolved_sources:
+            active_source = next(iter(resolved_sources), None)
+        if active_source:
+            points = []
+            for entity_id in resolved_sources[active_source]:
+                points += _read_forecast_points(self.hass, entity_id, active_source)
+            points = sorted(points, key=lambda pt: pt["time"])
+        else:
+            points = []
         self._theoretical_points = points
 
         now = dt_util.now()

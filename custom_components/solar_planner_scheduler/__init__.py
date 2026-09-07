@@ -18,13 +18,13 @@ if TYPE_CHECKING:
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
-PLATFORMS = ["sensor", "binary_sensor", "switch", "datetime"]
+PLATFORMS = ["sensor", "binary_sensor", "switch", "datetime", "select"]
 
 CARD_URL_BASE = f"/{DOMAIN}_files"
 CARD_FILENAME = "solar-planner-card.js"
 # Bump manually whenever solar-planner-card.js changes, so the Lovelace resource URL's
 # cache-busting query string actually changes and browsers don't keep serving a stale copy.
-CARD_VERSION = "31"
+CARD_VERSION = "33"
 
 
 async def async_setup(hass: "HomeAssistant", config: dict) -> bool:

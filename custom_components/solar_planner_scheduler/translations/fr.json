@@ -4,20 +4,17 @@
       "user": {
         "title": "Solar Planner Scheduler",
         "data": {
-          "forecast_entity": "Entité de prévision",
-          "forecast_tomorrow_entity": "Entité de prévision pour demain (optionnel)",
+          "forecast_entities_solcast": "Entités Solcast (optionnel)",
+          "forecast_entities_helios": "Entité Helios Forecast (optionnel)",
           "production_entity": "Entité de production solaire (optionnel)",
           "consumption_entity": "Entité de consommation de la maison (optionnel)",
           "max_simultaneous_power": "Puissance simultanée max (W)"
         },
         "data_description": {
-          "forecast_entity": "Ex. l'entité \"aujourd'hui\" de Solcast, ou le capteur de puissance de Helios Forecast.",
-          "forecast_tomorrow_entity": "Solcast uniquement. Helios Forecast couvre déjà plusieurs jours dans une seule entité."
+          "forecast_entities_solcast": "Sélectionnez l'entité \"aujourd'hui\" et toute autre entité de prévision Solcast que vous avez activée (demain, jour 3, ...).",
+          "forecast_entities_helios": "Le capteur de puissance de Helios Forecast."
         }
       }
-    },
-    "error": {
-      "forecast_entity_not_ready": "Cette entité ne ressemble pas encore à une entité Solcast ou Helios Forecast. Vérifiez qu'elle a déjà de vraies données, puis réessayez."
     }
   },
   "options": {
@@ -64,15 +61,15 @@
       "edit_base": {
         "title": "Paramètres de base",
         "data": {
-          "forecast_entity": "Entité de prévision",
-          "forecast_tomorrow_entity": "Entité de prévision pour demain (optionnel)",
+          "forecast_entities_solcast": "Entités Solcast (optionnel)",
+          "forecast_entities_helios": "Entité Helios Forecast (optionnel)",
           "production_entity": "Entité de production solaire (optionnel)",
           "consumption_entity": "Entité de consommation de la maison (optionnel)",
           "max_simultaneous_power": "Puissance simultanée max (W)"
         },
         "data_description": {
-          "forecast_entity": "Ex. l'entité \"aujourd'hui\" de Solcast, ou le capteur de puissance de Helios Forecast.",
-          "forecast_tomorrow_entity": "Solcast uniquement. Helios Forecast couvre déjà plusieurs jours dans une seule entité."
+          "forecast_entities_solcast": "Sélectionnez l'entité \"aujourd'hui\" et toute autre entité de prévision Solcast que vous avez activée (demain, jour 3, ...).",
+          "forecast_entities_helios": "Le capteur de puissance de Helios Forecast."
         }
       },
       "edit_tariff": {
@@ -178,8 +175,7 @@
       "invalid_phase_line": "Chaque ligne doit ressembler à `20min@150W` ou `1.5h@150W`.",
       "empty_phases": "Entrez au moins une phase.",
       "invalid_tariff_line": "Chaque ligne doit ressembler à `22:00@0.1589` (HH:MM@prix).",
-      "empty_tariff_bands": "Entrez au moins une plage de prix.",
-      "forecast_entity_not_ready": "Cette entité ne ressemble pas encore à une entité Solcast ou Helios Forecast. Vérifiez qu'elle a déjà de vraies données, puis réessayez."
+      "empty_tariff_bands": "Entrez au moins une plage de prix."
     }
   },
   "issues": {

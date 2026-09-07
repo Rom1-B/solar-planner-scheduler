@@ -8,12 +8,16 @@ from unittest.mock import patch
 from homeassistant.core import is_callback
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.solar_planner_scheduler import async_setup_entry
+from custom_components.solar_planner_scheduler import PLATFORMS, async_setup_entry
 from custom_components.solar_planner_scheduler.const import (
     CONF_FORECAST_ENTITY,
     CONF_MAX_SIMULTANEOUS_POWER,
     DOMAIN,
 )
+
+
+def test_select_platform_is_registered():
+    assert "select" in PLATFORMS
 
 
 async def test_the_per_minute_refresh_timer_is_a_real_hass_callback(hass):

@@ -301,7 +301,12 @@ class SolarPlannerCard extends HTMLElement {
   // Excludes fast-ticking entities that would wipe focus/hover for no visible change.
   _relevantSignature() {
     const base = this._baseConfig();
-    const ids = ["sensor.solar_planner_scheduler_config", base.forecast_entity, base.forecast_tomorrow_entity].filter(Boolean);
+    const ids = [
+      "sensor.solar_planner_scheduler_config",
+      "select.solar_planner_scheduler_forecast_source",
+      base.forecast_entity,
+      base.forecast_tomorrow_entity,
+    ].filter(Boolean);
     for (const row of this._programRows()) {
       ids.push(`datetime.${row.slug}_start`, `binary_sensor.${row.slug}_should_run`, `switch.${row.slug}_active`);
     }
@@ -451,6 +456,13 @@ class SolarPlannerCard extends HTMLElement {
 
   async _onAutoMode(slug) {
     await this._hass.callService("solar_planner_scheduler", "reset_to_auto", { entity_id: `datetime.${slug}_start` });
+  }
+
+  async _onForecastSourceChange(option) {
+    await this._hass.callService("select", "select_option", {
+      entity_id: "select.solar_planner_scheduler_forecast_source",
+      option,
+    });
   }
 
   _render() {
@@ -793,6 +805,12 @@ class SolarPlannerCard extends HTMLElement {
       })
       .join("");
 
+    // Pure IHM: options/current value are already fully resolved server-side by the select
+    // entity itself, the card only reflects them and calls select_option on change.
+    const forecastSourceState = this._hass.states["select.solar_planner_scheduler_forecast_source"];
+    const forecastSourceOptions = forecastSourceState?.attributes?.options || [];
+    const showForecastSourceSelect = this._showChart && forecastSourceOptions.length > 1;
+
     this.shadowRoot.innerHTML = `
       <style>
         :host { display: block; }
@@ -855,6 +873,7 @@ class SolarPlannerCard extends HTMLElement {
         .warnings { margin-top: 10px; font-size: 0.85em; color: var(--warning-color, #fab219); }
         .warnings div { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
         .title-row { display: flex; align-items: center; gap: 4px; }
+        .forecast-source-select { margin-left: 6px; font-size: 0.8em; border: 1px solid var(--divider-color); border-radius: 4px; background: none; color: var(--primary-text-color); font-family: inherit; }
         .icon-toggle { cursor: pointer; color: var(--primary-color); background: none; border: none; padding: 0; display: inline-flex; align-items: center; }
         .icon-toggle ha-icon { --mdc-icon-size: 20px; }
         .table-toggle-row { margin-top: 10px; }
@@ -870,6 +889,18 @@ class SolarPlannerCard extends HTMLElement {
               <ha-icon icon="mdi:chevron-${this._showChart ? "up" : "down"}"></ha-icon>
               <ha-icon icon="mdi:chart-bell-curve"></ha-icon>
             </button>
+            ${
+              showForecastSourceSelect
+                ? `<select class="forecast-source-select" id="forecast-source-select">
+              ${forecastSourceOptions
+                .map(
+                  (option) =>
+                    `<option value="${option}" ${option === forecastSourceState.state ? "selected" : ""}>${option}</option>`
+                )
+                .join("")}
+            </select>`
+                : ""
+            }
           </span>
           ${
             this._showChart
@@ -951,6 +982,9 @@ class SolarPlannerCard extends HTMLElement {
     this.shadowRoot.getElementById("toggle-table")?.addEventListener("click", () => {
       this._showTable = !this._showTable;
       this._render();
+    });
+    this.shadowRoot.getElementById("forecast-source-select")?.addEventListener("change", (e) => {
+      this._onForecastSourceChange(e.target.value);
     });
     this.shadowRoot.querySelectorAll(".program-toggle").forEach((btn) => {
       btn.addEventListener("click", () => this._onToggleActive(btn.dataset.row, btn.dataset.active !== "true"));

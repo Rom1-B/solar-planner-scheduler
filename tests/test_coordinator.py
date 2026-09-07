@@ -19,7 +19,11 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_DEVICES,
     CONF_DURATION_MIN,
     CONF_FIXED_LOADS,
+    CONF_FORECAST_ENTITIES_HELIOS,
+    CONF_FORECAST_ENTITIES_SOLCAST,
     CONF_FORECAST_ENTITY,
+    CONF_FORECAST_PROVIDER,
+    CONF_FORECAST_TOMORROW_ENTITY,
     CONF_MAX_SIMULTANEOUS_POWER,
     CONF_MINUTES,
     CONF_NAME,
@@ -49,7 +53,7 @@ from custom_components.solar_planner_scheduler.coordinator import (
     _migrate_legacy_state,
     _read_forecast_points,
     compute_locked,
-    detect_forecast_provider,
+    resolve_forecast_sources,
 )
 
 
@@ -139,19 +143,55 @@ async def test_read_forecast_points_falls_back_to_solcast_for_unknown_provider(h
     assert points == [{"time": period_start, "w": 1500.0, "w10": 1500.0, "w90": 1500.0}]
 
 
-async def test_detect_forecast_provider_recognizes_solcast_shape(hass):
-    hass.states.async_set("sensor.forecast", "3", {"detailedForecast": []})
-    assert detect_forecast_provider(hass.states.get("sensor.forecast")) == FORECAST_PROVIDER_SOLCAST
+def test_resolve_forecast_sources_reads_the_dedicated_solcast_and_helios_fields():
+    data = {
+        CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.forecast_today", "sensor.forecast_tomorrow"],
+        CONF_FORECAST_ENTITIES_HELIOS: "sensor.helios_power_now",
+    }
+    assert resolve_forecast_sources(data) == {
+        FORECAST_PROVIDER_SOLCAST: ["sensor.forecast_today", "sensor.forecast_tomorrow"],
+        FORECAST_PROVIDER_HELIOS: ["sensor.helios_power_now"],
+    }
 
 
-async def test_detect_forecast_provider_recognizes_helios_shape(hass):
-    hass.states.async_set("sensor.helios_power_now", "1200", {"forecast": []})
-    assert detect_forecast_provider(hass.states.get("sensor.helios_power_now")) == FORECAST_PROVIDER_HELIOS
+def test_resolve_forecast_sources_accepts_more_than_two_solcast_entities():
+    data = {CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.day1", "sensor.day2", "sensor.day3"]}
+    assert resolve_forecast_sources(data)[FORECAST_PROVIDER_SOLCAST] == ["sensor.day1", "sensor.day2", "sensor.day3"]
 
 
-async def test_detect_forecast_provider_returns_none_for_an_unrelated_entity(hass):
-    hass.states.async_set("sensor.unrelated", "42", {})
-    assert detect_forecast_provider(hass.states.get("sensor.unrelated")) is None
+def test_resolve_forecast_sources_falls_back_to_the_legacy_single_field():
+    """An entry installed before the per-provider fields existed: only CONF_FORECAST_ENTITY (and
+    the already-detected CONF_FORECAST_PROVIDER) are present.
+    """
+    data = {
+        CONF_FORECAST_ENTITY: "sensor.helios_power_now",
+        CONF_FORECAST_PROVIDER: FORECAST_PROVIDER_HELIOS,
+    }
+    assert resolve_forecast_sources(data) == {FORECAST_PROVIDER_HELIOS: ["sensor.helios_power_now"]}
+
+
+def test_resolve_forecast_sources_legacy_fallback_includes_the_tomorrow_entity():
+    data = {
+        CONF_FORECAST_ENTITY: "sensor.forecast_today",
+        CONF_FORECAST_TOMORROW_ENTITY: "sensor.forecast_tomorrow",
+        CONF_FORECAST_PROVIDER: FORECAST_PROVIDER_SOLCAST,
+    }
+    assert resolve_forecast_sources(data) == {
+        FORECAST_PROVIDER_SOLCAST: ["sensor.forecast_today", "sensor.forecast_tomorrow"]
+    }
+
+
+def test_resolve_forecast_sources_ignores_the_legacy_field_once_a_dedicated_field_is_set():
+    data = {
+        CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.forecast_today"],
+        CONF_FORECAST_ENTITY: "sensor.stale_leftover",
+        CONF_FORECAST_PROVIDER: FORECAST_PROVIDER_HELIOS,
+    }
+    assert resolve_forecast_sources(data) == {FORECAST_PROVIDER_SOLCAST: ["sensor.forecast_today"]}
+
+
+def test_resolve_forecast_sources_returns_empty_dict_when_nothing_configured():
+    assert resolve_forecast_sources({}) == {}
 
 
 def test_theoretical_forecast_points_carries_percentiles(hass):
@@ -1164,6 +1204,103 @@ async def test_activating_a_program_searches_immediately_regardless_of_auto_days
     results = await coordinator._async_update_data()
 
     assert results[("lave_vaisselle", "Eco")].start is not None
+
+
+async def test_active_forecast_source_defaults_to_the_first_resolved_provider_when_never_chosen(hass):
+    """Store empty (async_set_forecast_source() never called): _async_update_data() must use the
+    only/first provider resolve_forecast_sources() finds, same as before this feature existed.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITIES_HELIOS: "sensor.helios_power_now", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options=_device_options(auto_days=[]),
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set(
+        "sensor.helios_power_now", "3000", {"forecast": [{"datetime": dt_util.now().isoformat(), "watts": 3000.0}]}
+    )
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_vaisselle", "Eco", True)
+    await _flush(coordinator)
+
+    results = await coordinator._async_update_data()
+
+    assert coordinator.active_forecast_source() is None
+    assert results[("lave_vaisselle", "Eco")].start is not None
+
+
+async def test_async_set_forecast_source_switches_without_touching_entry_data(hass):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITIES_HELIOS: "sensor.helios_power_now", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options={},
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    data_before = dict(entry.data)
+
+    await coordinator.async_set_forecast_source(FORECAST_PROVIDER_HELIOS)
+    await _flush(coordinator)
+
+    assert coordinator.active_forecast_source() == FORECAST_PROVIDER_HELIOS
+    assert dict(entry.data) == data_before
+
+
+async def test_async_update_data_falls_back_when_the_stored_source_is_no_longer_resolved(hass):
+    """A choice stored for a provider whose field has since been emptied falls back to whatever
+    remains, rather than silently reading no forecast at all.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITIES_HELIOS: "sensor.helios_power_now", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options=_device_options(auto_days=[]),
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set(
+        "sensor.helios_power_now", "3000", {"forecast": [{"datetime": dt_util.now().isoformat(), "watts": 3000.0}]}
+    )
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await coordinator.async_set_forecast_source(FORECAST_PROVIDER_SOLCAST)  # not configured at all
+    await coordinator.async_set_program_active("lave_vaisselle", "Eco", True)
+    await _flush(coordinator)
+
+    results = await coordinator._async_update_data()
+
+    assert results[("lave_vaisselle", "Eco")].start is not None
+
+
+async def test_async_update_data_merges_points_from_every_entity_of_the_active_provider(hass):
+    """Solcast's multi-entity field (today + tomorrow, say) must have every entity's points
+    merged and sorted, not just the first one read.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.forecast_today", "sensor.forecast_tomorrow"],
+            CONF_MAX_SIMULTANEOUS_POWER: 4000,
+        },
+        options={},
+    )
+    entry.add_to_hass(hass)
+    today = dt_util.now()
+    tomorrow = today + timedelta(days=1)
+    hass.states.async_set(
+        "sensor.forecast_today", "3", {"detailedForecast": [{"period_start": today, "pv_estimate": 1.0}]}
+    )
+    hass.states.async_set(
+        "sensor.forecast_tomorrow", "3", {"detailedForecast": [{"period_start": tomorrow, "pv_estimate": 2.0}]}
+    )
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+
+    await coordinator._async_update_data()
+
+    times = [pt["time"] for pt in coordinator._theoretical_points]
+    assert times == sorted(times)
+    assert today in times and tomorrow in times
 
 
 async def test_a_pending_forced_start_is_applied_and_committed(hass):

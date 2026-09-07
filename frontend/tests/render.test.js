@@ -730,6 +730,52 @@ test("fixed loads get distinct colors, not a shared gray", () => {
   assert.notEqual(styleMatches[0], styleMatches[1], "the two fixed loads must not share the same color");
 });
 
+test("the forecast-source select is absent with fewer than two options", () => {
+  const card = buildCard();
+  // buildCard() never sets select.solar_planner_scheduler_forecast_source: absent entity,
+  // same as zero options.
+  card._render();
+  assert.ok(!card.shadowRoot.innerHTML.includes('id="forecast-source-select"'));
+});
+
+test("the forecast-source select renders one option per configured provider", () => {
+  const card = buildCard();
+  card._hass.states["select.solar_planner_scheduler_forecast_source"] = {
+    state: "Solcast",
+    attributes: { options: ["Solcast", "Helios Forecast"] },
+  };
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  assert.ok(html.includes('id="forecast-source-select"'));
+  assert.ok(html.includes('<option value="Solcast" selected>Solcast</option>'));
+  assert.ok(html.includes('<option value="Helios Forecast" >Helios Forecast</option>'));
+});
+
+test("the forecast-source select is hidden when the chart section is collapsed", () => {
+  const card = buildCard();
+  card._hass.states["select.solar_planner_scheduler_forecast_source"] = {
+    state: "Solcast",
+    attributes: { options: ["Solcast", "Helios Forecast"] },
+  };
+  card._showChart = false;
+  card._render();
+  assert.ok(!card.shadowRoot.innerHTML.includes('id="forecast-source-select"'));
+});
+
+test("changing the forecast source calls select.select_option with the chosen option", async () => {
+  const card = buildCard();
+  const calls = [];
+  card._hass.callService = async (domain, service, data) => calls.push({ domain, service, data });
+  await card._onForecastSourceChange("Helios Forecast");
+  assert.deepEqual(calls, [
+    {
+      domain: "select",
+      service: "select_option",
+      data: { entity_id: "select.solar_planner_scheduler_forecast_source", option: "Helios Forecast" },
+    },
+  ]);
+});
+
 test("activating a program calls switch.turn_on with the right entity", async () => {
   const card = buildCard({ withActiveSelections: false });
   const calls = [];
