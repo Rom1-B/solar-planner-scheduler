@@ -115,12 +115,17 @@ table_show_energy: true # optional, default true (the table's Energy column)
 table_show_cost: true   # optional, default true (the table's Cost column)
 chart_hours_past: 6     # optional, default 6 (hours shown before now)
 chart_hours_future: 24  # optional, default 24 (hours shown after now)
+chart_visible_hours: 30 # optional, default chart_hours_past + chart_hours_future (no scroll)
 ```
 
 Each section has its own toggle icon in the card itself; `chart_expanded`/`table_expanded`
 only set which state it starts in. The table's Window column shows a countdown to a future start
 (e.g. `08:30 - 10:00 (in 2h15m)`). `chart_hours_past`/`chart_hours_future` control the chart/gantt's
 fixed display window around the current time; they're display-only and don't affect scheduling.
+`chart_visible_hours` sets how many of those hours fit on screen before the chart scrolls
+horizontally: leave it unset (or equal to `chart_hours_past + chart_hours_future`) to always fit
+the whole window without scrolling, or set it smaller (e.g. to widen `chart_hours_future` to cover
+several days while still seeing only one day at a time by default).
 
 ## Development
 

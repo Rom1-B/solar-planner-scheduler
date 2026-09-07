@@ -384,6 +384,23 @@ class SolarPlannerCard extends HTMLElement {
   }
 
   // days: offsets from today, e.g. [0, 1] for today + tomorrow.
+  // Every calendar day the chart_hours_past/chart_hours_future window touches, not just today/tomorrow:
+  // a fixed load recurs every day regardless of forecast_tomorrow_entity, so widening chart_hours_future
+  // to cover several days (paired with chart_visible_hours to scroll across them) must carry it forward too.
+  _visibleDayOffsets() {
+    const chartHoursPast = this._config.chart_hours_past ?? 6;
+    const chartHoursFuture = this._config.chart_hours_future ?? 24;
+    const now = new Date();
+    const today = startOfDay(now);
+    const viewStart = new Date(now.getTime() - chartHoursPast * 3600000);
+    const viewEnd = new Date(now.getTime() + chartHoursFuture * 3600000);
+    const firstOffset = Math.floor((viewStart.getTime() - today.getTime()) / DAY_MS);
+    const lastOffset = Math.floor((viewEnd.getTime() - today.getTime()) / DAY_MS);
+    const offsets = [];
+    for (let d = firstOffset; d <= lastOffset; d++) offsets.push(d);
+    return offsets;
+  }
+
   _fixedLoadWindows(days = [0]) {
     const today = startOfDay(new Date());
     const result = [];
@@ -487,8 +504,7 @@ class SolarPlannerCard extends HTMLElement {
     const programRows = this._programRows();
     const deviceStates = programRows.map((row) => this._readProgramState(row));
     const fixedLoadColor = (index) => deviceColorList[(deviceStates.length + index) % deviceColorList.length];
-    // Generate tomorrow's occurrence too once the view extends there.
-    const fixedLoads = this._fixedLoadWindows(base.forecast_tomorrow_entity ? [0, 1] : [0]);
+    const fixedLoads = this._fixedLoadWindows(this._visibleDayOffsets());
     const fixedLoadsByIndex = new Map();
     fixedLoads.forEach((load) => {
       if (!fixedLoadsByIndex.has(load.loadIndex)) fixedLoadsByIndex.set(load.loadIndex, []);
@@ -532,9 +548,18 @@ class SolarPlannerCard extends HTMLElement {
     const viewSpanMs = viewEnd.getTime() - viewStart.getTime();
 
     const todayEnd = new Date(dayStart.getTime() + DAY_MS);
-    const innerW = 600 - marginLeft - marginRight;
+    // chart_visible_hours narrower than the past+future window scales innerW/width (the plot area
+    // and viewBox width) by the same factor as the CSS width%, marginLeft/marginRight untouched so
+    // the axis-label gutter doesn't grow. Because both the viewBox and the rendered CSS width scale
+    // together, the existing height:auto (aspect-ratio-preserving) CSS still resolves to the same
+    // on-screen height regardless of the factor - unlike scaling CSS width alone, which would grow
+    // the intrinsic-ratio height (and therefore every font-size, in user units) by the same factor.
+    // See CLAUDE.local.md.
+    const chartVisibleHours = this._config.chart_visible_hours ?? chartHoursPast + chartHoursFuture;
+    const chartWidthFactor = Math.max(1, (chartHoursPast + chartHoursFuture) / chartVisibleHours);
+    const chartWidthPercent = chartWidthFactor * 100;
+    const innerW = (600 - marginLeft - marginRight) * chartWidthFactor;
     const width = innerW + marginLeft + marginRight;
-    const chartWidthPercent = 100;
 
     // Grid cut at exact phase boundaries, not a fixed step: avoids diluting short spikes (see CLAUDE.local.md).
     const stackLayersWithSegments = stackLayers.map((layer) => ({
@@ -626,7 +651,10 @@ class SolarPlannerCard extends HTMLElement {
       .join("");
 
     const hourTicks = [];
-    const tickStepHours = Math.max(1, Math.round(viewSpanMs / 3600000 / 8));
+    // Density based on the visible window (chart_visible_hours), not the full scrollable span:
+    // otherwise a wide chart_hours_future spaces ticks so far apart that a single 24h scroll
+    // position can show only one, with nothing readable in between.
+    const tickStepHours = Math.max(1, Math.round(chartVisibleHours / 8));
     const firstTickHour = Math.ceil(viewStart.getTime() / 3600000 / tickStepHours) * tickStepHours;
     for (let h = firstTickHour; h * 3600000 <= viewEnd.getTime(); h += tickStepHours) {
       const t = new Date(h * 3600000);
@@ -638,7 +666,9 @@ class SolarPlannerCard extends HTMLElement {
     let dayOffset = 1;
     for (let d = new Date(todayEnd); d < viewEnd; d = new Date(d.getTime() + DAY_MS), dayOffset++) {
       if (d <= viewStart) continue;
-      const label = dayOffset === 1 ? "Tomorrow" : `In ${dayOffset} days`;
+      // Weekday name reads faster than counting "In N days"; ambiguity past 7 days is moot since
+      // chart_hours_future never has forecast data that far out anyway.
+      const label = dayOffset === 1 ? "Tomorrow" : d.toLocaleDateString("en-US", { weekday: "long" });
       dayTicks.push(
         `<line x1="${x(d).toFixed(1)}" y1="${marginTop}" x2="${x(d).toFixed(1)}" y2="${height - marginBottom}" class="day-line"/>`,
         `<text x="${(x(d) + 4).toFixed(1)}" y="${marginTop + 9}" class="axis-label day-label">${label}</text>`
@@ -793,7 +823,15 @@ class SolarPlannerCard extends HTMLElement {
     const showCostColumn = this._config.table_show_cost !== false;
     const tableRows = dedupedTableRows
       .map((p) => {
-        const dayLabel = p.start && p.start >= todayEnd ? "Tomorrow " : "";
+        // Same "Tomorrow" then weekday-name convention as the chart's day-boundary ticks, not a
+        // flat "Tomorrow " for every day beyond today.
+        const dayOffsetForRow = p.start ? Math.round((startOfDay(p.start).getTime() - dayStart.getTime()) / DAY_MS) : 0;
+        const dayLabel =
+          !p.start || dayOffsetForRow <= 0
+            ? ""
+            : dayOffsetForRow === 1
+              ? "Tomorrow "
+              : `${p.start.toLocaleDateString("en-US", { weekday: "long" })} `;
         const countdown = p.start ? fmtCountdown(p.start, now) : null;
         const started = p.start && p.start <= now;
         return `<tr class="${started ? "row-started" : ""}">
@@ -1057,7 +1095,7 @@ class SolarPlannerCard extends HTMLElement {
           .map((r) => this._readProgramState(r))
           .filter((o) => o.start && o.end)
           .map((o) => ({ start: o.start, end: o.end, powerW: o.powerW, profile: o.profile }));
-        const fixedLoads = this._fixedLoadWindows(this._baseConfig().forecast_tomorrow_entity ? [0, 1] : [0]);
+        const fixedLoads = this._fixedLoadWindows(this._visibleDayOffsets());
         const otherSegments = [...otherDeviceBars, ...fixedLoads].flatMap((o) => phaseSegments(o));
         this._drag = {
           slug,

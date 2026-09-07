@@ -404,6 +404,55 @@ test("chart_hours_past/chart_hours_future control the visible window (now-line p
   assert.ok(Math.abs(nowX - expectedNowX) < 0.5, `expected now-line at ${expectedNowX}, got ${nowX}`);
 });
 
+test("chart_visible_hours narrower than the data window widens the chart past 100% (scroll enabled)", () => {
+  const card = buildCard();
+  card._config.chart_hours_past = 6;
+  card._config.chart_hours_future = 24;
+  card._config.chart_visible_hours = 15;
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  const widthPercent = parseFloat(/<svg class="chart" viewBox="0 0 [\d.]+ [\d.]+"[^>]*style="width: ([\d.]+)%/.exec(html)?.[1] ?? "NaN");
+  assert.equal(widthPercent, 200, `expected 200% width for a 30h window shown over 15 visible hours, got ${widthPercent}`);
+});
+
+test("chart_visible_hours left unset defaults to the full data window (no scroll)", () => {
+  const card = buildCard();
+  card._config.chart_hours_past = 6;
+  card._config.chart_hours_future = 24;
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  const widthPercent = parseFloat(/<svg class="chart" viewBox="0 0 [\d.]+ [\d.]+"[^>]*style="width: ([\d.]+)%/.exec(html)?.[1] ?? "NaN");
+  assert.equal(widthPercent, 100, `expected the default to keep 100% width (no scroll), got ${widthPercent}`);
+});
+
+test("chart_visible_hours wider than the data window never shrinks the chart below 100%", () => {
+  const card = buildCard();
+  card._config.chart_hours_past = 6;
+  card._config.chart_hours_future = 24;
+  card._config.chart_visible_hours = 48;
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  const widthPercent = parseFloat(/<svg class="chart" viewBox="0 0 [\d.]+ [\d.]+"[^>]*style="width: ([\d.]+)%/.exec(html)?.[1] ?? "NaN");
+  assert.equal(widthPercent, 100, `expected the width to clamp at 100%, got ${widthPercent}`);
+});
+
+test("hour-tick density follows chart_visible_hours, not the full scrollable span", () => {
+  // A wide chart_hours_future with a narrow chart_visible_hours used to space ticks by the full
+  // span/8 (e.g. one tick every ~19h for a 148h span), leaving a single 24h scroll position with
+  // at most one readable tick. Density must instead track the visible window alone.
+  const card = buildCard();
+  card._config.chart_hours_past = 4;
+  card._config.chart_hours_future = 144;
+  card._config.chart_visible_hours = 24;
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  const hourValues = [...html.matchAll(/class="axis-label" text-anchor="middle">(\d+)h</g)].map((m) => Number(m[1]));
+  assert.ok(hourValues.length >= 6, `expected several hour ticks across the 148h span, got ${hourValues.length}`);
+  // chart_visible_hours/8 = 3h apart (round(24/8)), not the ~19h step a full-148h-span/8 formula would give.
+  const steps = hourValues.slice(1).map((h, i) => (h - hourValues[i] + 24) % 24);
+  assert.ok(steps.every((s) => s === 3), `expected every consecutive tick 3h apart, got steps ${JSON.stringify(steps)}`);
+});
+
 test("a chart_hours_future spanning several midnights labels each day boundary distinctly", () => {
   // 6h past (default) + 48h future always spans at least 2 midnights regardless of the current
   // time of day, so this exercises the duplicate-"Tomorrow" bug deterministically.
@@ -417,28 +466,81 @@ test("a chart_hours_future spanning several midnights labels each day boundary d
   assert.equal(new Set(labels).size, labels.length, `expected every day boundary to have a distinct label, got ${JSON.stringify(labels)}`);
 });
 
-test("a daily fixed load also shows tomorrow's occurrence once forecast_tomorrow_entity is set", () => {
-  const withoutTomorrow = buildCard();
-  withoutTomorrow._render();
-  const fixedRectsWithout = rectsWithClass(withoutTomorrow.shadowRoot.innerHTML, "fixed");
-  assert.equal(fixedRectsWithout.length, 1, `expected exactly today's PAC occurrence, got ${fixedRectsWithout.length}`);
+test("a day boundary past tomorrow is labeled with its weekday name, not 'In N days'", () => {
+  const card = buildCard();
+  card._config.chart_hours_future = 48;
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  const labels = [...html.matchAll(/class="axis-label day-label">([^<]*)</g)].map((m) => m[1]);
+  assert.ok(labels.length >= 2, `expected at least two day boundaries with a 48h future window, got ${JSON.stringify(labels)}`);
+  const dayAfterTomorrow = new Date();
+  dayAfterTomorrow.setHours(0, 0, 0, 0);
+  dayAfterTomorrow.setDate(dayAfterTomorrow.getDate() + 2);
+  const expectedWeekday = dayAfterTomorrow.toLocaleDateString("en-US", { weekday: "long" });
+  assert.equal(labels[1], expectedWeekday, `expected the second boundary labeled with its weekday name, got ${labels[1]}`);
+});
 
+// A fixed load recurs every calendar day the chart_hours_past/chart_hours_future window touches,
+// independent of forecast_tomorrow_entity (that field only controls forecast *data*, not which days
+// the gantt/table cover). Mirrors _visibleDayOffsets()'s own formula rather than hardcoding a day
+// count, since the exact count shifts with the real current time of day.
+function expectedVisibleDayCount(chartHoursPast, chartHoursFuture) {
+  const now = new Date();
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  const viewStart = new Date(now.getTime() - chartHoursPast * 3600000);
+  const viewEnd = new Date(now.getTime() + chartHoursFuture * 3600000);
+  const firstOffset = Math.floor((viewStart.getTime() - today.getTime()) / (24 * 3600000));
+  const lastOffset = Math.floor((viewEnd.getTime() - today.getTime()) / (24 * 3600000));
+  return lastOffset - firstOffset + 1;
+}
+
+test("a daily fixed load's occurrence count follows chart_hours_future, not forecast_tomorrow_entity", () => {
+  const narrow = buildCard();
+  narrow._config.chart_hours_past = 0;
+  narrow._config.chart_hours_future = 1;
+  narrow._render();
+  const fixedRectsNarrow = rectsWithClass(narrow.shadowRoot.innerHTML, "fixed");
+  assert.equal(
+    fixedRectsNarrow.length,
+    expectedVisibleDayCount(0, 1),
+    `expected one PAC occurrence per visible day, got ${fixedRectsNarrow.length}`
+  );
+
+  const wide = buildCard();
+  wide._config.chart_hours_past = 6;
+  wide._config.chart_hours_future = 48;
+  wide._render();
+  const htmlWide = wide.shadowRoot.innerHTML;
+  const fixedRectsWide = rectsWithClass(htmlWide, "fixed");
+  assert.equal(
+    fixedRectsWide.length,
+    expectedVisibleDayCount(6, 48),
+    `expected one PAC occurrence per visible day, got ${fixedRectsWide.length}`
+  );
+  assert.ok(fixedRectsWide.length > fixedRectsNarrow.length, "expected more PAC occurrences with a wider future window");
+
+  // Enabling forecast_tomorrow_entity must not change how many days the fixed load renders on.
+  const wideWithForecast = buildCard();
+  wideWithForecast._config.chart_hours_past = 6;
+  wideWithForecast._config.chart_hours_future = 48;
+  enableTomorrowForecast(wideWithForecast);
   const dayStart = new Date();
   dayStart.setHours(0, 0, 0, 0);
   const tomorrowStart = new Date(dayStart);
   tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+  addForecastPoints(wideWithForecast, buildForecast(tomorrowStart));
+  wideWithForecast._render();
+  const fixedRectsWideWithForecast = rectsWithClass(wideWithForecast.shadowRoot.innerHTML, "fixed");
+  assert.equal(
+    fixedRectsWideWithForecast.length,
+    fixedRectsWide.length,
+    "expected forecast_tomorrow_entity to not affect the fixed-load occurrence count"
+  );
 
-  const withTomorrow = buildCard();
-  enableTomorrowForecast(withTomorrow);
-  addForecastPoints(withTomorrow, buildForecast(tomorrowStart));
-  withTomorrow._render();
-  const htmlWith = withTomorrow.shadowRoot.innerHTML;
-  const fixedRectsWith = rectsWithClass(htmlWith, "fixed");
-  assert.equal(fixedRectsWith.length, 2, `expected today's + tomorrow's PAC occurrence, got ${fixedRectsWith.length}`);
-
-  const ganttHeight = parseFloat(/<svg class="gantt" viewBox="0 0 [\d.]+ ([\d.]+)/.exec(htmlWith)?.[1] ?? "NaN");
-  const ganttHeightWithout = parseFloat(/<svg class="gantt" viewBox="0 0 [\d.]+ ([\d.]+)/.exec(withoutTomorrow.shadowRoot.innerHTML)?.[1] ?? "NaN");
-  assert.ok(Math.abs(ganttHeight - ganttHeightWithout) < 0.1, `expected the same lane count/gantt height, got ${ganttHeight} vs ${ganttHeightWithout}`);
+  const ganttHeight = parseFloat(/<svg class="gantt" viewBox="0 0 [\d.]+ ([\d.]+)/.exec(htmlWide)?.[1] ?? "NaN");
+  const ganttHeightNarrow = parseFloat(/<svg class="gantt" viewBox="0 0 [\d.]+ ([\d.]+)/.exec(narrow.shadowRoot.innerHTML)?.[1] ?? "NaN");
+  assert.ok(Math.abs(ganttHeight - ganttHeightNarrow) < 0.1, `expected the same lane count/gantt height, got ${ganttHeight} vs ${ganttHeightNarrow}`);
 });
 
 test("the table marks tomorrow's fixed-load occurrence so it doesn't read as an unexplained duplicate", () => {
@@ -458,6 +560,25 @@ test("the table marks tomorrow's fixed-load occurrence so it doesn't read as an 
   assert.ok(
     rows.some((r) => r.startsWith("Tomorrow ")) && rows.some((r) => !r.startsWith("Tomorrow ")),
     `expected exactly one row marked "Tomorrow ", got: ${JSON.stringify(rows)}`
+  );
+});
+
+test("the table labels a day boundary past tomorrow with its weekday name, not a flat 'Tomorrow '", () => {
+  const card = buildCard();
+  card._config.chart_hours_future = 96; // reaches at least day+2 regardless of the current time of day
+  card._showTable = true;
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  const rows = [...html.matchAll(/<td>PAC[^<]*<\/td>\s*<td>([^<]*)<\/td>/g)].map((m) => m[1]);
+  assert.ok(rows.length >= 3, `expected at least 3 PAC rows across a 96h future window, got ${JSON.stringify(rows)}`);
+  assert.ok(rows.some((r) => r.startsWith("Tomorrow ")), `expected one row marked "Tomorrow ", got ${JSON.stringify(rows)}`);
+  const dayAfterTomorrow = new Date();
+  dayAfterTomorrow.setHours(0, 0, 0, 0);
+  dayAfterTomorrow.setDate(dayAfterTomorrow.getDate() + 2);
+  const expectedWeekday = dayAfterTomorrow.toLocaleDateString("en-US", { weekday: "long" });
+  assert.ok(
+    rows.some((r) => r.startsWith(`${expectedWeekday} `)),
+    `expected a row labeled with ${expectedWeekday}, got ${JSON.stringify(rows)}`
   );
 });
 
@@ -709,7 +830,9 @@ test("a short power spike renders at its true peak, not diluted by a bucket aver
 
 test("fixed loads get distinct colors, not a shared gray", () => {
   const card = new Card();
-  card.setConfig({ devices: ["lave_linge"] });
+  // A single-day view (chart_hours_past/future both narrow), so each load renders exactly one
+  // occurrence regardless of what day offsets _visibleDayOffsets() would otherwise add.
+  card.setConfig({ devices: ["lave_linge"], chart_hours_past: 0, chart_hours_future: 1 });
   card._hass = {
     themes: { darkMode: false },
     states: {
