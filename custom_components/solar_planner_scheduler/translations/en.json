@@ -54,7 +54,7 @@
         "title": "Fixed loads",
         "menu_options": {
           "add_fixed_load": "Add a fixed load",
-          "edit_fixed_load": "Edit a fixed load's phases",
+          "edit_fixed_load": "Edit a fixed load's schedule",
           "remove_fixed_load": "Remove a fixed load"
         }
       },
@@ -133,29 +133,26 @@
       },
       "add_fixed_load": {
         "title": "Add a fixed load",
-        "description": "Next screen asks for its phases.",
-        "data": {
-          "name": "Name",
-          "start_time": "Daily start time"
-        }
+        "description": "Next screen asks for its daily schedule.",
+        "data": { "name": "Name" }
       },
-      "add_fixed_load_phases": {
-        "title": "Fixed load phases",
-        "data": { "phases": "Phases" },
+      "add_fixed_load_schedule": {
+        "title": "Fixed load schedule",
+        "data": { "schedule": "Schedule" },
         "data_description": {
-          "phases": "One phase per line: `20min@150W` or `1.5h@150W`."
+          "schedule": "One breakpoint per line: `HH:MM@WATTSW`, e.g. `07:00@100W`. Power holds until the next line; the first line's time becomes the start; the last line ends the day at midnight if its power is > 0, or right there if it's `0W`."
         }
       },
       "edit_fixed_load": {
         "title": "Edit a fixed load",
-        "description": "Pick which fixed load's phases to edit.",
+        "description": "Pick which fixed load's schedule to edit.",
         "data": { "name": "Fixed load" }
       },
-      "edit_fixed_load_phases": {
-        "title": "Fixed load phases",
-        "data": { "phases": "Phases" },
+      "edit_fixed_load_schedule": {
+        "title": "Fixed load schedule",
+        "data": { "schedule": "Schedule" },
         "data_description": {
-          "phases": "One phase per line: `20min@150W` or `1.5h@150W`. Replaces the whole list."
+          "schedule": "One breakpoint per line: `HH:MM@WATTSW`, e.g. `07:00@100W`. Replaces the whole schedule."
         }
       },
       "remove_fixed_load": {
@@ -175,7 +172,11 @@
       "invalid_phase_line": "Each line must look like `20min@150W` or `1.5h@150W`.",
       "empty_phases": "Enter at least one phase.",
       "invalid_tariff_line": "Each line must look like `22:00@0.1589` (HH:MM@price).",
-      "empty_tariff_bands": "Enter at least one price band."
+      "empty_tariff_bands": "Enter at least one price band.",
+      "invalid_fixed_load_line": "Each line must look like `07:00@100W` (HH:MM@watts).",
+      "empty_fixed_load_schedule": "Enter at least one breakpoint.",
+      "duplicate_fixed_load_time": "Two breakpoints can't share the same time.",
+      "fixed_load_must_start_with_power": "The first breakpoint must have a power greater than 0."
     }
   },
   "issues": {

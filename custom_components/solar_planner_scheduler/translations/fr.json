@@ -54,7 +54,7 @@
         "title": "Charges fixes",
         "menu_options": {
           "add_fixed_load": "Ajouter une charge fixe",
-          "edit_fixed_load": "Modifier les phases d'une charge fixe",
+          "edit_fixed_load": "Modifier l'horaire d'une charge fixe",
           "remove_fixed_load": "Supprimer une charge fixe"
         }
       },
@@ -133,29 +133,26 @@
       },
       "add_fixed_load": {
         "title": "Ajouter une charge fixe",
-        "description": "L'écran suivant demande ses phases.",
-        "data": {
-          "name": "Nom",
-          "start_time": "Heure de démarrage quotidienne"
-        }
+        "description": "L'écran suivant demande son horaire quotidien.",
+        "data": { "name": "Nom" }
       },
-      "add_fixed_load_phases": {
-        "title": "Phases de la charge fixe",
-        "data": { "phases": "Phases" },
+      "add_fixed_load_schedule": {
+        "title": "Horaire de la charge fixe",
+        "data": { "schedule": "Horaire" },
         "data_description": {
-          "phases": "Une phase par ligne : `20min@150W` ou `1.5h@150W`."
+          "schedule": "Un point de rupture par ligne : `HH:MM@WATTSW`, ex. `07:00@100W`. La puissance tient jusqu'à la ligne suivante ; l'heure de la première ligne devient le départ ; la dernière ligne termine la journée à minuit si sa puissance est > 0, ou s'arrête là si elle vaut `0W`."
         }
       },
       "edit_fixed_load": {
         "title": "Modifier une charge fixe",
-        "description": "Choisissez les phases de quelle charge fixe modifier.",
+        "description": "Choisissez l'horaire de quelle charge fixe modifier.",
         "data": { "name": "Charge fixe" }
       },
-      "edit_fixed_load_phases": {
-        "title": "Phases de la charge fixe",
-        "data": { "phases": "Phases" },
+      "edit_fixed_load_schedule": {
+        "title": "Horaire de la charge fixe",
+        "data": { "schedule": "Horaire" },
         "data_description": {
-          "phases": "Une phase par ligne : `20min@150W` ou `1.5h@150W`. Remplace toute la liste."
+          "schedule": "Un point de rupture par ligne : `HH:MM@WATTSW`, ex. `07:00@100W`. Remplace tout l'horaire."
         }
       },
       "remove_fixed_load": {
@@ -175,7 +172,11 @@
       "invalid_phase_line": "Chaque ligne doit ressembler à `20min@150W` ou `1.5h@150W`.",
       "empty_phases": "Entrez au moins une phase.",
       "invalid_tariff_line": "Chaque ligne doit ressembler à `22:00@0.1589` (HH:MM@prix).",
-      "empty_tariff_bands": "Entrez au moins une plage de prix."
+      "empty_tariff_bands": "Entrez au moins une plage de prix.",
+      "invalid_fixed_load_line": "Chaque ligne doit ressembler à `07:00@100W` (HH:MM@watts).",
+      "empty_fixed_load_schedule": "Entrez au moins un point de rupture.",
+      "duplicate_fixed_load_time": "Deux points de rupture ne peuvent pas avoir la même heure.",
+      "fixed_load_must_start_with_power": "Le premier point de rupture doit avoir une puissance supérieure à 0."
     }
   },
   "issues": {

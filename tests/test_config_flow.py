@@ -356,36 +356,98 @@ async def test_remove_program_removes_it_from_the_devices_only_program_list(hass
     assert device[CONF_PROGRAMS] == []
 
 
-async def test_add_fixed_load_parses_a_multi_phase_profile(hass, enable_custom_integrations):
+async def test_add_fixed_load_parses_a_schedule_with_an_implicit_midnight_close(hass, enable_custom_integrations):
+    """`07:00@100W` alone means 100W from 07:00 to midnight (no explicit end marker needed)."""
     entry = _entry(hass, [])
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "fixed_loads_menu"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_fixed_load"})
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_NAME: "PAC", CONF_START_TIME: "13:00:00"}
-    )
-    assert result["step_id"] == "add_fixed_load_phases"
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "PAC"})
+    assert result["step_id"] == "add_fixed_load_schedule"
 
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"phases": "60min@1500W\n30min@800W"}
-    )
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"schedule": "07:00@100W"})
     assert result["type"] == "menu"
 
     load = entry.options[CONF_FIXED_LOADS][0]
     assert load[CONF_NAME] == "PAC"
-    assert load[CONF_START_TIME] == "13:00:00"
+    assert load[CONF_START_TIME] == "07:00"
+    assert load[CONF_POWER_PROFILE] == [{"minutes": 1020, "power_w": 100.0}]
+
+
+async def test_add_fixed_load_schedule_with_an_explicit_end_marker(hass, enable_custom_integrations):
+    """`07:00@100W` / `22:00@0W` means 100W from 07:00 to 22:00, not until midnight."""
+    entry = _entry(hass, [])
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "fixed_loads_menu"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_fixed_load"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "PAC"})
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"schedule": "07:00@100W\n22:00@0W"}
+    )
+    assert result["type"] == "menu"
+
+    load = entry.options[CONF_FIXED_LOADS][0]
+    assert load[CONF_START_TIME] == "07:00"
+    assert load[CONF_POWER_PROFILE] == [{"minutes": 900, "power_w": 100.0}]
+
+
+async def test_add_fixed_load_schedule_with_a_zero_watt_gap(hass, enable_custom_integrations):
+    """A 0W breakpoint that isn't last just models a gap, not an end marker."""
+    entry = _entry(hass, [])
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "fixed_loads_menu"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_fixed_load"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "PAC"})
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"schedule": "07:00@100W\n12:00@0W\n18:00@200W"}
+    )
+    assert result["type"] == "menu"
+
+    load = entry.options[CONF_FIXED_LOADS][0]
+    assert load[CONF_START_TIME] == "07:00"
     assert load[CONF_POWER_PROFILE] == [
-        {"minutes": 60, "power_w": 1500.0},
-        {"minutes": 30, "power_w": 800.0},
+        {"minutes": 300, "power_w": 100.0},
+        {"minutes": 360, "power_w": 0.0},
+        {"minutes": 360, "power_w": 200.0},
     ]
 
 
-async def test_edit_fixed_load_prefills_and_replaces_phases_in_place(hass, enable_custom_integrations):
+async def test_add_fixed_load_schedule_rejects_a_first_line_at_zero_power(hass, enable_custom_integrations):
+    entry = _entry(hass, [])
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "fixed_loads_menu"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_fixed_load"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "PAC"})
+
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"schedule": "07:00@0W"})
+    assert result["errors"] == {"schedule": "fixed_load_must_start_with_power"}
+
+
+async def test_add_fixed_load_schedule_rejects_duplicate_times(hass, enable_custom_integrations):
+    entry = _entry(hass, [])
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "fixed_loads_menu"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_fixed_load"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "PAC"})
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"schedule": "07:00@100W\n07:00@200W"}
+    )
+    assert result["errors"] == {"schedule": "duplicate_fixed_load_time"}
+
+
+async def test_edit_fixed_load_prefills_and_replaces_schedule_in_place(hass, enable_custom_integrations):
     fixed_loads = [
         {
             CONF_NAME: "PAC",
-            CONF_START_TIME: "13:00:00",
+            CONF_START_TIME: "13:00",
             CONF_POWER_PROFILE: [{"minutes": 60, "power_w": 1500.0}],
         }
     ]
@@ -395,16 +457,16 @@ async def test_edit_fixed_load_prefills_and_replaces_phases_in_place(hass, enabl
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "fixed_loads_menu"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_fixed_load"})
     result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "PAC"})
-    assert result["step_id"] == "edit_fixed_load_phases"
-    assert result["data_schema"]({})["phases"] == "60min@1500W"
+    assert result["step_id"] == "edit_fixed_load_schedule"
+    assert result["data_schema"]({})["schedule"] == "13:00@1500W\n14:00@0W"
 
-    result = await hass.config_entries.options.async_configure(result["flow_id"], {"phases": "10min@300W"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"schedule": "08:00@300W"})
     assert result["type"] == "menu"
 
     load = entry.options[CONF_FIXED_LOADS][0]
     assert load[CONF_NAME] == "PAC"
-    assert load[CONF_START_TIME] == "13:00:00"
-    assert load[CONF_POWER_PROFILE] == [{"minutes": 10, "power_w": 300.0}]
+    assert load[CONF_START_TIME] == "08:00"
+    assert load[CONF_POWER_PROFILE] == [{"minutes": 960, "power_w": 300.0}]
 
 
 async def test_edit_fixed_load_aborts_when_none_exist(hass, enable_custom_integrations):

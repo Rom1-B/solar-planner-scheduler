@@ -139,16 +139,6 @@ def _phases_to_text(phases: list[dict[str, Any]]) -> str:
     return "\n".join(f"{p[CONF_MINUTES]}min@{p[CONF_POWER_W]:g}W" for p in phases)
 
 
-def _phases_schema(default_text: str = "") -> vol.Schema:
-    return vol.Schema(
-        {
-            vol.Required("phases", default=default_text): selector.TextSelector(
-                selector.TextSelectorConfig(multiline=True)
-            ),
-        }
-    )
-
-
 def _program_phases_schema(default_text: str = "", default_days: list[str] | None = None) -> vol.Schema:
     # Unchecked by default means on-demand (runs when picked), not "never runs".
     return vol.Schema(
@@ -212,10 +202,77 @@ def _tariff_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
 
 
 def _fixed_load_meta_schema() -> vol.Schema:
+    return vol.Schema({vol.Required(CONF_NAME): str})
+
+
+_FIXED_LOAD_LINE_RE = re.compile(r"^\s*([01]\d|2[0-3]):([0-5]\d)\s*@\s*(\d+(?:\.\d+)?)\s*w\s*$", re.IGNORECASE)
+
+
+class _FixedLoadParseError(Exception):
+    """A line in the fixed load schedule text field doesn't match `<HH:MM>@<watts>W`."""
+
+    def __init__(self, error_key: str) -> None:
+        self.error_key = error_key
+        super().__init__(error_key)
+
+
+def _parse_fixed_load_schedule(text: str) -> tuple[str, list[dict[str, Any]]]:
+    """Parse `HH:MM@WATTSW` breakpoints into a (start_time, power_profile) pair.
+
+    Each breakpoint's power holds until the next one; the first breakpoint becomes the fixed
+    load's start_time, so it must have power > 0. The last breakpoint either closes the day at
+    midnight (power > 0: one more phase runs until 24:00) or simply ends the schedule there
+    (power == 0: it's a pure end marker, not stored as its own phase). A breakpoint in between can
+    be 0W too, to model a gap in an otherwise-active day.
+    """
+    breakpoints: list[tuple[int, float]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = _FIXED_LOAD_LINE_RE.match(line)
+        if match is None:
+            raise _FixedLoadParseError("invalid_fixed_load_line")
+        hour, minute, power_w = match.groups()
+        breakpoints.append((int(hour) * 60 + int(minute), float(power_w)))
+    if not breakpoints:
+        raise _FixedLoadParseError("empty_fixed_load_schedule")
+    breakpoints.sort(key=lambda b: b[0])
+    if any(a[0] == b[0] for a, b in zip(breakpoints, breakpoints[1:])):
+        raise _FixedLoadParseError("duplicate_fixed_load_time")
+    if breakpoints[0][1] <= 0:
+        raise _FixedLoadParseError("fixed_load_must_start_with_power")
+    phases = [
+        {CONF_MINUTES: next_min - start_min, CONF_POWER_W: power_w}
+        for (start_min, power_w), (next_min, _) in zip(breakpoints, breakpoints[1:])
+    ]
+    last_min, last_power = breakpoints[-1]
+    if last_power > 0:
+        phases.append({CONF_MINUTES: 1440 - last_min, CONF_POWER_W: last_power})
+    start_hour, start_minute = divmod(breakpoints[0][0], 60)
+    return f"{start_hour:02d}:{start_minute:02d}", phases
+
+
+def _fixed_load_schedule_to_text(start_time: str, phases: list[dict[str, Any]]) -> str:
+    hour, minute = (int(x) for x in start_time.split(":")[:2])
+    t = hour * 60 + minute
+    lines = []
+    for phase in phases:
+        h, m = divmod(t % 1440, 60)
+        lines.append(f"{h:02d}:{m:02d}@{phase[CONF_POWER_W]:g}W")
+        t += phase[CONF_MINUTES]
+    if t % 1440 != 0:
+        h, m = divmod(t % 1440, 60)
+        lines.append(f"{h:02d}:{m:02d}@0W")
+    return "\n".join(lines)
+
+
+def _fixed_load_schedule_schema(default_text: str = "") -> vol.Schema:
     return vol.Schema(
         {
-            vol.Required(CONF_NAME): str,
-            vol.Required(CONF_START_TIME): selector.TimeSelector(),
+            vol.Required("schedule", default=default_text): selector.TextSelector(
+                selector.TextSelectorConfig(multiline=True)
+            ),
         }
     )
 
@@ -481,63 +538,64 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
         )
 
     async def async_step_add_fixed_load(self, user_input: dict[str, Any] | None = None):
-        """Name and daily start time of the new fixed load (step 1 of 2: meta -> phases)."""
+        """Name of the new fixed load (step 1 of 2: name -> schedule)."""
         if user_input is not None:
             self._editing_fixed_load_name = user_input[CONF_NAME]
-            self._new_fixed_load_start_time = user_input[CONF_START_TIME]
-            return await self.async_step_add_fixed_load_phases()
+            return await self.async_step_add_fixed_load_schedule()
         return self.async_show_form(step_id="add_fixed_load", data_schema=_fixed_load_meta_schema())
 
-    async def async_step_add_fixed_load_phases(self, user_input: dict[str, Any] | None = None):
+    async def async_step_add_fixed_load_schedule(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
             try:
-                phases = _parse_phases(user_input["phases"])
-            except _PhaseParseError as err:
+                start_time, phases = _parse_fixed_load_schedule(user_input["schedule"])
+            except _FixedLoadParseError as err:
                 return self.async_show_form(
-                    step_id="add_fixed_load_phases",
-                    data_schema=_phases_schema(user_input["phases"]),
-                    errors={"phases": err.error_key},
+                    step_id="add_fixed_load_schedule",
+                    data_schema=_fixed_load_schedule_schema(user_input["schedule"]),
+                    errors={"schedule": err.error_key},
                 )
             self._fixed_loads.append(
                 {
                     CONF_NAME: self._editing_fixed_load_name,
-                    CONF_START_TIME: self._new_fixed_load_start_time,
+                    CONF_START_TIME: start_time,
                     CONF_POWER_PROFILE: phases,
                 }
             )
             return await self._finish_step("fixed_loads_menu")
-        return self.async_show_form(step_id="add_fixed_load_phases", data_schema=_phases_schema())
+        return self.async_show_form(step_id="add_fixed_load_schedule", data_schema=_fixed_load_schedule_schema())
 
     async def async_step_edit_fixed_load(self, user_input: dict[str, Any] | None = None):
-        """Pick which fixed load's phases to edit (step 1 of 2: pick -> phases)."""
+        """Pick which fixed load's schedule to edit (step 1 of 2: pick -> schedule)."""
         if not self._fixed_loads:
             return self.async_abort(reason="no_fixed_loads")
         if user_input is not None:
             self._editing_fixed_load_name = user_input[CONF_NAME]
-            return await self.async_step_edit_fixed_load_phases()
+            return await self.async_step_edit_fixed_load_schedule()
         names = [f[CONF_NAME] for f in self._fixed_loads]
         return self.async_show_form(
             step_id="edit_fixed_load", data_schema=vol.Schema({vol.Required(CONF_NAME): vol.In(names)})
         )
 
-    async def async_step_edit_fixed_load_phases(self, user_input: dict[str, Any] | None = None):
+    async def async_step_edit_fixed_load_schedule(self, user_input: dict[str, Any] | None = None):
         load_name = self._editing_fixed_load_name
         load = next(f for f in self._fixed_loads if f[CONF_NAME] == load_name)
         if user_input is not None:
             try:
-                phases = _parse_phases(user_input["phases"])
-            except _PhaseParseError as err:
+                start_time, phases = _parse_fixed_load_schedule(user_input["schedule"])
+            except _FixedLoadParseError as err:
                 return self.async_show_form(
-                    step_id="edit_fixed_load_phases",
-                    data_schema=_phases_schema(user_input["phases"]),
-                    errors={"phases": err.error_key},
+                    step_id="edit_fixed_load_schedule",
+                    data_schema=_fixed_load_schedule_schema(user_input["schedule"]),
+                    errors={"schedule": err.error_key},
                 )
             self._fixed_loads = [
-                {**f, CONF_POWER_PROFILE: phases} if f[CONF_NAME] == load_name else f for f in self._fixed_loads
+                {**f, CONF_START_TIME: start_time, CONF_POWER_PROFILE: phases} if f[CONF_NAME] == load_name else f
+                for f in self._fixed_loads
             ]
             return await self._finish_step("fixed_loads_menu")
+        default_text = _fixed_load_schedule_to_text(load[CONF_START_TIME], load[CONF_POWER_PROFILE])
         return self.async_show_form(
-            step_id="edit_fixed_load_phases", data_schema=_phases_schema(_phases_to_text(load[CONF_POWER_PROFILE]))
+            step_id="edit_fixed_load_schedule", data_schema=_fixed_load_schedule_schema(default_text)
         )
 
     async def async_step_remove_fixed_load(self, user_input: dict[str, Any] | None = None):
