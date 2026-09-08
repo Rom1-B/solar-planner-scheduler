@@ -199,17 +199,18 @@ class SolarPlannerCard extends HTMLElement {
   }
 
   // config.devices is a list of device slugs; entity_ids are built from each program's own
-  // server-computed "slug" (see _baseConfig()), never approximated client-side.
+  // server-computed "slug" (see _baseConfig()), never approximated client-side. Omitted/empty is
+  // valid: a forecast-only card (no device rows) has no need for it.
   setConfig(config) {
-    if (!Array.isArray(config.devices) || !config.devices.length) {
-      throw new Error("solar-planner-card: 'devices' must be a non-empty array of device slugs");
+    if (config.devices !== undefined && !Array.isArray(config.devices)) {
+      throw new Error("solar-planner-card: 'devices' must be an array of device slugs");
     }
-    for (const slug of config.devices) {
+    for (const slug of config.devices || []) {
       if (typeof slug !== "string" || !slug) {
         throw new Error("solar-planner-card: each entry in 'devices' must be a non-empty slug string");
       }
     }
-    this._config = config;
+    this._config = { ...config, devices: config.devices || [] };
     this._showChart = config.chart_expanded !== false;
     this._showTable = !!config.table_expanded;
     this._lastRefresh = 0;

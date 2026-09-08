@@ -626,6 +626,22 @@ test("a full-day fixed load doesn't pull the default view back to midnight", () 
   assert.ok(nowX - marginLeft >= 0, `expected "now" at or after the left margin, got ${nowX - marginLeft}`);
 });
 
+test("setConfig accepts an omitted devices array for a forecast-only card", () => {
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const card = new Card();
+  assert.doesNotThrow(() => card.setConfig({}));
+  card._hass = {
+    themes: { darkMode: false },
+    states: { ...BASE_CONFIG_ENTITY, ...configEntityWithForecast(buildForecast(dayStart)) },
+  };
+  setDevicesAttr(card, []);
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  const nowX = parseFloat(/x1="([\d.]+)"[^>]*class="now-line"/.exec(html)?.[1] ?? "NaN");
+  assert.ok(!Number.isNaN(nowX), "expected the forecast chart to render even with no devices");
+});
+
 test("each device's coverage badge reflects its own sensor attribute independently", () => {
   // Coverage subtraction between overlapping devices is now computed server-side (coordinator.py).
   // This only checks the card renders each device's own reported number, not the subtraction math itself.

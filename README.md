@@ -13,7 +13,7 @@ A solar forecast entity already set up in Home Assistant, from a supported provi
 [Solcast](https://github.com/BJReplay/ha-solcast-solar) or
 [Helios Forecast](https://github.com/ReikanYsora/Helios-Forecast). In the integration's base
 settings, fill in the entity field(s) matching whichever you have — both, if you want to switch
-between them from the card without reopening the config.
+between them from the card without reopening the config, or blend them ("Average"/"Min").
 
 ## Installation
 
@@ -60,6 +60,10 @@ the entity directly, to force a time. Click "Auto" to cancel a forced time and s
 
 Per (device, program) pair: `datetime.<device>_<program>_start`,
 `binary_sensor.<device>_<program>_should_run`, `switch.<device>_<program>_active`.
+
+`select.solar_planner_scheduler_forecast_source` picks which configured provider drives
+scheduling; if two are configured it also offers "Average" (mean of both) and "Min" (the more
+pessimistic of the two).
 
 `sensor.solar_planner_scheduler_current_price` exposes the live €/kWh price (when tariff tracking
 is enabled), usable as the Energy dashboard's "current price" source for grid-consumption cost.
@@ -109,7 +113,7 @@ Served and registered automatically, no separate install.
 
 ```yaml
 type: custom:solar-planner-card
-devices:
+devices:                # optional, omit for a forecast-only card with no device rows
   - lave_linge
   - lave_vaisselle
 chart_expanded: true    # optional, default true (the forecast chart/gantt/device rows)
@@ -129,6 +133,9 @@ fixed display window around the current time; they're display-only and don't aff
 horizontally: leave it unset (or equal to `chart_hours_past + chart_hours_future`) to always fit
 the whole window without scrolling, or set it smaller (e.g. to widen `chart_hours_future` to cover
 several days while still seeing only one day at a time by default).
+
+Note: the forecast curve is never archived, so a large `chart_hours_past` just shows an empty area
+before today; real production/consumption history renders normally over the full window.
 
 ## Development
 
