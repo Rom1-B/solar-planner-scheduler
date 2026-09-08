@@ -39,6 +39,7 @@ from custom_components.solar_planner_scheduler.const import (
     DOMAIN,
     FORECAST_PROVIDER_AVERAGE,
     FORECAST_PROVIDER_HELIOS,
+    FORECAST_PROVIDER_MIN,
     FORECAST_PROVIDER_SOLCAST,
     NONE_PROGRAM,
 )
@@ -1432,6 +1433,35 @@ async def test_async_update_data_averages_every_resolved_provider_when_average_s
 
     # solcast: pv_estimate 1.0 kW -> 1000 W ; helios: 3000 W already -> mean 2000 W.
     assert coordinator._theoretical_points == [{"time": now, "w": 2000.0, "w10": 2000.0, "w90": 2000.0}]
+
+
+async def test_async_update_data_takes_the_minimum_across_every_resolved_provider_when_min_selected(hass):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.forecast_today"],
+            CONF_FORECAST_ENTITIES_HELIOS: "sensor.helios_power_now",
+            CONF_MAX_SIMULTANEOUS_POWER: 4000,
+        },
+        options={},
+    )
+    entry.add_to_hass(hass)
+    now = dt_util.now()
+    hass.states.async_set(
+        "sensor.forecast_today", "1", {"detailedForecast": [{"period_start": now, "pv_estimate": 1.0}]}
+    )
+    hass.states.async_set(
+        "sensor.helios_power_now", "3000", {"forecast": [{"datetime": now.isoformat(), "watts": 3000.0}]}
+    )
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await coordinator.async_set_forecast_source(FORECAST_PROVIDER_MIN)
+    await _flush(coordinator)
+
+    await coordinator._async_update_data()
+
+    # solcast: pv_estimate 1.0 kW -> 1000 W ; helios: 3000 W already -> min 1000 W.
+    assert coordinator._theoretical_points == [{"time": now, "w": 1000.0, "w10": 1000.0, "w90": 1000.0}]
 
 
 async def test_async_update_data_falls_back_from_average_when_only_one_provider_resolves(hass):

@@ -91,6 +91,13 @@ def average_forecast_points(curves: Sequence[Sequence[dict]]) -> list[dict]:
     return _combine_curves(curves, statistics.mean)
 
 
+def min_forecast_points(curves: Sequence[Sequence[dict]]) -> list[dict]:
+    """Element-wise minimum across N forecast curves (see _combine_curves), used by the card's
+    "Min" forecast source mode: the pessimistic blend of every configured provider.
+    """
+    return _combine_curves(curves, min)
+
+
 def phase_segments(item: dict) -> list[dict]:
     """Breaks an item into absolute-time phase segments; no profile means one flat segment."""
     profile = item.get("profile")

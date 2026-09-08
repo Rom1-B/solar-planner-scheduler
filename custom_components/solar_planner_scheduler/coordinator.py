@@ -42,6 +42,7 @@ from .const import (
     DOMAIN,
     FORECAST_PROVIDER_AVERAGE,
     FORECAST_PROVIDER_HELIOS,
+    FORECAST_PROVIDER_MIN,
     FORECAST_PROVIDER_SOLCAST,
     NONE_PROGRAM,
     WEEKDAYS,
@@ -55,6 +56,7 @@ from .scheduling import (
     discover_power_levels,
     find_best_placement,
     instant_deficit_cost,
+    min_forecast_points,
     phase_segments,
     resegment_power_trace,
 )
@@ -272,6 +274,7 @@ def _read_provider_points(hass: HomeAssistant, resolved_sources: dict[str, list[
 # deliberately public.
 FORECAST_COMBINERS = {
     FORECAST_PROVIDER_AVERAGE: average_forecast_points,
+    FORECAST_PROVIDER_MIN: min_forecast_points,
 }
 
 

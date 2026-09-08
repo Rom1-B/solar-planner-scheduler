@@ -16,7 +16,12 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN
 from .coordinator import FORECAST_COMBINERS, SolarPlannerSchedulerCoordinator, resolve_forecast_sources
 
-_PROVIDER_LABELS = {"solcast": "Solcast", "helios_forecast": "Helios Forecast", "average": "Average"}
+_PROVIDER_LABELS = {
+    "solcast": "Solcast",
+    "helios_forecast": "Helios Forecast",
+    "average": "Average",
+    "min": "Min",
+}
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:

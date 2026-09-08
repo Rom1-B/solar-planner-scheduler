@@ -18,6 +18,7 @@ from custom_components.solar_planner_scheduler.scheduling import (
     instant_deficit_cost,
     instant_deficit_wh,
     coverage_percent,
+    min_forecast_points,
     phase_segments,
     price_at,
     resegment_power_trace,
@@ -637,3 +638,53 @@ def test_average_forecast_points_averages_three_curves():
     b = [{"time": t(8, 0), "w": 200, "w10": 200, "w90": 200}]
     c = [{"time": t(8, 0), "w": 300, "w10": 300, "w90": 300}]
     assert average_forecast_points([a, b, c]) == [{"time": t(8, 0), "w": 200, "w10": 200, "w90": 200}]
+
+
+def test_min_forecast_points_returns_empty_for_no_curves():
+    assert min_forecast_points([]) == []
+
+
+def test_min_forecast_points_returns_empty_when_every_curve_is_empty():
+    assert min_forecast_points([[], []]) == []
+
+
+def test_min_forecast_points_returns_the_only_non_empty_curve_unchanged():
+    curve = [{"time": t(8, 0), "w": 100, "w10": 80, "w90": 120}]
+    assert min_forecast_points([[], curve]) == curve
+
+
+def test_min_forecast_points_takes_the_minimum_of_two_curves_on_the_same_grid():
+    a = [
+        {"time": t(8, 0), "w": 100, "w10": 80, "w90": 120},
+        {"time": t(9, 0), "w": 200, "w10": 150, "w90": 250},
+    ]
+    b = [
+        {"time": t(8, 0), "w": 300, "w10": 260, "w90": 340},
+        {"time": t(9, 0), "w": 400, "w10": 350, "w90": 450},
+    ]
+    assert min_forecast_points([a, b]) == [
+        {"time": t(8, 0), "w": 100, "w10": 80, "w90": 120},
+        {"time": t(9, 0), "w": 200, "w10": 150, "w90": 250},
+    ]
+
+
+def test_min_forecast_points_aligns_curves_on_different_time_grids():
+    # a has two points, b has one: a timestamp unique to one curve gets the other interpolated
+    # (clamped to its nearest point where a's own grid doesn't reach that far).
+    a = [
+        {"time": t(8, 0), "w": 0, "w10": 0, "w90": 0},
+        {"time": t(10, 0), "w": 200, "w10": 200, "w90": 200},
+    ]
+    b = [{"time": t(9, 0), "w": 500, "w10": 500, "w90": 500}]
+    assert min_forecast_points([a, b]) == [
+        {"time": t(8, 0), "w": 0, "w10": 0, "w90": 0},  # a=0, b clamped to 500
+        {"time": t(9, 0), "w": 100.0, "w10": 100.0, "w90": 100.0},  # a interpolated to 100, b=500
+        {"time": t(10, 0), "w": 200, "w10": 200, "w90": 200},  # a=200, b clamped to 500
+    ]
+
+
+def test_min_forecast_points_takes_the_minimum_of_three_curves():
+    a = [{"time": t(8, 0), "w": 300, "w10": 300, "w90": 300}]
+    b = [{"time": t(8, 0), "w": 100, "w10": 100, "w90": 100}]
+    c = [{"time": t(8, 0), "w": 200, "w10": 200, "w90": 200}]
+    assert min_forecast_points([a, b, c]) == [{"time": t(8, 0), "w": 100, "w10": 100, "w90": 100}]
