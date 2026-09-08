@@ -109,7 +109,7 @@
         "title": "Program phases",
         "data": { "phases": "Phases", "auto_days": "Auto-schedule on" },
         "data_description": {
-          "phases": "One phase per line: `20min@150W` or `1.5h@150W`.",
+          "phases": "One phase per line: `20min@150W` or `1.5h@150W`. Rough guesses are fine, corrected automatically after real runs.",
           "auto_days": "Check days for auto-scheduling."
         }
       },
@@ -122,7 +122,7 @@
         "title": "Program phases",
         "data": { "phases": "Phases", "auto_days": "Auto-schedule on" },
         "data_description": {
-          "phases": "One phase per line: `20min@150W` or `1.5h@150W`. Replaces the whole list.",
+          "phases": "One phase per line: `20min@150W` or `1.5h@150W`. Replaces the whole list. Rough guesses are fine, corrected automatically after real runs.",
           "auto_days": "Check days for auto-scheduling."
         }
       },

@@ -32,12 +32,15 @@ Or manually: copy `custom_components/solar_planner_scheduler/` into your HA
 Initial setup asks for the shared entities (forecast, forecast tomorrow, production, consumption,
 max simultaneous power). Devices, programs and fixed loads are managed via "Configure":
 
-- **Device**: name + optional power sensor. "Manage a device" then opens a menu scoped to that one
-  device (edit its power sensor, add/edit/remove its programs).
+- **Device**: name + optional power sensor, used to detect when a program actually starts and to
+  learn its real phases over time. "Manage a device" then opens a menu scoped to that one device
+  (edit its power sensor, add/edit/remove its programs).
 - **Program**: from a device's own menu, name it, then list its phases, i.e. its power draw over
   time, one line per step (e.g. a washing machine: `20min@150W` to heat, then `1.5h@800W` to spin),
-  and optionally check which days it should auto-repeat on. A device can have several programs
-  active at once; `switch.<device>_<program>_active` turns each one on or off.
+  and optionally check which days it should auto-repeat on. Rough values are fine: with a power
+  sensor set, the integration corrects a program's phases automatically from its real power draw
+  after each run. A device can have several programs active at once;
+  `switch.<device>_<program>_active` turns each one on or off.
 - **Fixed load**: something that also draws power but that this integration can't move or
   control (a pool pump, a fridge cycle), so it's just subtracted from available solar capacity
   when scheduling everything else.

@@ -10,6 +10,8 @@ import pytest
 from custom_components.solar_planner_scheduler.scheduling import (
     BUCKET_MS,
     DRAG_SNAP_MS,
+    aggregate_phase_history,
+    discover_power_levels,
     find_best_placement,
     find_peak_conflicts,
     instant_deficit_cost,
@@ -17,6 +19,7 @@ from custom_components.solar_planner_scheduler.scheduling import (
     coverage_percent,
     phase_segments,
     price_at,
+    resegment_power_trace,
     schedule_proposals,
     snap_to_grid,
 )
@@ -434,3 +437,152 @@ def test_snap_to_grid_rounds_to_nearest_5_minute_mark():
     assert snap_to_grid(base + timedelta(minutes=3)) == base + timedelta(minutes=5)
     assert snap_to_grid(base - timedelta(minutes=3)) == base - timedelta(minutes=5)
     assert snap_to_grid(base + timedelta(minutes=7), DRAG_SNAP_MS) == base + timedelta(minutes=5)
+
+
+# --- resegment_power_trace() ---------------------------------------------------------------------
+# No JS equivalent: server-only phase-calibration logic, not used by the card's drag preview.
+
+
+def test_resegment_power_trace_returns_empty_for_no_trace_or_no_levels():
+    assert resegment_power_trace([], [100, 1600]) == []
+    assert resegment_power_trace([(t(8, 0), 50.0)], []) == []
+
+
+def test_resegment_power_trace_widens_the_peak_at_entry():
+    """A naive nearest-level split (midpoint 850) would only cross at the first 1600 W sample
+    (t=6), giving 6min/3min; the low-biased threshold (400) crosses one sample earlier, at the
+    first sample that's already trending up (410), giving the peak phase an extra minute.
+    """
+    levels = [100, 1600]
+    trace = [(t(8, i), w) for i, w in enumerate([100, 100, 100, 100, 390, 410, 1600, 1600, 1600, 1600])]
+
+    assert resegment_power_trace(trace, levels) == [
+        {"minutes": 5, "power_w": 100},
+        {"minutes": 4, "power_w": 1600},
+    ]
+
+
+def test_resegment_power_trace_widens_the_peak_at_exit():
+    """Mirror of the entry case: a naive midpoint split would drop out of the peak at the first
+    sample below 850 (t=4, w=410), giving 4min/5min; the low-biased threshold (400) only drops out
+    once the reading has nearly returned to the low level (t=5, w=390), keeping the peak longer.
+    """
+    levels = [1600, 100]
+    trace = [(t(8, i), w) for i, w in enumerate([1600, 1600, 1600, 1600, 410, 390, 100, 100, 100, 100])]
+
+    assert resegment_power_trace(trace, levels) == [
+        {"minutes": 5, "power_w": 1600},
+        {"minutes": 4, "power_w": 100},
+    ]
+
+
+def test_resegment_power_trace_rounds_watts_up_never_down():
+    levels = [100]
+    trace = [(t(8, 0), 100.2), (t(8, 1), 100.4)]  # median 100.3
+
+    assert resegment_power_trace(trace, levels)[0]["power_w"] == 101
+
+
+def test_resegment_power_trace_keeps_a_three_phase_shape_and_never_reverts_to_an_earlier_phase():
+    levels = [100, 1600, 50]
+    # A noisy dip back toward the first phase's level mid-way through the last phase (t=4, w=90)
+    # must not be mistaken for a return to phase 0 — a phase, once left, is never revisited.
+    trace = [(t(8, i), w) for i, w in enumerate([100, 1600, 1600, 90, 100])]
+
+    phases = resegment_power_trace(trace, levels)
+
+    assert len(phases) == 3
+    assert [p["minutes"] for p in phases] == [1, 2, 1]
+
+
+# --- discover_power_levels() ----------------------------------------------------------------------
+# For a program declared with a single placeholder phase (never observed yet).
+
+
+def test_discover_power_levels_returns_empty_for_no_trace():
+    assert discover_power_levels([]) == []
+
+
+def test_discover_power_levels_keeps_a_single_level_when_power_stays_flat():
+    trace = [(t(8, i), 100.0) for i in range(10)]
+    assert discover_power_levels(trace) == [100.0]
+
+
+def test_discover_power_levels_ignores_a_brief_noise_blip():
+    """A single-sample spike reverts before LEVEL_DISCOVERY_MIN_PHASE_MINUTES (2) is reached, so
+    it's folded back into the surrounding level instead of spawning a spurious phase.
+    """
+    trace = [(t(8, i), w) for i, w in enumerate([100, 100, 500, 100, 100, 100])]
+    assert discover_power_levels(trace) == [100.0]
+
+
+def test_discover_power_levels_finds_a_real_peak_then_an_idle_tail():
+    """The motivating scenario: a program declared as 1000 W for 1h, but the appliance actually
+    only draws that for the first 10 minutes then idles for the rest of the declared duration.
+    """
+    trace = [(t(8, i), w) for i, w in enumerate([1000] * 10 + [5] * 50)]
+    assert discover_power_levels(trace) == [1000.0, 5.0]
+
+
+def test_discover_power_levels_collapses_a_continuously_fluctuating_load_to_a_handful_of_levels():
+    """Regression test from a real washing-machine power trace (1-min resampled, motor/heater
+    cycling throughout the wash): with the original tight tolerance this fragmented into 11
+    levels, one per fluctuation, useless as a phase count. Not asserting the exact levels (real,
+    noisy data), just that it stays coarse.
+    """
+    watts = [11, 11, 0, 2112, 111, 84, 104, 52, 103, 103, 97, 97, 140, 228, 20, 74, 54, 73, 13, 88, 121, 0, 20, 3, 53, 62, 104, 14, 121, 14]
+    trace = [(t(8, i), w) for i, w in enumerate(watts)]
+    assert len(discover_power_levels(trace)) <= 5
+
+
+# --- aggregate_phase_history() ---------------------------------------------------------------------
+
+
+def test_aggregate_phase_history_returns_empty_for_no_history():
+    assert aggregate_phase_history([]) == []
+
+
+def test_aggregate_phase_history_uses_the_plain_max_below_the_second_highest_threshold():
+    history = [
+        [{"minutes": 10, "power_w": 1000}],
+        [{"minutes": 15, "power_w": 1200}],
+    ]
+    assert aggregate_phase_history(history) == [{"minutes": 15, "power_w": 1200}]
+
+
+def test_aggregate_phase_history_uses_the_second_highest_value_once_enough_runs_exist():
+    """The single highest run (20min/1400W) is excluded from both fields once there are enough
+    runs to do so — one atypical launch doesn't by itself dictate the declared profile.
+    """
+    history = [
+        [{"minutes": 10, "power_w": 1000}],
+        [{"minutes": 20, "power_w": 1400}],
+        [{"minutes": 15, "power_w": 1200}],
+    ]
+    assert aggregate_phase_history(history) == [{"minutes": 15, "power_w": 1200}]
+
+
+def test_aggregate_phase_history_excludes_runs_whose_phase_count_does_not_match_the_mode():
+    history = [
+        [{"minutes": 10, "power_w": 1000}],
+        [{"minutes": 12, "power_w": 1050}],
+        [{"minutes": 11, "power_w": 1020}],
+        [{"minutes": 5, "power_w": 500}, {"minutes": 5, "power_w": 0}],  # different shape, excluded
+    ]
+    assert aggregate_phase_history(history) == [{"minutes": 11, "power_w": 1020}]
+
+
+def test_aggregate_phase_history_breaks_a_tied_mode_count_toward_the_larger_count():
+    """Two runs with 1 phase, two runs with 2 phases: equally frequent, so the tie must break
+    deterministically (toward the larger count) rather than depend on set iteration order.
+    """
+    history = [
+        [{"minutes": 10, "power_w": 1000}],
+        [{"minutes": 12, "power_w": 1050}],
+        [{"minutes": 5, "power_w": 500}, {"minutes": 20, "power_w": 0}],
+        [{"minutes": 6, "power_w": 520}, {"minutes": 22, "power_w": 10}],
+    ]
+    assert aggregate_phase_history(history) == [
+        {"minutes": 6, "power_w": 520},
+        {"minutes": 22, "power_w": 10},
+    ]

@@ -48,10 +48,13 @@ from .const import (
 from .scheduling import (
     DRAG_SNAP_MS,
     Placement,
+    aggregate_phase_history,
     coverage_percent,
+    discover_power_levels,
     find_best_placement,
     instant_deficit_cost,
     phase_segments,
+    resegment_power_trace,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -96,6 +99,16 @@ STANDBY_SAMPLE_COUNT = 10
 STANDBY_MIN_SAMPLES = 3
 # Added above the learned median so normal standby noise doesn't sit right at the detection edge.
 STANDBY_MARGIN_W = 5
+
+# Below this many samples, a run's trace is too short to trust for phase recalibration.
+RUN_CALIBRATION_MIN_SAMPLES = 3
+# Most recent runs' resegmented profiles kept per program, for aggregate_phase_history().
+PHASE_HISTORY_MAX_RUNS = 7
+# A recalibrated phase is only written back if it differs from the declared one by more than this
+# many minutes, or this fraction of the declared watts (floored, for low-power phases).
+PHASE_CALIBRATION_MINUTES_TOLERANCE = 2
+PHASE_CALIBRATION_WATTS_TOLERANCE_RATIO = 0.1
+PHASE_CALIBRATION_WATTS_TOLERANCE_FLOOR_W = 20
 
 
 def _migrate_legacy_state(raw: dict) -> dict:
@@ -155,6 +168,21 @@ def _is_relevant_today(committed: dict | None, now: datetime) -> bool:
     if committed is None:
         return False
     return committed["start"].date() == now.date() or now < committed["end"]
+
+
+def _phases_differ_significantly(old_profile: list[dict], new_profile: list[dict]) -> bool:
+    """Whether a recalibrated profile is worth rewriting into config — see
+    PHASE_CALIBRATION_MINUTES_TOLERANCE/PHASE_CALIBRATION_WATTS_TOLERANCE_RATIO.
+    """
+    if len(old_profile) != len(new_profile):
+        return True
+    for old, new in zip(old_profile, new_profile):
+        if abs(old[CONF_MINUTES] - new[CONF_MINUTES]) > PHASE_CALIBRATION_MINUTES_TOLERANCE:
+            return True
+        watts_tolerance = max(PHASE_CALIBRATION_WATTS_TOLERANCE_FLOOR_W, old[CONF_POWER_W] * PHASE_CALIBRATION_WATTS_TOLERANCE_RATIO)
+        if abs(old[CONF_POWER_W] - new[CONF_POWER_W]) > watts_tolerance:
+            return True
+    return False
 
 
 def _parse_solcast_points(state) -> list[dict]:
@@ -446,6 +474,8 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         }
         state.pop("pending_forced_start", None)
         state.pop("pending_power_detected_at", None)
+        state["run_trace"] = []
+        state["phases_calibrated"] = False
         self._state.setdefault(device_name, {})[program_name] = state
         await self._store.async_save(self._state)
 
@@ -629,6 +659,83 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                     "pending_power_detected_at": now.isoformat(),
                 }
                 await self._store.async_save(self._state)
+
+    async def async_track_run_progress(self, now: datetime) -> None:
+        """Per-minute pass: records power while a slot is in progress, recalibrates its phases
+        the moment should_run flips back to False (now >= end)."""
+        for device in self.entry.options.get(CONF_DEVICES, []):
+            device_name = device[CONF_NAME]
+            power_sensor = device.get(CONF_POWER_SENSOR)
+            for program in device.get(CONF_PROGRAMS, []):
+                program_name = program[CONF_NAME]
+                if not self.is_program_active(device_name, program_name, program):
+                    continue
+                state = self._program_state(device_name, program_name)
+                committed_raw = state.get("committed")
+                if committed_raw is None:
+                    continue
+                start = dt_util.parse_datetime(committed_raw["start"])
+                end = dt_util.parse_datetime(committed_raw["end"])
+                if start is None or end is None:
+                    continue
+                if start <= now < end:
+                    power = self._current_power(power_sensor)
+                    if power is None:
+                        continue
+                    trace = [*state.get("run_trace", []), {"t": now.isoformat(), "w": power}]
+                    self._state.setdefault(device_name, {})[program_name] = {**state, "run_trace": trace}
+                    await self._store.async_save(self._state)
+                elif now >= end and not state.get("phases_calibrated"):
+                    await self._finalize_run_calibration(device_name, program_name, program, state)
+
+    async def _finalize_run_calibration(self, device_name: str, program_name: str, program: dict, state: dict) -> None:
+        """Resegment this run, fold it into phase_history, write the aggregate back if it differs
+        enough from config. Always marks phases_calibrated, even if too short/no trace to use."""
+        reference_profile = program.get(CONF_POWER_PROFILE, [])
+        trace_raw = state.get("run_trace", [])
+        history = state.get("phase_history", [])
+        if len(trace_raw) >= RUN_CALIBRATION_MIN_SAMPLES and reference_profile:
+            trace = [(dt_util.parse_datetime(s["t"]), s["w"]) for s in trace_raw if dt_util.parse_datetime(s["t"])]
+            # A single declared phase means the real shape isn't known yet (placeholder entry).
+            levels = discover_power_levels(trace) if len(reference_profile) <= 1 else [
+                phase[CONF_POWER_W] for phase in reference_profile
+            ]
+            run_profile = resegment_power_trace(trace, levels)
+            if run_profile:
+                history = [*history, run_profile][-PHASE_HISTORY_MAX_RUNS:]
+        self._state.setdefault(device_name, {})[program_name] = {
+            **state,
+            "phases_calibrated": True,
+            "run_trace": [],
+            "phase_history": history,
+        }
+        await self._store.async_save(self._state)
+        aggregated = aggregate_phase_history(history)
+        if aggregated and _phases_differ_significantly(reference_profile, aggregated):
+            self._apply_phase_calibration(device_name, program_name, aggregated)
+
+    def _apply_phase_calibration(self, device_name: str, program_name: str, new_profile: list[dict]) -> None:
+        """Rewrites one program's power_profile/duration_min in entry.options.
+
+        Deliberate exception to "the coordinator never writes to config" (reload-storm incident,
+        see switch.<device>_<program>_active): a stale profile risks a real power-budget overlap,
+        and this write is rare (once per completed run that differs).
+        """
+        devices = []
+        for device in self.entry.options.get(CONF_DEVICES, []):
+            device = dict(device)
+            if device[CONF_NAME] == device_name:
+                programs = []
+                for program in device.get(CONF_PROGRAMS, []):
+                    program = dict(program)
+                    if program[CONF_NAME] == program_name:
+                        program[CONF_POWER_PROFILE] = new_profile
+                        program[CONF_DURATION_MIN] = sum(phase[CONF_MINUTES] for phase in new_profile)
+                    programs.append(program)
+                device[CONF_PROGRAMS] = programs
+            devices.append(device)
+        new_options = {**self.entry.options, CONF_DEVICES: devices}
+        self.hass.config_entries.async_update_entry(self.entry, options=new_options)
 
     @staticmethod
     def _failed_to_start_issue_id(device_name: str, program_name: str) -> str:

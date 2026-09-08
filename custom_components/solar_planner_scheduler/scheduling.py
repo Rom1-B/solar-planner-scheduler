@@ -6,6 +6,7 @@ camelCase there — the only deliberate difference.
 from __future__ import annotations
 
 import math
+import statistics
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional, Sequence
@@ -13,6 +14,21 @@ from typing import Optional, Sequence
 SMOOTH_BUCKET_MS = 5 * 60 * 1000
 DRAG_SNAP_MS = 5 * 60 * 1000
 BUCKET_MS = 30 * 60 * 1000
+
+# Phase transition switch point, as a fraction from the lower adjacent power level toward the
+# higher one: biases toward widening whichever side is higher-power.
+PEAK_WIDEN_BIAS = 0.2
+
+# discover_power_levels(): deviation tolerance for a candidate new level, and how many consecutive
+# samples confirm it's real rather than noise. Loose enough that a continuously-fluctuating load
+# (e.g. a washing machine's motor/heater cycling) still collapses to a handful of levels instead
+# of one per fluctuation; still tight enough to separate a genuine peak from idle.
+LEVEL_DISCOVERY_REL_TOLERANCE = 0.5
+LEVEL_DISCOVERY_ABS_FLOOR_W = 50
+LEVEL_DISCOVERY_MIN_PHASE_MINUTES = 3
+
+# aggregate_phase_history(): below this many usable runs, use the plain max instead of 2nd-highest.
+PHASE_HISTORY_MIN_RUNS_FOR_SECOND_HIGHEST = 3
 
 _SMOOTH_BUCKET = timedelta(milliseconds=SMOOTH_BUCKET_MS)
 
@@ -57,6 +73,93 @@ def phase_segments(item: dict) -> list[dict]:
         t = t + timedelta(minutes=phase["minutes"])
         segments.append({"start": start, "end": t, "power": phase["power_w"]})
     return segments
+
+
+def resegment_power_trace(trace: Sequence[tuple[datetime, float]], reference_levels: Sequence[float]) -> list[dict]:
+    """Re-derive real phase durations/powers from a trace, keeping len(reference_levels) phases.
+
+    Walks the trace once, assigning each sample to the current or next phase (see PEAK_WIDEN_BIAS
+    for the switch threshold). Watts round up, never down.
+    """
+    if not trace or not reference_levels:
+        return []
+    phase_index = 0
+    boundaries = [trace[0][0]]
+    segments: list[list[float]] = [[]]
+    for t, w in trace:
+        if phase_index + 1 < len(reference_levels):
+            low, high = sorted((reference_levels[phase_index], reference_levels[phase_index + 1]))
+            threshold = low + PEAK_WIDEN_BIAS * (high - low)
+            ascending = reference_levels[phase_index + 1] > reference_levels[phase_index]
+            crossed = w >= threshold if ascending else w <= threshold
+            if crossed:
+                phase_index += 1
+                boundaries.append(t)
+                segments.append([])
+        segments[phase_index].append(w)
+    boundaries.append(trace[-1][0])
+
+    phases = []
+    for i, samples in enumerate(segments):
+        minutes = max(1, _round_half_up((boundaries[i + 1] - boundaries[i]).total_seconds() / 60))
+        power_w = math.ceil(statistics.median(samples)) if samples else math.ceil(reference_levels[i])
+        phases.append({"minutes": minutes, "power_w": power_w})
+    return phases
+
+
+def discover_power_levels(trace: Sequence[tuple[datetime, float]]) -> list[float]:
+    """Discover the distinct power levels in a trace, in order, when the real phase count isn't
+    known yet (a program declared with a single placeholder phase). A level change is only kept
+    once it holds for LEVEL_DISCOVERY_MIN_PHASE_MINUTES consecutive samples, else it's noise.
+    """
+    if not trace:
+        return []
+    levels: list[float] = []
+    current_samples = [trace[0][1]]
+    pending: list[float] = []
+    for _, w in trace[1:]:
+        current_level = statistics.median(current_samples)
+        tolerance = max(LEVEL_DISCOVERY_ABS_FLOOR_W, LEVEL_DISCOVERY_REL_TOLERANCE * current_level)
+        if abs(w - current_level) <= tolerance:
+            current_samples.extend(pending)
+            pending.clear()
+            current_samples.append(w)
+        else:
+            pending.append(w)
+            if len(pending) >= LEVEL_DISCOVERY_MIN_PHASE_MINUTES:
+                levels.append(current_level)
+                current_samples = pending
+                pending = []
+    levels.append(statistics.median(current_samples))
+    return levels
+
+
+def aggregate_phase_history(history: Sequence[list[dict]]) -> list[dict]:
+    """Combine several runs' resegmented profiles into one, pessimistically.
+
+    Only runs matching the most common phase count are used (others can't align phase-by-phase).
+    Minutes and watts are each combined per phase, independently: below
+    PHASE_HISTORY_MIN_RUNS_FOR_SECOND_HIGHEST runs, the plain max; above it, the 2nd-highest, so
+    one atypical run doesn't dictate the profile alone.
+    """
+    if not history:
+        return []
+    counts = [len(run) for run in history]
+    # Ties break toward the larger count — deterministic, unlike relying on set iteration order.
+    mode_count = max(set(counts), key=lambda c: (counts.count(c), c))
+    matching = [run for run in history if len(run) == mode_count]
+
+    def _pessimistic(values: Sequence[float]) -> float:
+        if len(values) < PHASE_HISTORY_MIN_RUNS_FOR_SECOND_HIGHEST:
+            return max(values)
+        return sorted(values, reverse=True)[1]
+
+    phases = []
+    for i in range(mode_count):
+        minutes = math.ceil(_pessimistic([run[i]["minutes"] for run in matching]))
+        power_w = math.ceil(_pessimistic([run[i]["power_w"] for run in matching]))
+        phases.append({"minutes": minutes, "power_w": power_w})
+    return phases
 
 
 def _power_at(segments: Sequence[dict], t: datetime) -> float:

@@ -45,6 +45,10 @@ from custom_components.solar_planner_scheduler.coordinator import (
     FAILED_TO_START_REPAIR_THRESHOLD,
     MANUAL_START_TOLERANCE_MINUTES,
     NIGHT_EXTENSION_HOURS,
+    PHASE_CALIBRATION_MINUTES_TOLERANCE,
+    PHASE_CALIBRATION_WATTS_TOLERANCE_FLOOR_W,
+    PHASE_HISTORY_MAX_RUNS,
+    RUN_CALIBRATION_MIN_SAMPLES,
     STANDBY_MARGIN_W,
     STANDBY_MIN_SAMPLES,
     STANDBY_SAMPLE_COUNT,
@@ -54,6 +58,7 @@ from custom_components.solar_planner_scheduler.coordinator import (
     _day_buckets,
     _is_relevant_today,
     _migrate_legacy_state,
+    _phases_differ_significantly,
     _read_forecast_points,
     compute_locked,
     resolve_forecast_sources,
@@ -1666,3 +1671,254 @@ async def test_fixed_load_cost_accounts_for_other_concurrent_loads(hass):
 
     assert coordinator.fixed_load_cost("PAC") == pytest.approx(0.40)
     assert coordinator.fixed_load_cost("Ballon") == pytest.approx(0.20)
+
+
+# --- _phases_differ_significantly() -------------------------------------------------------------
+
+
+def test_phases_differ_significantly_true_on_length_mismatch():
+    old = [{"minutes": 30, "power_w": 1600}]
+    new = [{"minutes": 30, "power_w": 1600}, {"minutes": 10, "power_w": 0}]
+    assert _phases_differ_significantly(old, new)
+
+
+def test_phases_differ_significantly_true_when_minutes_exceed_tolerance():
+    old = [{"minutes": 30, "power_w": 1600}]
+    new = [{"minutes": 30 + PHASE_CALIBRATION_MINUTES_TOLERANCE + 1, "power_w": 1600}]
+    assert _phases_differ_significantly(old, new)
+
+
+def test_phases_differ_significantly_true_when_watts_exceed_the_relative_tolerance():
+    old = [{"minutes": 30, "power_w": 1600}]
+    new = [{"minutes": 30, "power_w": 1600 + 200}]  # > 10% of 1600 (160)
+    assert _phases_differ_significantly(old, new)
+
+
+def test_phases_differ_significantly_uses_the_watts_floor_for_low_power_phases():
+    old = [{"minutes": 30, "power_w": 50}]  # 10% of 50W (5) is below the floor
+    within = [{"minutes": 30, "power_w": 50 + PHASE_CALIBRATION_WATTS_TOLERANCE_FLOOR_W}]
+    beyond = [{"minutes": 30, "power_w": 50 + PHASE_CALIBRATION_WATTS_TOLERANCE_FLOOR_W + 1}]
+    assert not _phases_differ_significantly(old, within)
+    assert _phases_differ_significantly(old, beyond)
+
+
+def test_phases_differ_significantly_false_within_tolerance():
+    old = [{"minutes": 30, "power_w": 1600}]
+    new = [{"minutes": 30 + PHASE_CALIBRATION_MINUTES_TOLERANCE, "power_w": 1600 + 50}]  # 50W < 10% of 1600
+    assert not _phases_differ_significantly(old, new)
+
+
+# --- _apply_phase_calibration() ------------------------------------------------------------------
+
+
+def test_apply_phase_calibration_rewrites_only_the_matching_program(hass):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options={
+            CONF_DEVICES: [
+                {
+                    CONF_NAME: "lave_linge",
+                    CONF_PROGRAMS: [
+                        {
+                            CONF_NAME: "Eco",
+                            CONF_POWER_PROFILE: [{CONF_MINUTES: 30, CONF_POWER_W: 1600}],
+                            CONF_DURATION_MIN: 30,
+                            CONF_AUTO_DAYS: [],
+                        },
+                        {
+                            CONF_NAME: "Intense",
+                            CONF_POWER_PROFILE: [{CONF_MINUTES: 60, CONF_POWER_W: 2000}],
+                            CONF_DURATION_MIN: 60,
+                            CONF_AUTO_DAYS: [],
+                        },
+                    ],
+                }
+            ]
+        },
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+
+    coordinator._apply_phase_calibration("lave_linge", "Eco", [{"minutes": 18, "power_w": 1650}])
+
+    programs = coordinator.entry.options[CONF_DEVICES][0][CONF_PROGRAMS]
+    assert programs[0][CONF_POWER_PROFILE] == [{"minutes": 18, "power_w": 1650}]
+    assert programs[0][CONF_DURATION_MIN] == 18
+    assert programs[1][CONF_POWER_PROFILE] == [{CONF_MINUTES: 60, CONF_POWER_W: 2000}]  # untouched
+
+
+# --- async_track_run_progress() / _finalize_run_calibration() -----------------------------------
+
+
+def _device_with_profile(profile, power_sensor="sensor.lave_linge_power"):
+    return {
+        CONF_DEVICES: [
+            {
+                CONF_NAME: "lave_linge",
+                CONF_POWER_SENSOR: power_sensor,
+                CONF_PROGRAMS: [
+                    {
+                        CONF_NAME: "Eco",
+                        CONF_POWER_PROFILE: profile,
+                        CONF_DURATION_MIN: sum(p[CONF_MINUTES] for p in profile),
+                        CONF_AUTO_DAYS: [],
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def _profile_coordinator(hass, profile, power_sensor="sensor.lave_linge_power"):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options=_device_with_profile(profile, power_sensor),
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    coordinator._state.setdefault("lave_linge", {})["Eco"] = {"active": True}
+    return coordinator
+
+
+async def test_async_track_run_progress_records_a_sample_while_in_progress(hass):
+    coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 1600}])
+    now = datetime(2026, 9, 8, 12, 10, tzinfo=timezone.utc)
+    schedule = DeviceSchedule("lave_linge", now - timedelta(minutes=5), now + timedelta(minutes=25), 80)
+    _seed_committed(coordinator, "lave_linge", "Eco", schedule)
+    hass.states.async_set("sensor.lave_linge_power", "1590")
+
+    await coordinator.async_track_run_progress(now)
+
+    assert coordinator._program_state("lave_linge", "Eco")["run_trace"] == [{"t": now.isoformat(), "w": 1590.0}]
+
+
+async def test_async_track_run_progress_finalizes_and_rewrites_config_on_a_significant_change(hass):
+    """A real cycle that finished in 17min instead of the declared 30, running a bit hotter
+    (1650W instead of 1600W): both differences exceed tolerance, so the profile gets rewritten.
+    """
+    coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 1600}])
+    start = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=30)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 80))
+    trace = [{"t": (start + timedelta(minutes=i)).isoformat(), "w": 1650.0} for i in range(18)]
+    coordinator._state["lave_linge"]["Eco"]["run_trace"] = trace
+
+    await coordinator.async_track_run_progress(end)
+
+    assert coordinator._program_state("lave_linge", "Eco")["phases_calibrated"] is True
+    updated = coordinator.entry.options[CONF_DEVICES][0][CONF_PROGRAMS][0]
+    assert updated[CONF_POWER_PROFILE] == [{"minutes": 17, "power_w": 1650}]
+    assert updated[CONF_DURATION_MIN] == 17
+
+
+async def test_async_track_run_progress_skips_calibration_when_the_trace_is_too_short(hass):
+    original_profile = [{CONF_MINUTES: 30, CONF_POWER_W: 1600}]
+    coordinator = _profile_coordinator(hass, original_profile)
+    start = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=30)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 80))
+    trace = [{"t": start.isoformat(), "w": 1650.0}] * (RUN_CALIBRATION_MIN_SAMPLES - 1)
+    coordinator._state["lave_linge"]["Eco"]["run_trace"] = trace
+
+    await coordinator.async_track_run_progress(end)
+
+    assert coordinator._program_state("lave_linge", "Eco")["phases_calibrated"] is True
+    assert coordinator.entry.options[CONF_DEVICES][0][CONF_PROGRAMS][0][CONF_POWER_PROFILE] == original_profile
+
+
+async def test_async_track_run_progress_does_not_recalibrate_twice_for_the_same_run(hass):
+    coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 1600}])
+    start = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=30)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 80))
+    trace = [{"t": (start + timedelta(minutes=i)).isoformat(), "w": 1650.0} for i in range(18)]
+    coordinator._state["lave_linge"]["Eco"]["run_trace"] = trace
+    await coordinator.async_track_run_progress(end)
+    calibrated_profile = coordinator.entry.options[CONF_DEVICES][0][CONF_PROGRAMS][0][CONF_POWER_PROFILE]
+    # Even if a stray trace shows up afterward (e.g. leftover from a race), phases_calibrated
+    # already being True must block a second rewrite.
+    coordinator._state["lave_linge"]["Eco"]["run_trace"] = [{"t": end.isoformat(), "w": 9999.0}] * 20
+
+    await coordinator.async_track_run_progress(end + timedelta(minutes=1))
+
+    assert coordinator.entry.options[CONF_DEVICES][0][CONF_PROGRAMS][0][CONF_POWER_PROFILE] == calibrated_profile
+
+
+async def _run_and_finalize(coordinator, start, minutes, watts, extra_samples=0):
+    """Simulates one full run: seeds a committed slot of `minutes` (plus extra_samples, so the
+    trace's actual span matches `minutes` exactly — resegment_power_trace() measures the span
+    between the first and last sample, so a trace needs minutes+1 samples to span `minutes`),
+    then finalizes it. Mirrors what a real new _set_committed() call does between runs
+    (phases_calibrated reset to False; phase_history is deliberately left untouched).
+    """
+    end = start + timedelta(minutes=minutes)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 80))
+    coordinator._state["lave_linge"]["Eco"]["phases_calibrated"] = False
+    sample_count = minutes + 1 + extra_samples
+    trace = [{"t": (start + timedelta(minutes=i)).isoformat(), "w": watts} for i in range(sample_count)]
+    coordinator._state["lave_linge"]["Eco"]["run_trace"] = trace
+    await coordinator.async_track_run_progress(end)
+
+
+async def test_async_track_run_progress_accumulates_history_and_uses_the_max_below_three_runs(hass):
+    coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 1600}])
+    start = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+
+    await _run_and_finalize(coordinator, start, 10, 1000.0)
+    await _run_and_finalize(coordinator, start, 15, 1200.0)
+
+    history = coordinator._program_state("lave_linge", "Eco")["phase_history"]
+    assert history == [[{"minutes": 10, "power_w": 1000}], [{"minutes": 15, "power_w": 1200}]]
+    updated = coordinator.entry.options[CONF_DEVICES][0][CONF_PROGRAMS][0]
+    assert updated[CONF_POWER_PROFILE] == [{"minutes": 15, "power_w": 1200}]
+
+
+async def test_async_track_run_progress_uses_the_second_highest_once_three_runs_exist(hass):
+    """The single highest run (20min/1400W) gets excluded from the aggregate once a 3rd run
+    lands — one atypical launch no longer dictates the declared profile by itself.
+    """
+    coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 1600}])
+    start = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+
+    await _run_and_finalize(coordinator, start, 10, 1000.0)
+    await _run_and_finalize(coordinator, start, 20, 1400.0)
+    await _run_and_finalize(coordinator, start, 15, 1200.0)
+
+    updated = coordinator.entry.options[CONF_DEVICES][0][CONF_PROGRAMS][0]
+    assert updated[CONF_POWER_PROFILE] == [{"minutes": 15, "power_w": 1200}]
+
+
+async def test_async_track_run_progress_caps_phase_history_at_the_max_run_count(hass):
+    coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 1600}])
+    start = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+
+    for minutes in range(10, 10 + PHASE_HISTORY_MAX_RUNS + 1):  # one more run than the cap allows
+        await _run_and_finalize(coordinator, start, minutes, 1000.0)
+
+    history = coordinator._program_state("lave_linge", "Eco")["phase_history"]
+    assert len(history) == PHASE_HISTORY_MAX_RUNS
+    assert history[0] == [{"minutes": 11, "power_w": 1000}]  # the first run (10min) was pushed out
+    assert history[-1] == [{"minutes": 10 + PHASE_HISTORY_MAX_RUNS, "power_w": 1000}]
+
+
+async def test_async_track_run_progress_bootstraps_a_multi_phase_profile_from_a_placeholder(hass):
+    """A program declared with a single placeholder phase (entered without knowing the real
+    behavior yet) gets its true phase count discovered from the very first run, not just a
+    duration correction applied to that same single declared phase.
+    """
+    coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 10}])
+    start = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=60)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 80))
+    trace = [
+        {"t": (start + timedelta(minutes=i)).isoformat(), "w": w}
+        for i, w in enumerate([1000.0] * 10 + [5.0] * 51)
+    ]
+    coordinator._state["lave_linge"]["Eco"]["run_trace"] = trace
+
+    await coordinator.async_track_run_progress(end)
+
+    updated = coordinator.entry.options[CONF_DEVICES][0][CONF_PROGRAMS][0]
+    assert updated[CONF_POWER_PROFILE] == [{"minutes": 10, "power_w": 1000}, {"minutes": 50, "power_w": 5}]

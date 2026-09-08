@@ -109,7 +109,7 @@
         "title": "Phases du programme",
         "data": { "phases": "Phases", "auto_days": "Planification auto le" },
         "data_description": {
-          "phases": "Une phase par ligne : `20min@150W` ou `1.5h@150W`.",
+          "phases": "Une phase par ligne : `20min@150W` ou `1.5h@150W`. Une estimation suffit, c'est corrigé automatiquement après des lancements réels.",
           "auto_days": "Cochez les jours de planification auto."
         }
       },
@@ -122,7 +122,7 @@
         "title": "Phases du programme",
         "data": { "phases": "Phases", "auto_days": "Planification auto le" },
         "data_description": {
-          "phases": "Une phase par ligne : `20min@150W` ou `1.5h@150W`. Remplace toute la liste.",
+          "phases": "Une phase par ligne : `20min@150W` ou `1.5h@150W`. Remplace toute la liste. Une estimation suffit, c'est corrigé automatiquement après des lancements réels.",
           "auto_days": "Cochez les jours de planification auto."
         }
       },
