@@ -61,6 +61,36 @@ def interpolate(points: Sequence[dict], t: datetime) -> float:
     return 0.0
 
 
+def _combine_curves(curves: Sequence[Sequence[dict]], reduce_fn) -> list[dict]:
+    """Aligns several time-sorted forecast curves (each a list of {"time", "w", "w10", "w90"})
+    onto their shared timestamp union via interpolate(), then reduces each field independently
+    with reduce_fn (a function taking a list of floats and returning one). Empty curves are
+    dropped first: they must not pull an aggregate down or skew a count-based reduce_fn.
+    """
+    non_empty = [c for c in curves if c]
+    if not non_empty:
+        return []
+    if len(non_empty) == 1:
+        return list(non_empty[0])
+    times = sorted({p["time"] for c in non_empty for p in c})
+    fields = ("w", "w10", "w90")
+    remapped = [{f: [{"time": p["time"], "w": p[f]} for p in c] for f in fields} for c in non_empty]
+    result = []
+    for t in times:
+        point = {"time": t}
+        for f in fields:
+            point[f] = reduce_fn([interpolate(r[f], t) for r in remapped])
+        result.append(point)
+    return result
+
+
+def average_forecast_points(curves: Sequence[Sequence[dict]]) -> list[dict]:
+    """Element-wise mean across N forecast curves (see _combine_curves), used by the card's
+    "Average" forecast source mode to blend every configured provider into one curve.
+    """
+    return _combine_curves(curves, statistics.mean)
+
+
 def phase_segments(item: dict) -> list[dict]:
     """Breaks an item into absolute-time phase segments; no profile means one flat segment."""
     profile = item.get("profile")

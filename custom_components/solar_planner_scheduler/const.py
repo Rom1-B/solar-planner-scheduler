@@ -10,6 +10,8 @@ CONF_FORECAST_ENTITIES_HELIOS = "forecast_entities_helios"
 FORECAST_PROVIDER_SOLCAST = "solcast"
 FORECAST_PROVIDER_HELIOS = "helios_forecast"
 FORECAST_PROVIDERS = [FORECAST_PROVIDER_SOLCAST, FORECAST_PROVIDER_HELIOS]
+# Virtual provider: combines every currently resolved real provider (see FORECAST_COMBINERS).
+FORECAST_PROVIDER_AVERAGE = "average"
 CONF_PRODUCTION_ENTITY = "production_entity"
 CONF_CONSUMPTION_ENTITY = "consumption_entity"
 CONF_MAX_SIMULTANEOUS_POWER = "max_simultaneous_power"

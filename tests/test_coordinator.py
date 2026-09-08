@@ -37,6 +37,7 @@ from custom_components.solar_planner_scheduler.const import (
     DEFAULT_IDLE_POWER_THRESHOLD,
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
+    FORECAST_PROVIDER_AVERAGE,
     FORECAST_PROVIDER_HELIOS,
     FORECAST_PROVIDER_SOLCAST,
     NONE_PROGRAM,
@@ -1396,6 +1397,59 @@ async def test_async_update_data_falls_back_when_the_stored_source_is_no_longer_
     coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
     await coordinator.async_load_state()
     await coordinator.async_set_forecast_source(FORECAST_PROVIDER_SOLCAST)  # not configured at all
+    await coordinator.async_set_program_active("lave_vaisselle", "Eco", True)
+    await _flush(coordinator)
+
+    results = await coordinator._async_update_data()
+
+    assert results[("lave_vaisselle", "Eco")].start is not None
+
+
+async def test_async_update_data_averages_every_resolved_provider_when_average_selected(hass):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.forecast_today"],
+            CONF_FORECAST_ENTITIES_HELIOS: "sensor.helios_power_now",
+            CONF_MAX_SIMULTANEOUS_POWER: 4000,
+        },
+        options={},
+    )
+    entry.add_to_hass(hass)
+    now = dt_util.now()
+    hass.states.async_set(
+        "sensor.forecast_today", "1", {"detailedForecast": [{"period_start": now, "pv_estimate": 1.0}]}
+    )
+    hass.states.async_set(
+        "sensor.helios_power_now", "3000", {"forecast": [{"datetime": now.isoformat(), "watts": 3000.0}]}
+    )
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await coordinator.async_set_forecast_source(FORECAST_PROVIDER_AVERAGE)
+    await _flush(coordinator)
+
+    await coordinator._async_update_data()
+
+    # solcast: pv_estimate 1.0 kW -> 1000 W ; helios: 3000 W already -> mean 2000 W.
+    assert coordinator._theoretical_points == [{"time": now, "w": 2000.0, "w10": 2000.0, "w90": 2000.0}]
+
+
+async def test_async_update_data_falls_back_from_average_when_only_one_provider_resolves(hass):
+    """"Average" stored as the active choice but only one provider is still configured: falls back
+    to that one provider, same repli mechanism as any other stale choice, no exception.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITIES_HELIOS: "sensor.helios_power_now", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options=_device_options(auto_days=[]),
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set(
+        "sensor.helios_power_now", "3000", {"forecast": [{"datetime": dt_util.now().isoformat(), "watts": 3000.0}]}
+    )
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await coordinator.async_set_forecast_source(FORECAST_PROVIDER_AVERAGE)
     await coordinator.async_set_program_active("lave_vaisselle", "Eco", True)
     await _flush(coordinator)
 

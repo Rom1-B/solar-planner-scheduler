@@ -40,6 +40,7 @@ from .const import (
     DEFAULT_IDLE_POWER_THRESHOLD,
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
+    FORECAST_PROVIDER_AVERAGE,
     FORECAST_PROVIDER_HELIOS,
     FORECAST_PROVIDER_SOLCAST,
     NONE_PROGRAM,
@@ -49,6 +50,7 @@ from .scheduling import (
     DRAG_SNAP_MS,
     Placement,
     aggregate_phase_history,
+    average_forecast_points,
     coverage_percent,
     discover_power_levels,
     find_best_placement,
@@ -254,6 +256,23 @@ def _read_forecast_points(hass: HomeAssistant, entity_id: str | None, provider: 
         _LOGGER.warning("Unknown forecast provider %r, falling back to Solcast parsing", provider)
         parser = _parse_solcast_points
     return sorted(parser(state), key=lambda pt: pt["time"])
+
+
+def _read_provider_points(hass: HomeAssistant, resolved_sources: dict[str, list[str]], provider: str) -> list[dict]:
+    """Every point of every entity resolved for one provider, merged and sorted by time."""
+    points = []
+    for entity_id in resolved_sources.get(provider, []):
+        points += _read_forecast_points(hass, entity_id, provider)
+    return sorted(points, key=lambda pt: pt["time"])
+
+
+# Virtual forecast-source modes offered alongside real providers in the card's select, each
+# combining every currently resolved real provider's points into one curve. No leading underscore,
+# unlike _FORECAST_PARSERS: this table is imported by select.py to build its option list, so it's
+# deliberately public.
+FORECAST_COMBINERS = {
+    FORECAST_PROVIDER_AVERAGE: average_forecast_points,
+}
 
 
 def resolve_forecast_sources(data: dict) -> dict[str, list[str]]:
@@ -872,13 +891,15 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
 
         resolved_sources = resolve_forecast_sources(data)
         active_source = self.active_forecast_source()
-        if active_source not in resolved_sources:
+        average_available = len(resolved_sources) >= 2
+        valid_sources = set(resolved_sources) | (set(FORECAST_COMBINERS) if average_available else set())
+        if active_source not in valid_sources:
             active_source = next(iter(resolved_sources), None)
-        if active_source:
-            points = []
-            for entity_id in resolved_sources[active_source]:
-                points += _read_forecast_points(self.hass, entity_id, active_source)
-            points = sorted(points, key=lambda pt: pt["time"])
+        combiner = FORECAST_COMBINERS.get(active_source)
+        if combiner:
+            points = combiner([_read_provider_points(self.hass, resolved_sources, p) for p in resolved_sources])
+        elif active_source:
+            points = _read_provider_points(self.hass, resolved_sources, active_source)
         else:
             points = []
         self._theoretical_points = points

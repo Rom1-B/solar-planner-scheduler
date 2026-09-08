@@ -14,9 +14,9 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .coordinator import SolarPlannerSchedulerCoordinator, resolve_forecast_sources
+from .coordinator import FORECAST_COMBINERS, SolarPlannerSchedulerCoordinator, resolve_forecast_sources
 
-_PROVIDER_LABELS = {"solcast": "Solcast", "helios_forecast": "Helios Forecast"}
+_PROVIDER_LABELS = {"solcast": "Solcast", "helios_forecast": "Helios Forecast", "average": "Average"}
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
@@ -38,13 +38,17 @@ class ForecastSourceSelect(CoordinatorEntity[SolarPlannerSchedulerCoordinator], 
     @property
     def options(self) -> list[str]:
         resolved = resolve_forecast_sources(self._entry.data)
-        return [_PROVIDER_LABELS.get(p, p) for p in resolved]
+        labels = [_PROVIDER_LABELS.get(p, p) for p in resolved]
+        if len(resolved) >= 2:
+            labels += [_PROVIDER_LABELS[c] for c in FORECAST_COMBINERS]
+        return labels
 
     @property
     def current_option(self) -> str | None:
         resolved = resolve_forecast_sources(self._entry.data)
+        valid = set(resolved) | (set(FORECAST_COMBINERS) if len(resolved) >= 2 else set())
         active = self.coordinator.active_forecast_source()
-        if active not in resolved:
+        if active not in valid:
             active = next(iter(resolved), None)
         return _PROVIDER_LABELS.get(active, active) if active else None
 
