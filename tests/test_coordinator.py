@@ -45,6 +45,9 @@ from custom_components.solar_planner_scheduler.coordinator import (
     FAILED_TO_START_REPAIR_THRESHOLD,
     MANUAL_START_TOLERANCE_MINUTES,
     NIGHT_EXTENSION_HOURS,
+    STANDBY_MARGIN_W,
+    STANDBY_MIN_SAMPLES,
+    STANDBY_SAMPLE_COUNT,
     DeviceSchedule,
     SolarPlannerSchedulerCoordinator,
     _ceil_to_five_minutes,
@@ -894,14 +897,138 @@ def test_idle_threshold_for_stays_at_the_floor_for_a_low_first_phase(hass):
     coordinator = _coordinator(hass)
     profile = [{CONF_MINUTES: 20, CONF_POWER_W: 16}]
 
-    assert coordinator._idle_threshold_for(profile) == DEFAULT_IDLE_POWER_THRESHOLD
+    assert coordinator._idle_threshold_for(profile, "lave_linge") == DEFAULT_IDLE_POWER_THRESHOLD
 
 
 def test_idle_threshold_for_scales_with_a_high_first_phase(hass):
     coordinator = _coordinator(hass)
     profile = [{CONF_MINUTES: 30, CONF_POWER_W: 1600}]
 
-    assert coordinator._idle_threshold_for(profile) == 800.0
+    assert coordinator._idle_threshold_for(profile, "ballon") == 800.0
+
+
+def test_idle_threshold_for_ignores_a_learned_standby_below_the_min_sample_count(hass):
+    coordinator = _coordinator(hass)
+    coordinator._state["standby"] = {"lave_linge": [500.0] * (STANDBY_MIN_SAMPLES - 1)}
+
+    assert coordinator._idle_threshold_for([], "lave_linge") == DEFAULT_IDLE_POWER_THRESHOLD
+
+
+def test_idle_threshold_for_uses_the_learned_median_once_enough_samples_exist(hass):
+    coordinator = _coordinator(hass)
+    coordinator._state["standby"] = {"lave_linge": [20.0] * STANDBY_MIN_SAMPLES}
+
+    assert coordinator._idle_threshold_for([], "lave_linge") == 20.0 + STANDBY_MARGIN_W
+
+
+def test_idle_threshold_for_prefers_the_larger_of_learned_standby_and_profile_derived(hass):
+    coordinator = _coordinator(hass)
+    profile = [{CONF_MINUTES: 30, CONF_POWER_W: 1600}]
+    coordinator._state["standby"] = {"ballon": [3.0] * STANDBY_MIN_SAMPLES}
+
+    # profile-derived (800.0) still wins over a low learned standby (3.0 + margin)
+    assert coordinator._idle_threshold_for(profile, "ballon") == 800.0
+
+
+# --- _record_standby_sample() / _learned_standby() ----------------------------------------------
+
+
+async def test_record_standby_sample_appends_and_caps_at_standby_sample_count(hass):
+    coordinator = _coordinator(hass)
+    coordinator._state["standby"] = {"lave_linge": [111.0] + [999.0] * (STANDBY_SAMPLE_COUNT - 1)}
+
+    await coordinator._record_standby_sample("lave_linge", 4.0)
+
+    samples = coordinator._standby_samples("lave_linge")
+    assert len(samples) == STANDBY_SAMPLE_COUNT
+    assert samples[-1] == 4.0
+    assert 111.0 not in samples  # the oldest reading was pushed out, not just appended past the cap
+
+
+async def test_learned_standby_is_none_below_the_min_sample_count(hass):
+    coordinator = _coordinator(hass)
+
+    for _ in range(STANDBY_MIN_SAMPLES - 1):
+        await coordinator._record_standby_sample("lave_linge", 4.0)
+
+    assert coordinator._learned_standby("lave_linge") is None
+
+
+async def test_learned_standby_is_the_median_of_recorded_readings(hass):
+    coordinator = _coordinator(hass)
+
+    for power in (2.0, 3.0, 4.0):
+        await coordinator._record_standby_sample("lave_linge", power)
+
+    assert coordinator._learned_standby("lave_linge") == 3.0
+
+
+# --- standby sample recording inside _async_update_data() ----------------------------------------
+
+
+def _device_with_power_sensor(power_w=200, duration_min=60):
+    return {
+        CONF_DEVICES: [
+            {
+                CONF_NAME: "lave_linge",
+                CONF_POWER_SENSOR: "sensor.lave_linge_power",
+                CONF_PROGRAMS: [
+                    {
+                        CONF_NAME: "Eco",
+                        CONF_POWER_PROFILE: [{CONF_MINUTES: duration_min, CONF_POWER_W: power_w}],
+                        CONF_DURATION_MIN: duration_min,
+                        CONF_AUTO_DAYS: [],
+                    }
+                ],
+            }
+        ]
+    }
+
+
+async def test_a_fresh_search_records_a_standby_sample_when_the_device_looks_idle(hass):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options=_device_with_power_sensor(),
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set(
+        "sensor.forecast", "3", {"detailedForecast": [{"period_start": dt_util.now(), "pv_estimate": 3.0}]}
+    )
+    hass.states.async_set("sensor.lave_linge_power", "5")
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_linge", "Eco", True)
+    await _flush(coordinator)
+
+    await coordinator._async_update_data()
+
+    assert coordinator._standby_samples("lave_linge") == [5.0]
+
+
+async def test_a_fresh_search_does_not_record_standby_when_the_device_already_looks_running(hass):
+    """The failed_to_start unlock is the one should_search case where the device might actually
+    already be running (the whole point of that branch is "we're not sure it ever started") — a
+    live reading at or above the idle threshold must never be trusted as a standby sample.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options=_device_with_power_sensor(power_w=200),
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set(
+        "sensor.forecast", "3", {"detailedForecast": [{"period_start": dt_util.now(), "pv_estimate": 3.0}]}
+    )
+    hass.states.async_set("sensor.lave_linge_power", "200")  # at/above this program's idle_threshold
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_linge", "Eco", True)
+    await _flush(coordinator)
+
+    await coordinator._async_update_data()
+
+    assert coordinator._standby_samples("lave_linge") == []
 
 
 def test_reusable_committed_uses_the_passed_idle_threshold(hass):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import statistics
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -84,6 +85,17 @@ NIGHT_EXTENSION_HOURS = 5
 # How far from a program's planned start (before or after) a power reading is still trusted as
 # belonging to that same run, for recalibrating the committed slot onto the real start time.
 MANUAL_START_TOLERANCE_MINUTES = 30
+
+# How many "known idle" standby readings to keep per device, taken right before a freshly
+# searched slot is committed (the only moment a device is guaranteed not to be running yet) —
+# a small count-based window, not a time-based one: these readings are already clean by
+# construction, and far rarer than a per-cycle sample (roughly once per auto-day, not every
+# DEFAULT_UPDATE_INTERVAL_MINUTES).
+STANDBY_SAMPLE_COUNT = 10
+# Below this many readings, the learned median isn't trusted yet (cold start after install/reset).
+STANDBY_MIN_SAMPLES = 3
+# Added above the learned median so normal standby noise doesn't sit right at the detection edge.
+STANDBY_MARGIN_W = 5
 
 
 def _migrate_legacy_state(raw: dict) -> dict:
@@ -448,17 +460,45 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         except ValueError:
             return None
 
-    def _idle_threshold_for(self, profile: list[dict]) -> float:
-        """max(configured floor, half the program's first phase power).
+    def _standby_samples(self, device_name: str) -> list[float]:
+        return self._state.get("standby", {}).get(device_name, [])
 
-        A slow-starting program (low first phase) stays at the floor, unchanged from before; a
-        program that jumps straight to a peak gets a stricter, more accurate threshold instead of
-        the same flat floor for everyone.
+    async def _record_standby_sample(self, device_name: str, power: float) -> None:
+        """Append one "known idle" power reading, taken right before a freshly searched slot gets
+        committed — the only moment a device is guaranteed not to be running yet, so a single
+        reading there is already clean, unlike a per-cycle sample that would need to be filtered
+        for the device sometimes actually running. Keeps only the last STANDBY_SAMPLE_COUNT
+        readings; no time window needed since these are inherently rare and already trustworthy.
+        """
+        samples = [*self._standby_samples(device_name), power][-STANDBY_SAMPLE_COUNT:]
+        self._state.setdefault("standby", {})[device_name] = samples
+        await self._store.async_save(self._state)
+
+    def _learned_standby(self, device_name: str) -> float | None:
+        """Median of the last STANDBY_SAMPLE_COUNT known-idle readings, or None until
+        STANDBY_MIN_SAMPLES have accumulated (cold start after install/reset)."""
+        samples = self._standby_samples(device_name)
+        if len(samples) < STANDBY_MIN_SAMPLES:
+            return None
+        return statistics.median(samples)
+
+    def _idle_threshold_for(self, profile: list[dict], device_name: str) -> float:
+        """max(configured floor, half the program's first phase power, learned standby + margin).
+
+        The first two terms are the original profile-derived guess: a slow-starting program (low
+        first phase) stays at the floor, a program that jumps straight to a peak gets a stricter
+        threshold. The learned term (see _record_standby_sample/_learned_standby) overrides both
+        once enough real readings of this device's own idle draw exist — a measured standby is a
+        far more reliable signal than a guess derived from the declared profile, especially when
+        that profile's first phase is itself low-power (e.g. a wash cycle's water fill).
         """
         floor = self.entry.data.get(CONF_IDLE_POWER_THRESHOLD, DEFAULT_IDLE_POWER_THRESHOLD)
-        if not profile:
-            return floor
-        return max(floor, profile[0][CONF_POWER_W] * 0.5)
+        if profile:
+            floor = max(floor, profile[0][CONF_POWER_W] * 0.5)
+        learned = self._learned_standby(device_name)
+        if learned is not None:
+            floor = max(floor, learned + STANDBY_MARGIN_W)
+        return floor
 
     def _failed_to_start(self, device: dict, committed: dict, now: datetime, idle_threshold: float) -> bool:
         """True only if power has never reached the idle threshold since this slot's committed start.
@@ -581,7 +621,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                 power = self._current_power(device.get(CONF_POWER_SENSOR))
                 if power is None:
                     continue
-                idle_threshold = self._idle_threshold_for(program.get(CONF_POWER_PROFILE, []))
+                idle_threshold = self._idle_threshold_for(program.get(CONF_POWER_PROFILE, []), device_name)
                 if power < idle_threshold:
                     continue
                 self._state.setdefault(device_name, {})[program_name] = {
@@ -769,7 +809,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                 if duration_min is None:
                     duration_min = sum(phase[CONF_MINUTES] for phase in profile)
                 item = {"profile": profile, "duration_min": duration_min}
-                idle_threshold = self._idle_threshold_for(profile)
+                idle_threshold = self._idle_threshold_for(profile, device_name)
                 blocked = [
                     {"start": slot["start"], "end": slot["end"]}
                     for name, slot in device_slots.items()
@@ -825,6 +865,15 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                         )
                         forced = False
                         if slot is not None:
+                            # A fresh search only runs when this program isn't already in progress
+                            # (see _reusable_committed), so the device should be idle here — except
+                            # the failed_to_start unlock, whose whole premise is "it never started",
+                            # which could be wrong (e.g. it did start and the real time is being
+                            # adjusted by hand). This live check guards against exactly that: only
+                            # a reading that itself still looks idle is trusted as a standby sample.
+                            power = self._current_power(device.get(CONF_POWER_SENSOR))
+                            if power is not None and power < idle_threshold:
+                                await self._record_standby_sample(device_name, power)
                             await self._set_committed(
                                 device_name,
                                 program_name,
