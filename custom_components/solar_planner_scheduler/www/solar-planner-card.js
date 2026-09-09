@@ -403,13 +403,24 @@ class SolarPlannerCard extends HTMLElement {
   }
 
   _fixedLoadWindows(days = [0]) {
-    const today = startOfDay(new Date());
+    const chartHoursPast = this._config.chart_hours_past ?? 6;
+    const now = new Date();
+    const viewStart = new Date(now.getTime() - chartHoursPast * 3600000);
+    const today = startOfDay(now);
     const result = [];
     this._baseConfig().fixed_loads.forEach((load, loadIndex) => {
       const [h, m] = load.start_time.split(":").map(Number);
       const powerW = load.power_profile.reduce((s, p) => s + p.minutes * p.power_w, 0) / load.duration_minutes;
       for (const dayOffset of days) {
         const start = new Date(today.getTime() + dayOffset * DAY_MS + (h * 60 + m) * 60000);
+        const end = new Date(start.getTime() + load.duration_minutes * 60000);
+        // _visibleDayOffsets() reasons in whole calendar days, so it over-includes "yesterday"
+        // whenever chart_hours_past dips before midnight (e.g. it's currently 2am). Drop only an
+        // occurrence that's entirely before the real chart_hours_past cutoff (yesterday's, in that
+        // case): an already-elapsed-today occurrence must stay visible as recent history, and a
+        // future one is kept even if it pokes slightly past chart_hours_future's literal edge (an
+        // existing, deliberate "preview what's coming up soon" tolerance), so there's no upper bound.
+        if (end <= viewStart) continue;
         result.push({
           deviceName: load.name,
           programName: load.name,
@@ -419,7 +430,7 @@ class SolarPlannerCard extends HTMLElement {
           fixed: true,
           loadIndex,
           start,
-          end: new Date(start.getTime() + load.duration_minutes * 60000),
+          end,
           estimatedCost: load.estimated_cost ?? null,
           currency: load.currency ?? null,
         });

@@ -10,6 +10,29 @@ function pad(n) {
   return String(n).padStart(2, "0");
 }
 
+// Pins `new Date()`/`Date.now()` to a fixed hour:minute (today) for the duration of `fn`, restoring
+// the real Date constructor afterward even if `fn` throws. `new Date(x)` with explicit args (used
+// throughout the card for arithmetic) is left untouched.
+function withFixedNow(hours, minutes, fn) {
+  const fixed = new Date();
+  fixed.setHours(hours, minutes, 0, 0);
+  const RealDate = Date;
+  class FixedDate extends RealDate {
+    constructor(...args) {
+      super(...(args.length === 0 ? [fixed.getTime()] : args));
+    }
+    static now() {
+      return fixed.getTime();
+    }
+  }
+  global.Date = FixedDate;
+  try {
+    return fn(fixed);
+  } finally {
+    global.Date = RealDate;
+  }
+}
+
 // The card reads forecast/production/consumption/max_simultaneous_power from this sensor's
 // attributes instead of its own config: spread into every test's `states` object.
 const BASE_CONFIG_ENTITY = {
@@ -561,6 +584,41 @@ test("the table marks tomorrow's fixed-load occurrence so it doesn't read as an 
     rows.some((r) => r.startsWith("Tomorrow ")) && rows.some((r) => !r.startsWith("Tomorrow ")),
     `expected exactly one row marked "Tomorrow ", got: ${JSON.stringify(rows)}`
   );
+});
+
+test("a daily fixed load still shows exactly today+tomorrow just after midnight, not a stale yesterday row too", () => {
+  // Regression for a real CI failure: chart_hours_past (default 6) reaches into "yesterday" for any
+  // real "now" before 6am, and _visibleDayOffsets() counts that as a 3rd visible calendar day. Pinning
+  // "now" to 2:30am reproduces that exact edge deterministically, instead of depending on when CI runs.
+  withFixedNow(2, 30, () => {
+    const card = buildCard();
+    card._showTable = true;
+    card._render();
+    const html = card.shadowRoot.innerHTML;
+    const rows = [...html.matchAll(/<td>PAC[^<]*<\/td>\s*<td>([^<]*)<\/td>/g)].map((m) => m[1]);
+    assert.equal(rows.length, 2, `expected exactly two PAC rows (today + tomorrow), got ${rows.length}: ${JSON.stringify(rows)}`);
+  });
+});
+
+test("a fixed load that already finished earlier today still shows as recent history", () => {
+  // Regression for a live report right after the fix above first shipped: an earlier, wrong
+  // attempt filtered by "already elapsed relative to now" instead of "before chart_hours_past's
+  // cutoff", which also hid an occurrence that ran earlier today, not just yesterday's stale one.
+  withFixedNow(14, 0, () => {
+    const card = new Card();
+    card.setConfig({});
+    card._hass = { themes: { darkMode: false }, states: { ...BASE_CONFIG_ENTITY } };
+    setDevicesAttr(card, []);
+    setFixedLoads(card, [{ name: "PAC", start_time: "08:00", power_profile: [{ minutes: 30, power_w: 1500 }] }]);
+    card._showTable = true;
+    card._render();
+    const html = card.shadowRoot.innerHTML;
+    const rows = [...html.matchAll(/<td>PAC[^<]*<\/td>\s*<td>([^<]*)<\/td>/g)].map((m) => m[1]);
+    assert.ok(
+      rows.some((r) => r.startsWith("08:00")),
+      `expected PAC's already-elapsed-today 08:00 occurrence to still show, got ${JSON.stringify(rows)}`
+    );
+  });
 });
 
 test("the table labels a day boundary past tomorrow with its weekday name, not a flat 'Tomorrow '", () => {

@@ -44,6 +44,7 @@ from custom_components.solar_planner_scheduler.const import (
     FORECAST_PROVIDER_MIN,
     FORECAST_PROVIDER_SOLCAST,
     NONE_PROGRAM,
+    WEEKDAYS,
 )
 from custom_components.solar_planner_scheduler.coordinator import (
     FAILED_TO_START_REPAIR_THRESHOLD,
@@ -451,6 +452,32 @@ async def test_is_program_active_ignores_a_stale_false_from_a_previous_day(hass)
     coordinator._state["ballon"]["Chauffe"]["active_set_on"] = "2000-01-01"
 
     assert coordinator.is_program_active("ballon", "Chauffe", program) is True
+
+
+async def test_is_program_active_stays_false_on_a_day_rollover_that_is_not_an_auto_day(hass):
+    """Regression for a live incident (2026-09-09): Eco coton (auto_days=["fri"]) reactivated on
+    an ordinary Tuesday-to-Wednesday rollover, because the stale-False reset only checked "does
+    this program have any auto_days at all", not "is today actually one of them".
+    """
+    coordinator = _coordinator(hass)
+    not_today = next(d for d in WEEKDAYS if d != WEEKDAYS[dt_util.now().weekday()])
+    program = {CONF_NAME: "Eco coton", CONF_AUTO_DAYS: [not_today]}
+    await coordinator.async_set_program_active("lave_linge", "Eco coton", False)
+    await _flush(coordinator)
+    coordinator._state["lave_linge"]["Eco coton"]["active_set_on"] = "2000-01-01"
+
+    assert coordinator.is_program_active("lave_linge", "Eco coton", program) is False
+
+
+async def test_is_program_active_reactivates_once_today_is_actually_the_auto_day(hass):
+    coordinator = _coordinator(hass)
+    today = WEEKDAYS[dt_util.now().weekday()]
+    program = {CONF_NAME: "Eco coton", CONF_AUTO_DAYS: [today]}
+    await coordinator.async_set_program_active("lave_linge", "Eco coton", False)
+    await _flush(coordinator)
+    coordinator._state["lave_linge"]["Eco coton"]["active_set_on"] = "2000-01-01"
+
+    assert coordinator.is_program_active("lave_linge", "Eco coton", program) is True
 
 
 async def test_set_forced_start_is_readable_before_a_refresh_folds_it_in(hass):
@@ -1339,6 +1366,64 @@ async def test_activating_a_program_searches_immediately_regardless_of_auto_days
     results = await coordinator._async_update_data()
 
     assert results[("lave_vaisselle", "Eco")].start is not None
+
+
+async def test_a_dormant_on_demand_program_deactivates_itself(hass):
+    """Regression for a live incident (2026-09-09): lave-vaisselle's Eco program (empty auto_days)
+    stayed "active" indefinitely after its one-off run elapsed into a new day, since nothing ever
+    turned the switch back off once dormant, leaving it looking "armed" until turned off by hand.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options=_device_options(auto_days=[]),
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_vaisselle", "Eco", True)
+    yesterday_start = dt_util.now().replace(hour=12, minute=0, second=0, microsecond=0) - timedelta(days=1)
+    _seed_committed(
+        coordinator,
+        "lave_vaisselle",
+        "Eco",
+        DeviceSchedule("lave_vaisselle", yesterday_start, yesterday_start + timedelta(minutes=30), 80),
+    )
+    await _flush(coordinator)
+
+    results = await coordinator._async_update_data()
+
+    assert results[("lave_vaisselle", "Eco")].start is None
+    assert coordinator.is_program_active("lave_vaisselle", "Eco", {CONF_AUTO_DAYS: []}) is False
+
+
+async def test_a_dormant_auto_days_program_stays_active_for_its_next_occurrence(hass):
+    """The opposite case: a recurring program going dormant on a non-auto-day (not just any empty
+    auto_days) must stay active, so it can reactivate itself on its own on its next real auto_day.
+    """
+    not_today = next(d for d in WEEKDAYS if d != WEEKDAYS[dt_util.now().weekday()])
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options=_device_options(auto_days=[not_today]),
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_vaisselle", "Eco", True)
+    yesterday_start = dt_util.now().replace(hour=12, minute=0, second=0, microsecond=0) - timedelta(days=1)
+    _seed_committed(
+        coordinator,
+        "lave_vaisselle",
+        "Eco",
+        DeviceSchedule("lave_vaisselle", yesterday_start, yesterday_start + timedelta(minutes=30), 80),
+    )
+    await _flush(coordinator)
+
+    results = await coordinator._async_update_data()
+
+    assert results[("lave_vaisselle", "Eco")].start is None  # dormant: today isn't not_today's auto_day
+    assert coordinator.is_program_active("lave_vaisselle", "Eco", {CONF_AUTO_DAYS: [not_today]}) is True
 
 
 async def test_active_forecast_source_defaults_to_the_first_resolved_provider_when_never_chosen(hass):

@@ -51,8 +51,9 @@ max simultaneous power). Devices, programs and fixed loads are managed via "Conf
 
 Turning a program on searches for today's best slot immediately, extending up to 6h past midnight
 to reach an overnight tariff band. Once it has run, it repeats on a later day only if that day is
-checked in its auto-schedule days. Programs with no auto-schedule days stay off until you turn them
-on; programs with auto-schedule days turn on by default.
+checked in its auto-schedule days; a program with no auto-schedule days turns itself back off once
+that run is over, since nothing would ever turn it on again on its own. Programs with auto-schedule
+days turn on by default and stay on to keep coming back on their next scheduled day.
 
 `datetime.<device>_<program>_start` shows the next start time. Drag its bar on the card, or edit
 the entity directly, to force a time. Click "Auto" to cancel a forced time and search again.

@@ -407,14 +407,22 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         """Stored activation, or True if never stored and auto_days is non-empty.
 
         A manual deactivation only holds for the day it was set: an auto_days program is meant to
-        run every one of those days, so switching it off "just for today" must not silence every
-        following auto_day too — once the calendar day rolls over, a stale False is ignored.
+        run every one of those days, so switching it off "just for today" must not silence its next
+        actual auto_day. The stale-False reset only fires on that next auto_day itself, not on any
+        day rollover: a program with auto_days=["fri"] turned off on Monday must stay off Tuesday
+        through Thursday, reactivating only once Friday actually comes around.
         """
         state = self._program_state(device_name, program_name)
         stored = state.get("active")
+        auto_days = program.get(CONF_AUTO_DAYS)
         if stored is None:
-            return bool(program.get(CONF_AUTO_DAYS))
-        if not stored and program.get(CONF_AUTO_DAYS) and state.get("active_set_on") != dt_util.now().date().isoformat():
+            return bool(auto_days)
+        if (
+            not stored
+            and auto_days
+            and WEEKDAYS[dt_util.now().weekday()] in auto_days
+            and state.get("active_set_on") != dt_util.now().date().isoformat()
+        ):
             return True
         return stored
 
@@ -991,6 +999,17 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                 if dormant:
                     device_slots[program_name] = None
                     results[key] = DeviceSchedule(device_name, None, None, None)
+                    if not auto_days:
+                        # An on-demand program's one-off run is over: nothing will ever reactivate
+                        # it on its own (no auto_days to wait for), so leaving the switch "on"
+                        # would just be a stale display, unlike a recurring auto_days program which
+                        # must stay active to come back on its next auto_day.
+                        self._state.setdefault(device_name, {})[program_name] = {
+                            **self._program_state(device_name, program_name),
+                            "active": False,
+                            "active_set_on": now.date().isoformat(),
+                        }
+                        await self._store.async_save(self._state)
                     continue
                 if should_search:
                     if points:
