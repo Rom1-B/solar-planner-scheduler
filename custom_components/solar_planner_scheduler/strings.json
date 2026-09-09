@@ -4,15 +4,13 @@
       "user": {
         "title": "Solar Planner Scheduler",
         "data": {
-          "forecast_entities_solcast": "Solcast entities (optional)",
-          "forecast_entities_helios": "Helios Forecast entity (optional)",
+          "forecast_providers_enabled": "Forecast providers",
           "production_entity": "Solar production entity (optional)",
           "consumption_entity": "House consumption entity (optional)",
           "max_simultaneous_power": "Max simultaneous power (W)"
         },
         "data_description": {
-          "forecast_entities_solcast": "Select the \"today\" entity and any other Solcast forecast entity you've enabled (tomorrow, day 3, ...).",
-          "forecast_entities_helios": "Helios Forecast's power sensor."
+          "forecast_providers_enabled": "Tick which ones you have set up. Each is picked up from its own config entry automatically."
         }
       }
     }
@@ -61,15 +59,13 @@
       "edit_base": {
         "title": "Base settings",
         "data": {
-          "forecast_entities_solcast": "Solcast entities (optional)",
-          "forecast_entities_helios": "Helios Forecast entity (optional)",
+          "forecast_providers_enabled": "Forecast providers",
           "production_entity": "Solar production entity (optional)",
           "consumption_entity": "House consumption entity (optional)",
           "max_simultaneous_power": "Max simultaneous power (W)"
         },
         "data_description": {
-          "forecast_entities_solcast": "Select the \"today\" entity and any other Solcast forecast entity you've enabled (tomorrow, day 3, ...).",
-          "forecast_entities_helios": "Helios Forecast's power sensor."
+          "forecast_providers_enabled": "Tick which ones you have set up. Each is picked up from its own config entry automatically."
         }
       },
       "edit_tariff": {

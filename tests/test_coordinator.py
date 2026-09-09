@@ -21,11 +21,10 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_DEVICES,
     CONF_DURATION_MIN,
     CONF_FIXED_LOADS,
-    CONF_FORECAST_ENTITIES_HELIOS,
-    CONF_FORECAST_ENTITIES_SOLCAST,
+    CONF_FORECAST_CONFIG_ENTRY_FORECAST_SOLAR,
+    CONF_FORECAST_CONFIG_ENTRY_HELIOS,
+    CONF_FORECAST_CONFIG_ENTRY_SOLCAST,
     CONF_FORECAST_ENTITY,
-    CONF_FORECAST_PROVIDER,
-    CONF_FORECAST_TOMORROW_ENTITY,
     CONF_MAX_SIMULTANEOUS_POWER,
     CONF_MINUTES,
     CONF_NAME,
@@ -42,6 +41,7 @@ from custom_components.solar_planner_scheduler.const import (
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
     FORECAST_PROVIDER_AVERAGE,
+    FORECAST_PROVIDER_FORECAST_SOLAR,
     FORECAST_PROVIDER_HELIOS,
     FORECAST_PROVIDER_MIN,
     FORECAST_PROVIDER_SOLCAST,
@@ -64,12 +64,17 @@ from custom_components.solar_planner_scheduler.coordinator import (
     _day_buckets,
     _is_relevant_today,
     _migrate_legacy_state,
+    _discover_provider_entities,
     _phases_differ_significantly,
     _read_forecast_points,
+    _read_forecast_solar_points,
+    _read_helios_points,
+    _read_solcast_points,
     compute_locked,
     resolve_forecast_history_entities,
     resolve_forecast_sources,
 )
+from tests.conftest import register_provider_entities
 
 
 async def _flush(coordinator) -> None:
@@ -143,9 +148,8 @@ async def test_read_forecast_points_parses_helios_forecast_shape(hass):
 
 
 async def test_read_forecast_points_falls_back_to_solcast_for_unknown_provider(hass):
-    """An entry stored before CONF_FORECAST_PROVIDER existed has no value for it at all: the
-    dispatch must fall back to Solcast parsing, not raise or silently return nothing.
-    """
+    """An unrecognized provider key must fall back to Solcast parsing, not raise or silently
+    return nothing."""
     period_start = datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)
     hass.states.async_set(
         "sensor.forecast",
@@ -158,95 +162,191 @@ async def test_read_forecast_points_falls_back_to_solcast_for_unknown_provider(h
     assert points == [{"time": period_start, "w": 1500.0, "w10": 1500.0, "w90": 1500.0}]
 
 
-def test_resolve_forecast_sources_reads_the_dedicated_solcast_and_helios_fields():
-    data = {
-        CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.forecast_today", "sensor.forecast_tomorrow"],
-        CONF_FORECAST_ENTITIES_HELIOS: "sensor.helios_power_now",
-    }
-    assert resolve_forecast_sources(data) == {
-        FORECAST_PROVIDER_SOLCAST: ["sensor.forecast_today", "sensor.forecast_tomorrow"],
-        FORECAST_PROVIDER_HELIOS: ["sensor.helios_power_now"],
-    }
-
-
-def test_resolve_forecast_sources_accepts_more_than_two_solcast_entities():
-    data = {CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.day1", "sensor.day2", "sensor.day3"]}
-    assert resolve_forecast_sources(data)[FORECAST_PROVIDER_SOLCAST] == ["sensor.day1", "sensor.day2", "sensor.day3"]
-
-
-def test_resolve_forecast_sources_falls_back_to_the_legacy_single_field():
-    """An entry installed before the per-provider fields existed: only CONF_FORECAST_ENTITY (and
-    the already-detected CONF_FORECAST_PROVIDER) are present.
+async def test_read_forecast_solar_points_parses_wh_hours_into_uniform_points(hass, monkeypatch):
+    """forecast_solar has no state attribute to read at all: its curve only comes from HA's own
+    "energy platform" hook, keyed by config_entry_id, so this is mocked at the loader boundary
+    (async_get_integration) rather than via hass.states.async_set() like every other provider's
+    tests in this file.
     """
-    data = {
-        CONF_FORECAST_ENTITY: "sensor.helios_power_now",
-        CONF_FORECAST_PROVIDER: FORECAST_PROVIDER_HELIOS,
-    }
-    assert resolve_forecast_sources(data) == {FORECAST_PROVIDER_HELIOS: ["sensor.helios_power_now"]}
+    point_time = datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)
+
+    class _FakePlatform:
+        @staticmethod
+        async def async_get_solar_forecast(hass, config_entry_id):
+            assert config_entry_id == "entry123"
+            return {"wh_hours": {point_time.isoformat(): 1200}}
+
+    class _FakeIntegration:
+        async def async_get_platform(self, name):
+            assert name == "energy"
+            return _FakePlatform()
+
+    async def _fake_async_get_integration(hass, domain):
+        assert domain == FORECAST_PROVIDER_FORECAST_SOLAR
+        return _FakeIntegration()
+
+    monkeypatch.setattr(
+        "custom_components.solar_planner_scheduler.coordinator.async_get_integration", _fake_async_get_integration
+    )
+
+    points = await _read_forecast_solar_points(hass, "entry123")
+
+    assert points == [{"time": point_time, "w": 1200.0, "w10": 1200.0, "w90": 1200.0}]
 
 
-def test_resolve_forecast_sources_legacy_fallback_includes_the_tomorrow_entity():
-    data = {
-        CONF_FORECAST_ENTITY: "sensor.forecast_today",
-        CONF_FORECAST_TOMORROW_ENTITY: "sensor.forecast_tomorrow",
-        CONF_FORECAST_PROVIDER: FORECAST_PROVIDER_SOLCAST,
-    }
+async def test_read_forecast_solar_points_returns_empty_when_not_installed(hass, monkeypatch):
+    from homeassistant.loader import IntegrationNotFound
+
+    async def _raise(hass, domain):
+        raise IntegrationNotFound(domain)
+
+    monkeypatch.setattr("custom_components.solar_planner_scheduler.coordinator.async_get_integration", _raise)
+
+    assert await _read_forecast_solar_points(hass, "entry123") == []
+
+
+async def test_read_forecast_solar_points_survives_the_platform_hook_raising(hass, monkeypatch):
+    """Hit live on ha-dev: forecast_solar's own async_get_solar_forecast() raised AttributeError
+    ("ConfigEntry object has no attribute runtime_data"), not just returned None, because its own
+    coordinator hadn't completed a first refresh yet (runtime_data is only ever assigned once that
+    succeeds — e.g. right after the entry was added, or no network to reach the real forecast.solar
+    API). That exception used to propagate straight out of _async_update_data(), failing this whole
+    coordinator's update, not just this one provider's points. Mocked at the platform-hook boundary
+    (the real forecast_solar shipped with pytest-homeassistant-custom-component's HA version
+    defaults runtime_data to None on a plain MockConfigEntry, so it doesn't reproduce the exact
+    live AttributeError locally — this reproduces the failure mode directly instead).
+    """
+    class _FakePlatform:
+        @staticmethod
+        async def async_get_solar_forecast(hass, config_entry_id):
+            raise AttributeError("'ConfigEntry' object has no attribute 'runtime_data'")
+
+    class _FakeIntegration:
+        async def async_get_platform(self, name):
+            return _FakePlatform()
+
+    async def _fake_async_get_integration(hass, domain):
+        return _FakeIntegration()
+
+    monkeypatch.setattr(
+        "custom_components.solar_planner_scheduler.coordinator.async_get_integration", _fake_async_get_integration
+    )
+
+    assert await _read_forecast_solar_points(hass, "entry123") == []
+
+
+async def test_read_forecast_solar_points_returns_empty_for_a_nonexistent_config_entry(hass):
+    """No monkeypatching here: exercises the real, installed forecast_solar integration's own
+    energy.py (core HA ships it, so it's always present regardless of whether the user has
+    actually set it up) end-to-end against a config_entry_id that doesn't exist, confirming the
+    real async_get_solar_forecast()'s own None-on-missing-entry behavior surfaces as [], not a
+    raised exception.
+    """
+    assert await _read_forecast_solar_points(hass, "nonexistent") == []
+
+
+def test_discover_provider_entities_skips_a_disabled_entity(hass):
+    """A disabled entity has no state at all: discovery must skip it silently rather than error,
+    since most of Solcast's day_3..7 sensors are disabled by default.
+    """
+    entry_id = register_provider_entities(
+        hass,
+        "solcast_solar",
+        {
+            "sensor.solcast_forecast_today": {"detailedForecast": [{"period_start": "x"}]},
+            "sensor.solcast_forecast_day_3": None,  # registered, but no state: disabled
+        },
+    )
+    assert _discover_provider_entities(hass, entry_id, "detailedForecast") == ["sensor.solcast_forecast_today"]
+
+
+def test_discover_provider_entities_ignores_entities_without_the_attribute(hass):
+    entry_id = register_provider_entities(
+        hass,
+        "solcast_solar",
+        {
+            "sensor.solcast_forecast_today": {"detailedForecast": []},
+            "sensor.solcast_api_used": {"unrelated": 3},
+        },
+    )
+    assert _discover_provider_entities(hass, entry_id, "detailedForecast") == ["sensor.solcast_forecast_today"]
+
+
+async def test_read_solcast_points_merges_every_enabled_entity_on_the_config_entry(hass):
+    today = datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)
+    tomorrow = today + timedelta(days=1)
+    entry_id = register_provider_entities(
+        hass,
+        "solcast_solar",
+        {
+            "sensor.solcast_forecast_today": {"detailedForecast": [{"period_start": today, "pv_estimate": 1.0}]},
+            "sensor.solcast_forecast_tomorrow": {"detailedForecast": [{"period_start": tomorrow, "pv_estimate": 2.0}]},
+            "sensor.solcast_api_used": {"unrelated": 3},
+        },
+    )
+
+    points = await _read_solcast_points(hass, entry_id)
+
+    assert [pt["time"] for pt in points] == [today, tomorrow]
+
+
+async def test_read_helios_points_reads_the_discovered_entity(hass):
+    point_time = datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)
+    entry_id = register_provider_entities(
+        hass, "helios_forecast", {"sensor.helios_power_now": {"forecast": [{"datetime": point_time.isoformat(), "watts": 900.0}]}}
+    )
+
+    assert await _read_helios_points(hass, entry_id) == [{"time": point_time, "w": 900.0, "w10": 900.0, "w90": 900.0}]
+
+
+def test_resolve_forecast_sources_reads_the_dedicated_config_entry_fields():
+    data = {CONF_FORECAST_CONFIG_ENTRY_SOLCAST: "entry_solcast", CONF_FORECAST_CONFIG_ENTRY_HELIOS: "entry_helios"}
     assert resolve_forecast_sources(data) == {
-        FORECAST_PROVIDER_SOLCAST: ["sensor.forecast_today", "sensor.forecast_tomorrow"]
+        FORECAST_PROVIDER_SOLCAST: ["entry_solcast"],
+        FORECAST_PROVIDER_HELIOS: ["entry_helios"],
     }
 
 
-def test_resolve_forecast_sources_ignores_the_legacy_field_once_a_dedicated_field_is_set():
-    data = {
-        CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.forecast_today"],
-        CONF_FORECAST_ENTITY: "sensor.stale_leftover",
-        CONF_FORECAST_PROVIDER: FORECAST_PROVIDER_HELIOS,
-    }
-    assert resolve_forecast_sources(data) == {FORECAST_PROVIDER_SOLCAST: ["sensor.forecast_today"]}
+def test_resolve_forecast_sources_reads_the_dedicated_forecast_solar_field():
+    data = {CONF_FORECAST_CONFIG_ENTRY_FORECAST_SOLAR: "entry123"}
+    assert resolve_forecast_sources(data) == {FORECAST_PROVIDER_FORECAST_SOLAR: ["entry123"]}
 
 
 def test_resolve_forecast_sources_returns_empty_dict_when_nothing_configured():
     assert resolve_forecast_sources({}) == {}
 
 
-def test_resolve_forecast_history_entities_finds_the_helios_entity_directly(hass):
-    # The configured entity already is Helios's "power now" sensor: no lookup needed.
-    data = {CONF_FORECAST_ENTITIES_HELIOS: "sensor.helios_power_now"}
+async def test_resolve_forecast_history_entities_finds_the_helios_entity(hass):
+    entry_id = register_provider_entities(
+        hass, "helios_forecast", {"sensor.helios_power_now": {"forecast": [{"datetime": "x", "watts": 1}]}}
+    )
+    data = {CONF_FORECAST_CONFIG_ENTRY_HELIOS: entry_id}
     assert resolve_forecast_history_entities(hass, data) == {FORECAST_PROVIDER_HELIOS: "sensor.helios_power_now"}
 
 
-async def test_resolve_forecast_history_entities_finds_the_solcast_sibling_via_the_device(hass):
-    entry = MockConfigEntry(domain="solcast_solar")
-    entry.add_to_hass(hass)
-    device = dr.async_get(hass).async_get_or_create(config_entry_id=entry.entry_id, identifiers={("solcast_solar", "home")})
-    registry = er.async_get(hass)
-    registry.async_get_or_create(
-        "sensor", "solcast_solar", "forecast_today_uid", suggested_object_id="solcast_pv_forecast_forecast_today", device_id=device.id
+async def test_resolve_forecast_history_entities_finds_the_solcast_power_now_entity(hass):
+    entry_id = register_provider_entities(
+        hass,
+        "solcast_solar",
+        {
+            "sensor.solcast_pv_forecast_forecast_today": {"detailedForecast": []},
+            "sensor.solcast_pv_forecast_power_now": {"unit": "W"},
+        },
     )
-    registry.async_get_or_create(
-        "sensor", "solcast_solar", "power_now_uid", suggested_object_id="solcast_pv_forecast_power_now", device_id=device.id
-    )
-
-    data = {CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.solcast_pv_forecast_forecast_today"]}
+    data = {CONF_FORECAST_CONFIG_ENTRY_SOLCAST: entry_id}
 
     assert resolve_forecast_history_entities(hass, data) == {FORECAST_PROVIDER_SOLCAST: "sensor.solcast_pv_forecast_power_now"}
 
 
-async def test_resolve_forecast_history_entities_omits_solcast_without_a_power_now_sibling(hass):
-    entry = MockConfigEntry(domain="solcast_solar")
-    entry.add_to_hass(hass)
-    device = dr.async_get(hass).async_get_or_create(config_entry_id=entry.entry_id, identifiers={("solcast_solar", "home")})
-    er.async_get(hass).async_get_or_create(
-        "sensor", "solcast_solar", "forecast_today_uid", suggested_object_id="solcast_pv_forecast_forecast_today", device_id=device.id
-    )
-
-    data = {CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.solcast_pv_forecast_forecast_today"]}
+async def test_resolve_forecast_history_entities_omits_solcast_without_a_power_now_entity(hass):
+    entry_id = register_provider_entities(hass, "solcast_solar", {"sensor.solcast_pv_forecast_forecast_today": {"detailedForecast": []}})
+    data = {CONF_FORECAST_CONFIG_ENTRY_SOLCAST: entry_id}
 
     assert resolve_forecast_history_entities(hass, data) == {}
 
 
-def test_resolve_forecast_history_entities_omits_solcast_when_the_anchor_entity_is_unregistered(hass):
-    data = {CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.solcast_pv_forecast_forecast_today"]}
+def test_resolve_forecast_history_entities_omits_solcast_for_a_nonexistent_config_entry(hass):
+    data = {CONF_FORECAST_CONFIG_ENTRY_SOLCAST: "nonexistent"}
     assert resolve_forecast_history_entities(hass, data) == {}
 
 
@@ -1065,15 +1165,15 @@ def _device_with_power_sensor(power_w=200, duration_min=60):
 
 
 async def test_a_fresh_search_records_a_standby_sample_when_the_device_looks_idle(hass):
+    solcast_entry_id = register_provider_entities(
+        hass, "solcast_solar", {"sensor.forecast": {"detailedForecast": [{"period_start": dt_util.now(), "pv_estimate": 3.0}]}}
+    )
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        data={CONF_FORECAST_CONFIG_ENTRY_SOLCAST: solcast_entry_id, CONF_MAX_SIMULTANEOUS_POWER: 4000},
         options=_device_with_power_sensor(),
     )
     entry.add_to_hass(hass)
-    hass.states.async_set(
-        "sensor.forecast", "3", {"detailedForecast": [{"period_start": dt_util.now(), "pv_estimate": 3.0}]}
-    )
     hass.states.async_set("sensor.lave_linge_power", "5")
     coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
     await coordinator.async_load_state()
@@ -1391,17 +1491,15 @@ async def test_no_forecast_data_does_not_commit_a_guessed_now_slot(hass):
 
 
 async def test_activating_a_program_searches_immediately_regardless_of_auto_days(hass):
+    solcast_entry_id = register_provider_entities(
+        hass, "solcast_solar", {"sensor.forecast": {"detailedForecast": [{"period_start": dt_util.now(), "pv_estimate": 3.0}]}}
+    )
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        data={CONF_FORECAST_CONFIG_ENTRY_SOLCAST: solcast_entry_id, CONF_MAX_SIMULTANEOUS_POWER: 4000},
         options=_device_options(auto_days=[]),
     )
     entry.add_to_hass(hass)
-    hass.states.async_set(
-        "sensor.forecast",
-        "3",
-        {"detailedForecast": [{"period_start": dt_util.now(), "pv_estimate": 3.0}]},
-    )
     coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
     await coordinator.async_load_state()
 
@@ -1470,19 +1568,24 @@ async def test_a_dormant_auto_days_program_stays_active_for_its_next_occurrence(
     assert coordinator.is_program_active("lave_vaisselle", "Eco", {CONF_AUTO_DAYS: [not_today]}) is True
 
 
+def _helios_entry(hass, entity_id: str = "sensor.helios_power_now", watts: float = 3000.0, at=None) -> str:
+    at = at or dt_util.now()
+    return register_provider_entities(
+        hass, "helios_forecast", {entity_id: {"forecast": [{"datetime": at.isoformat(), "watts": watts}]}}
+    )
+
+
 async def test_active_forecast_source_defaults_to_the_first_resolved_provider_when_never_chosen(hass):
     """Store empty (async_set_forecast_source() never called): _async_update_data() must use the
     only/first provider resolve_forecast_sources() finds, same as before this feature existed.
     """
+    helios_entry_id = _helios_entry(hass)
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data={CONF_FORECAST_ENTITIES_HELIOS: "sensor.helios_power_now", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        data={CONF_FORECAST_CONFIG_ENTRY_HELIOS: helios_entry_id, CONF_MAX_SIMULTANEOUS_POWER: 4000},
         options=_device_options(auto_days=[]),
     )
     entry.add_to_hass(hass)
-    hass.states.async_set(
-        "sensor.helios_power_now", "3000", {"forecast": [{"datetime": dt_util.now().isoformat(), "watts": 3000.0}]}
-    )
     coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
     await coordinator.async_load_state()
     await coordinator.async_set_program_active("lave_vaisselle", "Eco", True)
@@ -1495,9 +1598,10 @@ async def test_active_forecast_source_defaults_to_the_first_resolved_provider_wh
 
 
 async def test_async_set_forecast_source_switches_without_touching_entry_data(hass):
+    helios_entry_id = _helios_entry(hass)
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data={CONF_FORECAST_ENTITIES_HELIOS: "sensor.helios_power_now", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        data={CONF_FORECAST_CONFIG_ENTRY_HELIOS: helios_entry_id, CONF_MAX_SIMULTANEOUS_POWER: 4000},
         options={},
     )
     entry.add_to_hass(hass)
@@ -1516,15 +1620,13 @@ async def test_async_update_data_falls_back_when_the_stored_source_is_no_longer_
     """A choice stored for a provider whose field has since been emptied falls back to whatever
     remains, rather than silently reading no forecast at all.
     """
+    helios_entry_id = _helios_entry(hass)
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data={CONF_FORECAST_ENTITIES_HELIOS: "sensor.helios_power_now", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        data={CONF_FORECAST_CONFIG_ENTRY_HELIOS: helios_entry_id, CONF_MAX_SIMULTANEOUS_POWER: 4000},
         options=_device_options(auto_days=[]),
     )
     entry.add_to_hass(hass)
-    hass.states.async_set(
-        "sensor.helios_power_now", "3000", {"forecast": [{"datetime": dt_util.now().isoformat(), "watts": 3000.0}]}
-    )
     coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
     await coordinator.async_load_state()
     await coordinator.async_set_forecast_source(FORECAST_PROVIDER_SOLCAST)  # not configured at all
@@ -1537,23 +1639,21 @@ async def test_async_update_data_falls_back_when_the_stored_source_is_no_longer_
 
 
 async def test_async_update_data_averages_every_resolved_provider_when_average_selected(hass):
+    now = dt_util.now()
+    solcast_entry_id = register_provider_entities(
+        hass, "solcast_solar", {"sensor.forecast_today": {"detailedForecast": [{"period_start": now, "pv_estimate": 1.0}]}}
+    )
+    helios_entry_id = _helios_entry(hass, watts=3000.0, at=now)
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={
-            CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.forecast_today"],
-            CONF_FORECAST_ENTITIES_HELIOS: "sensor.helios_power_now",
+            CONF_FORECAST_CONFIG_ENTRY_SOLCAST: solcast_entry_id,
+            CONF_FORECAST_CONFIG_ENTRY_HELIOS: helios_entry_id,
             CONF_MAX_SIMULTANEOUS_POWER: 4000,
         },
         options={},
     )
     entry.add_to_hass(hass)
-    now = dt_util.now()
-    hass.states.async_set(
-        "sensor.forecast_today", "1", {"detailedForecast": [{"period_start": now, "pv_estimate": 1.0}]}
-    )
-    hass.states.async_set(
-        "sensor.helios_power_now", "3000", {"forecast": [{"datetime": now.isoformat(), "watts": 3000.0}]}
-    )
     coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
     await coordinator.async_load_state()
     await coordinator.async_set_forecast_source(FORECAST_PROVIDER_AVERAGE)
@@ -1566,23 +1666,21 @@ async def test_async_update_data_averages_every_resolved_provider_when_average_s
 
 
 async def test_async_update_data_takes_the_minimum_across_every_resolved_provider_when_min_selected(hass):
+    now = dt_util.now()
+    solcast_entry_id = register_provider_entities(
+        hass, "solcast_solar", {"sensor.forecast_today": {"detailedForecast": [{"period_start": now, "pv_estimate": 1.0}]}}
+    )
+    helios_entry_id = _helios_entry(hass, watts=3000.0, at=now)
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={
-            CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.forecast_today"],
-            CONF_FORECAST_ENTITIES_HELIOS: "sensor.helios_power_now",
+            CONF_FORECAST_CONFIG_ENTRY_SOLCAST: solcast_entry_id,
+            CONF_FORECAST_CONFIG_ENTRY_HELIOS: helios_entry_id,
             CONF_MAX_SIMULTANEOUS_POWER: 4000,
         },
         options={},
     )
     entry.add_to_hass(hass)
-    now = dt_util.now()
-    hass.states.async_set(
-        "sensor.forecast_today", "1", {"detailedForecast": [{"period_start": now, "pv_estimate": 1.0}]}
-    )
-    hass.states.async_set(
-        "sensor.helios_power_now", "3000", {"forecast": [{"datetime": now.isoformat(), "watts": 3000.0}]}
-    )
     coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
     await coordinator.async_load_state()
     await coordinator.async_set_forecast_source(FORECAST_PROVIDER_MIN)
@@ -1598,15 +1696,13 @@ async def test_async_update_data_falls_back_from_average_when_only_one_provider_
     """"Average" stored as the active choice but only one provider is still configured: falls back
     to that one provider, same repli mechanism as any other stale choice, no exception.
     """
+    helios_entry_id = _helios_entry(hass)
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data={CONF_FORECAST_ENTITIES_HELIOS: "sensor.helios_power_now", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        data={CONF_FORECAST_CONFIG_ENTRY_HELIOS: helios_entry_id, CONF_MAX_SIMULTANEOUS_POWER: 4000},
         options=_device_options(auto_days=[]),
     )
     entry.add_to_hass(hass)
-    hass.states.async_set(
-        "sensor.helios_power_now", "3000", {"forecast": [{"datetime": dt_util.now().isoformat(), "watts": 3000.0}]}
-    )
     coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
     await coordinator.async_load_state()
     await coordinator.async_set_forecast_source(FORECAST_PROVIDER_AVERAGE)
@@ -1618,27 +1714,26 @@ async def test_async_update_data_falls_back_from_average_when_only_one_provider_
     assert results[("lave_vaisselle", "Eco")].start is not None
 
 
-async def test_async_update_data_merges_points_from_every_entity_of_the_active_provider(hass):
-    """Solcast's multi-entity field (today + tomorrow, say) must have every entity's points
-    merged and sorted, not just the first one read.
+async def test_async_update_data_merges_points_from_every_discovered_solcast_entity(hass):
+    """Solcast's own entity list (today + tomorrow, say) must have every entity's points merged
+    and sorted, not just the first one discovered.
     """
+    today = dt_util.now()
+    tomorrow = today + timedelta(days=1)
+    solcast_entry_id = register_provider_entities(
+        hass,
+        "solcast_solar",
+        {
+            "sensor.forecast_today": {"detailedForecast": [{"period_start": today, "pv_estimate": 1.0}]},
+            "sensor.forecast_tomorrow": {"detailedForecast": [{"period_start": tomorrow, "pv_estimate": 2.0}]},
+        },
+    )
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data={
-            CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.forecast_today", "sensor.forecast_tomorrow"],
-            CONF_MAX_SIMULTANEOUS_POWER: 4000,
-        },
+        data={CONF_FORECAST_CONFIG_ENTRY_SOLCAST: solcast_entry_id, CONF_MAX_SIMULTANEOUS_POWER: 4000},
         options={},
     )
     entry.add_to_hass(hass)
-    today = dt_util.now()
-    tomorrow = today + timedelta(days=1)
-    hass.states.async_set(
-        "sensor.forecast_today", "3", {"detailedForecast": [{"period_start": today, "pv_estimate": 1.0}]}
-    )
-    hass.states.async_set(
-        "sensor.forecast_tomorrow", "3", {"detailedForecast": [{"period_start": tomorrow, "pv_estimate": 2.0}]}
-    )
     coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
     await coordinator.async_load_state()
 
@@ -1647,6 +1742,41 @@ async def test_async_update_data_merges_points_from_every_entity_of_the_active_p
     times = [pt["time"] for pt in coordinator._theoretical_points]
     assert times == sorted(times)
     assert today in times and tomorrow in times
+
+
+async def test_async_update_data_reads_forecast_solar_via_the_energy_platform_hook(hass, monkeypatch):
+    """forecast_solar as the active provider: _async_update_data() must go through the
+    config_entry_id dispatch in _read_provider_points(), not treat it as an entity_id.
+    """
+    point_time = dt_util.now()
+
+    class _FakePlatform:
+        @staticmethod
+        async def async_get_solar_forecast(hass, config_entry_id):
+            return {"wh_hours": {point_time.isoformat(): 2500}}
+
+    class _FakeIntegration:
+        async def async_get_platform(self, name):
+            return _FakePlatform()
+
+    async def _fake_async_get_integration(hass, domain):
+        return _FakeIntegration()
+
+    monkeypatch.setattr(
+        "custom_components.solar_planner_scheduler.coordinator.async_get_integration", _fake_async_get_integration
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_CONFIG_ENTRY_FORECAST_SOLAR: "entry123", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options={},
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+
+    await coordinator._async_update_data()
+
+    assert coordinator._theoretical_points == [{"time": point_time, "w": 2500.0, "w10": 2500.0, "w90": 2500.0}]
 
 
 async def test_a_pending_forced_start_is_applied_and_committed(hass):
@@ -1700,9 +1830,21 @@ async def test_two_active_programs_of_the_same_device_never_get_overlapping_slot
     max_simultaneous_power (so the power-budget check alone would let them overlap), the device is
     a mutual-exclusion group — the second program must land on a distinct window.
     """
+    now = dt_util.now()
+    solcast_entry_id = register_provider_entities(
+        hass,
+        "solcast_solar",
+        {
+            "sensor.forecast": {
+                "detailedForecast": [
+                    {"period_start": now + timedelta(minutes=i * 5), "pv_estimate": 1.0} for i in range(24 * 12)
+                ]
+            }
+        },
+    )
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        data={CONF_FORECAST_CONFIG_ENTRY_SOLCAST: solcast_entry_id, CONF_MAX_SIMULTANEOUS_POWER: 4000},
         options={
             CONF_DEVICES: [
                 {
@@ -1726,16 +1868,6 @@ async def test_two_active_programs_of_the_same_device_never_get_overlapping_slot
         },
     )
     entry.add_to_hass(hass)
-    now = dt_util.now()
-    hass.states.async_set(
-        "sensor.forecast",
-        "3",
-        {
-            "detailedForecast": [
-                {"period_start": now + timedelta(minutes=i * 5), "pv_estimate": 1.0} for i in range(24 * 12)
-            ]
-        },
-    )
     coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
     await coordinator.async_load_state()
     await coordinator.async_set_program_active("lave_linge", "Eco coton", True)
@@ -1758,9 +1890,21 @@ async def test_activating_a_program_avoids_a_sibling_committed_in_an_earlier_cyc
     as each program was visited that same pass, so "Eco coton" (first in CONF_PROGRAMS order)
     never saw "5 chemises"'s pre-existing commitment and could land right on top of it.
     """
+    now = dt_util.now()
+    solcast_entry_id = register_provider_entities(
+        hass,
+        "solcast_solar",
+        {
+            "sensor.forecast": {
+                "detailedForecast": [
+                    {"period_start": now + timedelta(minutes=i * 5), "pv_estimate": 1.0} for i in range(24 * 12)
+                ]
+            }
+        },
+    )
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        data={CONF_FORECAST_CONFIG_ENTRY_SOLCAST: solcast_entry_id, CONF_MAX_SIMULTANEOUS_POWER: 4000},
         options={
             CONF_DEVICES: [
                 {
@@ -1784,16 +1928,6 @@ async def test_activating_a_program_avoids_a_sibling_committed_in_an_earlier_cyc
         },
     )
     entry.add_to_hass(hass)
-    now = dt_util.now()
-    hass.states.async_set(
-        "sensor.forecast",
-        "3",
-        {
-            "detailedForecast": [
-                {"period_start": now + timedelta(minutes=i * 5), "pv_estimate": 1.0} for i in range(24 * 12)
-            ]
-        },
-    )
     coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
     await coordinator.async_load_state()
 

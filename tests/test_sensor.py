@@ -8,7 +8,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.solar_planner_scheduler.const import (
     CONF_FIXED_LOADS,
-    CONF_FORECAST_ENTITIES_HELIOS,
+    CONF_FORECAST_CONFIG_ENTRY_HELIOS,
     CONF_FORECAST_ENTITY,
     CONF_MAX_SIMULTANEOUS_POWER,
     CONF_MINUTES,
@@ -23,6 +23,7 @@ from custom_components.solar_planner_scheduler.const import (
 )
 from custom_components.solar_planner_scheduler.coordinator import SolarPlannerSchedulerCoordinator
 from custom_components.solar_planner_scheduler.sensor import BaseConfigSensor, CurrentPriceSensor
+from tests.conftest import register_provider_entities
 
 # A single band covering the whole day makes native_value deterministic regardless of the real
 # current time, no need to freeze the clock.
@@ -105,7 +106,10 @@ async def test_base_config_sensor_exposes_theoretical_forecast(hass):
 
 
 async def test_base_config_sensor_exposes_forecast_history_entities(hass):
-    sensor, _ = _set_up_base_config_sensor(hass, {CONF_FORECAST_ENTITIES_HELIOS: "sensor.helios_power_now"})
+    entry_id = register_provider_entities(
+        hass, "helios_forecast", {"sensor.helios_power_now": {"forecast": [{"datetime": "2026-08-30T10:00:00+00:00", "watts": 1000}]}}
+    )
+    sensor, _ = _set_up_base_config_sensor(hass, {CONF_FORECAST_CONFIG_ENTRY_HELIOS: entry_id})
 
     assert sensor.extra_state_attributes["forecast_history_entities"] == {
         FORECAST_PROVIDER_HELIOS: "sensor.helios_power_now"

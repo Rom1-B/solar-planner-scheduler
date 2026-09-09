@@ -14,6 +14,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.loader import IntegrationNotFound, async_get_integration
 from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 
@@ -22,11 +23,9 @@ from .const import (
     CONF_DEVICES,
     CONF_DURATION_MIN,
     CONF_FIXED_LOADS,
-    CONF_FORECAST_ENTITIES_HELIOS,
-    CONF_FORECAST_ENTITIES_SOLCAST,
-    CONF_FORECAST_ENTITY,
-    CONF_FORECAST_PROVIDER,
-    CONF_FORECAST_TOMORROW_ENTITY,
+    CONF_FORECAST_CONFIG_ENTRY_FORECAST_SOLAR,
+    CONF_FORECAST_CONFIG_ENTRY_HELIOS,
+    CONF_FORECAST_CONFIG_ENTRY_SOLCAST,
     CONF_IDLE_POWER_THRESHOLD,
     CONF_MAX_SIMULTANEOUS_POWER,
     CONF_MINUTES,
@@ -44,6 +43,7 @@ from .const import (
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
     FORECAST_PROVIDER_AVERAGE,
+    FORECAST_PROVIDER_FORECAST_SOLAR,
     FORECAST_PROVIDER_HELIOS,
     FORECAST_PROVIDER_MIN,
     FORECAST_PROVIDER_SOLCAST,
@@ -261,11 +261,101 @@ def _read_forecast_points(hass: HomeAssistant, entity_id: str | None, provider: 
     return sorted(parser(state), key=lambda pt: pt["time"])
 
 
-def _read_provider_points(hass: HomeAssistant, resolved_sources: dict[str, list[str]], provider: str) -> list[dict]:
-    """Every point of every entity resolved for one provider, merged and sorted by time."""
+def _discover_provider_entities(hass: HomeAssistant, config_entry_id: str, attribute_key: str) -> list[str]:
+    """Every entity registered under a config entry whose *current* state carries the given list
+    attribute. A disabled entity has no state at all (hass.states.get() returns None), so this
+    naturally only picks up entities the user has actually enabled — most of Solcast's day_3..7
+    sensors are disabled by default, and must be included automatically once the user enables one,
+    never hand-maintained as a fixed "today"/"tomorrow" list.
+    """
+    registry = er.async_get(hass)
+    entity_ids = []
+    for entry in er.async_entries_for_config_entry(registry, config_entry_id):
+        state = hass.states.get(entry.entity_id)
+        if state is not None and isinstance(state.attributes.get(attribute_key), list):
+            entity_ids.append(entry.entity_id)
+    return entity_ids
+
+
+async def _read_solcast_points(hass: HomeAssistant, config_entry_id: str) -> list[dict]:
+    """Every enabled Solcast entity carrying a detailedForecast list on this config entry, merged
+    and sorted: no manual entity picking (today/tomorrow/day 3...), whatever the user has enabled
+    in Solcast's own entity list is used automatically.
+    """
     points = []
-    for entity_id in resolved_sources.get(provider, []):
-        points += _read_forecast_points(hass, entity_id, provider)
+    for entity_id in _discover_provider_entities(hass, config_entry_id, "detailedForecast"):
+        points += _read_forecast_points(hass, entity_id, FORECAST_PROVIDER_SOLCAST)
+    return sorted(points, key=lambda pt: pt["time"])
+
+
+async def _read_helios_points(hass: HomeAssistant, config_entry_id: str) -> list[dict]:
+    """Helios only ever has one relevant entity today, but discovered the same way as Solcast for
+    consistency (and so a future Helios variant exposing more than one forecast entity would just
+    work with no code change here).
+    """
+    points = []
+    for entity_id in _discover_provider_entities(hass, config_entry_id, "forecast"):
+        points += _read_forecast_points(hass, entity_id, FORECAST_PROVIDER_HELIOS)
+    return sorted(points, key=lambda pt: pt["time"])
+
+
+async def _read_forecast_solar_points(hass: HomeAssistant, config_entry_id: str) -> list[dict]:
+    """forecast_solar has no per-point forecast attribute on any entity at all (verified against
+    the real integration): its curve is only reachable via HA's own "energy platform" hook
+    (async_get_solar_forecast), the same mechanism the Energy dashboard's own solar-forecast picker
+    uses. No P10/P90: it exposes a single estimate, so w10/w90 collapse to w like any source
+    lacking percentiles.
+    """
+    try:
+        integration = await async_get_integration(hass, FORECAST_PROVIDER_FORECAST_SOLAR)
+        platform = await integration.async_get_platform("energy")
+    except (IntegrationNotFound, ImportError):
+        return []
+    get_forecast = getattr(platform, "async_get_solar_forecast", None)
+    if get_forecast is None:
+        return []
+    try:
+        data = await get_forecast(hass, config_entry_id)
+    except Exception:  # noqa: BLE001 - forecast_solar's own hook isn't defensive about this
+        # Hit live: raises AttributeError ("ConfigEntry has no attribute runtime_data") when its
+        # own coordinator hasn't completed a first refresh yet (e.g. right after the entry was
+        # added, or no network to reach the real forecast.solar API) — entry.runtime_data is only
+        # ever assigned once that first refresh succeeds. An unhandled exception here would fail
+        # this whole coordinator's update, not just this one provider's points.
+        _LOGGER.warning("forecast_solar's energy platform failed for config entry %s", config_entry_id, exc_info=True)
+        return []
+    if not data:
+        return []
+    points = []
+    for iso_time, wh in data.get("wh_hours", {}).items():
+        time = dt_util.parse_datetime(iso_time)
+        if time is None:
+            continue
+        try:
+            w = float(wh)
+        except (TypeError, ValueError):
+            continue
+        points.append({"time": time, "w": w, "w10": w, "w90": w})
+    return sorted(points, key=lambda pt: pt["time"])
+
+
+# Every provider's own (hass, config_entry_id) -> points reader: all three are symmetric now,
+# always keyed by config_entry_id (see resolve_forecast_sources), never an entity_id directly.
+_PROVIDER_POINT_READERS = {
+    FORECAST_PROVIDER_SOLCAST: _read_solcast_points,
+    FORECAST_PROVIDER_HELIOS: _read_helios_points,
+    FORECAST_PROVIDER_FORECAST_SOLAR: _read_forecast_solar_points,
+}
+
+
+async def _read_provider_points(hass: HomeAssistant, resolved_sources: dict[str, list[str]], provider: str) -> list[dict]:
+    """Every point of every config entry resolved for one provider, merged and sorted by time."""
+    reader = _PROVIDER_POINT_READERS.get(provider)
+    if reader is None:
+        return []
+    points = []
+    for config_entry_id in resolved_sources.get(provider, []):
+        points += await reader(hass, config_entry_id)
     return sorted(points, key=lambda pt: pt["time"])
 
 
@@ -280,26 +370,25 @@ FORECAST_COMBINERS = {
 
 
 def resolve_forecast_sources(data: dict) -> dict[str, list[str]]:
-    """Configured forecast providers, resolved from the dedicated per-provider fields (no
-    detection needed: the field itself says which provider its entities belong to):
-    {provider: [entity_id, ...]}. Solcast can carry several entities (today, tomorrow, day 3, ...)
-    via its multi-select field; Helios only ever has one (a plain single-entity field), repacked
-    into a one-element list here so the rest of the code (_async_update_data) treats both
-    providers uniformly. Falls back to the legacy single-entity field (CONF_FORECAST_ENTITY) for
-    an entry installed before these per-provider fields existed.
+    """Configured forecast providers, resolved from the dedicated per-provider fields: each field
+    holds a config_entry_id, not an entity_id — {provider: [config_entry_id]} for all three. The
+    config_flow only ever asks the user to tick which providers to use, in one multi-select; it
+    resolves that to these concrete fields itself, once, at submission time (see
+    _resolve_provider_selection() in config_flow.py) — never re-looked-up here on every read, and
+    this function stays a pure, hass-free lookup. The actual entities (or, for forecast_solar, the
+    energy-platform hook) are resolved from the id at read time (see _PROVIDER_POINT_READERS), so
+    this function never needs to know any provider's raw shape.
     """
     result: dict[str, list[str]] = {}
-    solcast_ids = data.get(CONF_FORECAST_ENTITIES_SOLCAST) or []
-    if solcast_ids:
-        result[FORECAST_PROVIDER_SOLCAST] = solcast_ids
-    helios_entity = data.get(CONF_FORECAST_ENTITIES_HELIOS)
-    if helios_entity:
-        result[FORECAST_PROVIDER_HELIOS] = [helios_entity]
-    if not result and data.get(CONF_FORECAST_ENTITY):
-        legacy_provider = data.get(CONF_FORECAST_PROVIDER, FORECAST_PROVIDER_SOLCAST)
-        result[legacy_provider] = [
-            e for e in [data.get(CONF_FORECAST_ENTITY), data.get(CONF_FORECAST_TOMORROW_ENTITY)] if e
-        ]
+    solcast_entry = data.get(CONF_FORECAST_CONFIG_ENTRY_SOLCAST)
+    if solcast_entry:
+        result[FORECAST_PROVIDER_SOLCAST] = [solcast_entry]
+    helios_entry = data.get(CONF_FORECAST_CONFIG_ENTRY_HELIOS)
+    if helios_entry:
+        result[FORECAST_PROVIDER_HELIOS] = [helios_entry]
+    forecast_solar_entry = data.get(CONF_FORECAST_CONFIG_ENTRY_FORECAST_SOLAR)
+    if forecast_solar_entry:
+        result[FORECAST_PROVIDER_FORECAST_SOLAR] = [forecast_solar_entry]
     return result
 
 
@@ -307,21 +396,21 @@ def resolve_forecast_history_entities(hass: HomeAssistant, data: dict) -> dict[s
     """Entity whose own state history reconstructs a provider's forecast curve before "now":
     detailedForecast/forecast aren't kept by the recorder (verified live), but a provider's plain
     "power now" sensor is, since it's just a simple numeric state. {provider: entity_id}, only for
-    providers where one was found.
+    providers where one was found. forecast_solar has no history-entity support: its data never
+    comes through an entity at all.
     """
     resolved = resolve_forecast_sources(data)
     result: dict[str, str] = {}
     if FORECAST_PROVIDER_HELIOS in resolved:
-        # The configured entity already is the "power now" sensor for Helios.
-        result[FORECAST_PROVIDER_HELIOS] = resolved[FORECAST_PROVIDER_HELIOS][0]
+        entities = _discover_provider_entities(hass, resolved[FORECAST_PROVIDER_HELIOS][0], "forecast")
+        if entities:
+            result[FORECAST_PROVIDER_HELIOS] = entities[0]
     if FORECAST_PROVIDER_SOLCAST in resolved:
         registry = er.async_get(hass)
-        anchor = registry.async_get(resolved[FORECAST_PROVIDER_SOLCAST][0])
-        if anchor and anchor.device_id:
-            for sibling in er.async_entries_for_device(registry, anchor.device_id):
-                if sibling.entity_id.endswith("_power_now"):
-                    result[FORECAST_PROVIDER_SOLCAST] = sibling.entity_id
-                    break
+        for entry in er.async_entries_for_config_entry(registry, resolved[FORECAST_PROVIDER_SOLCAST][0]):
+            if entry.entity_id.endswith("_power_now"):
+                result[FORECAST_PROVIDER_SOLCAST] = entry.entity_id
+                break
     return result
 
 
@@ -934,9 +1023,9 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             active_source = next(iter(resolved_sources), None)
         combiner = FORECAST_COMBINERS.get(active_source)
         if combiner:
-            points = combiner([_read_provider_points(self.hass, resolved_sources, p) for p in resolved_sources])
+            points = combiner([await _read_provider_points(self.hass, resolved_sources, p) for p in resolved_sources])
         elif active_source:
-            points = _read_provider_points(self.hass, resolved_sources, active_source)
+            points = await _read_provider_points(self.hass, resolved_sources, active_source)
         else:
             points = []
         self._theoretical_points = points

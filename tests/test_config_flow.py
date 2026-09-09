@@ -26,10 +26,11 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_CONSUMPTION_ENTITY,
     CONF_DEVICES,
     CONF_FIXED_LOADS,
-    CONF_FORECAST_ENTITIES_HELIOS,
-    CONF_FORECAST_ENTITIES_SOLCAST,
+    CONF_FORECAST_CONFIG_ENTRY_FORECAST_SOLAR,
+    CONF_FORECAST_CONFIG_ENTRY_HELIOS,
+    CONF_FORECAST_CONFIG_ENTRY_SOLCAST,
     CONF_FORECAST_ENTITY,
-    CONF_FORECAST_PROVIDER,
+    CONF_FORECAST_PROVIDERS_ENABLED,
     CONF_MAX_SIMULTANEOUS_POWER,
     CONF_NAME,
     CONF_PHASE_CALIBRATION_RUNS,
@@ -43,6 +44,9 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_TARIFF_BANDS,
     DEFAULT_PHASE_CALIBRATION_RUNS,
     DOMAIN,
+    FORECAST_PROVIDER_FORECAST_SOLAR,
+    FORECAST_PROVIDER_HELIOS,
+    FORECAST_PROVIDER_SOLCAST,
 )
 
 BASE_DATA = {
@@ -60,13 +64,6 @@ def _entry(hass, devices, fixed_loads=None):
     )
     entry.add_to_hass(hass)
     return entry
-
-
-def _set_solcast_state(hass, entity_id: str = "sensor.forecast") -> None:
-    """A minimal Solcast-shaped state, for tests that want a realistic forecast entity to exist
-    (submission itself no longer validates the entity's live shape — the dedicated per-provider
-    field already says which provider it belongs to)."""
-    hass.states.async_set(entity_id, "3", {"detailedForecast": []})
 
 
 async def test_add_program_phases_parses_valid_multiline_text(hass, enable_custom_integrations):
@@ -320,19 +317,20 @@ async def test_add_device_without_a_power_sensor_does_not_crash(hass, enable_cus
 async def test_edit_base_accepts_omitted_optional_entities(hass, enable_custom_integrations):
     """Regression test: same default="" bug as add_device, in the base-settings form."""
     entry = _entry(hass, [])
-    _set_solcast_state(hass)
+    MockConfigEntry(domain="solcast_solar").add_to_hass(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_base"})
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.forecast"], CONF_MAX_SIMULTANEOUS_POWER: 3000},
+        {CONF_FORECAST_PROVIDERS_ENABLED: [FORECAST_PROVIDER_SOLCAST], CONF_MAX_SIMULTANEOUS_POWER: 3000},
     )
 
     assert result["type"] == "menu"
     assert entry.data[CONF_MAX_SIMULTANEOUS_POWER] == 3000
     assert entry.data.get("production_entity") is None
-    assert entry.data[CONF_FORECAST_ENTITIES_SOLCAST] == ["sensor.forecast"]
+    assert entry.data[CONF_FORECAST_CONFIG_ENTRY_SOLCAST] is not None
+    assert CONF_FORECAST_PROVIDERS_ENABLED not in entry.data
 
 
 async def test_edit_tariff_writes_price_tracking_config_to_entry_data(hass, enable_custom_integrations):
@@ -381,7 +379,6 @@ async def test_editing_base_settings_does_not_wipe_previously_configured_tariff_
     never carries those fields. It must merge instead.
     """
     entry = _entry(hass, [])
-    _set_solcast_state(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_tariff"})
@@ -394,7 +391,7 @@ async def test_editing_base_settings_does_not_wipe_previously_configured_tariff_
     result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_base"})
     await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.forecast"], CONF_MAX_SIMULTANEOUS_POWER: 5000},
+        {CONF_FORECAST_PROVIDERS_ENABLED: [FORECAST_PROVIDER_SOLCAST], CONF_MAX_SIMULTANEOUS_POWER: 5000},
     )
 
     assert entry.data[CONF_MAX_SIMULTANEOUS_POWER] == 5000
@@ -597,62 +594,57 @@ def _selector_for(schema, field_name):
     raise KeyError(field_name)
 
 
-def test_forecast_entities_solcast_field_is_a_multi_entity_energy_picker():
-    """integration="solcast_solar" narrows the picker to Solcast's own entities specifically
-    (verified against the real instance's domain name), not every energy sensor in the house.
+def test_forecast_providers_enabled_field_is_a_multi_select_of_fixed_provider_keys():
+    """A single multi-select, not a config_entry/entity picker per provider: the user just ticks
+    which of Solcast/Helios Forecast/Forecast.Solar to use — resolve_forecast_sources() looks up
+    "the" config entry for each ticked provider's real HA domain itself, since there is
+    realistically only ever one per domain.
     """
     schema = _base_schema()
-    selector = _selector_for(schema, CONF_FORECAST_ENTITIES_SOLCAST)
-    assert selector.config["domain"] == ["sensor"]
-    assert selector.config["device_class"] == ["energy"]
-    assert selector.config["integration"] == "solcast_solar"
-    assert selector.config["multiple"] is True
-
-
-def test_forecast_entities_helios_field_is_a_single_entity_power_picker():
-    schema = _base_schema()
-    selector = _selector_for(schema, CONF_FORECAST_ENTITIES_HELIOS)
-    assert selector.config["domain"] == ["sensor"]
-    assert selector.config["device_class"] == ["power"]
-    assert selector.config["integration"] == "helios_forecast"
-    assert selector.config.get("multiple", False) is False
+    field = _selector_for(schema, CONF_FORECAST_PROVIDERS_ENABLED)
+    assert field.config["multiple"] is True
+    assert {opt["value"] for opt in field.config["options"]} == {
+        FORECAST_PROVIDER_SOLCAST,
+        FORECAST_PROVIDER_HELIOS,
+        FORECAST_PROVIDER_FORECAST_SOLAR,
+    }
 
 
 # --- forecast provider fields --------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("expected_lingering_timers", [True])
-async def test_setup_with_only_the_solcast_field_stores_no_forecast_provider(hass, enable_custom_integrations):
-    """Filling forecast_entities_solcast skips detect_forecast_provider() entirely: the field
-    already says which provider its entities belong to, so no CONF_FORECAST_PROVIDER is stored."""
-    hass.states.async_set("sensor.forecast_today", "3", {"detailedForecast": []})
-
-    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"],
-        {CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.forecast_today"], CONF_MAX_SIMULTANEOUS_POWER: 4000},
-    )
-
-    assert result["type"] == "create_entry"
-    assert result["data"][CONF_FORECAST_ENTITIES_SOLCAST] == ["sensor.forecast_today"]
-    assert CONF_FORECAST_PROVIDER not in result["data"]
-
-
-@pytest.mark.parametrize("expected_lingering_timers", [True])
 async def test_setup_with_both_provider_fields_stores_both(hass, enable_custom_integrations):
+    MockConfigEntry(domain="solcast_solar").add_to_hass(hass)
+    MockConfigEntry(domain="helios_forecast").add_to_hass(hass)
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
         {
-            CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.forecast_today", "sensor.forecast_tomorrow"],
-            CONF_FORECAST_ENTITIES_HELIOS: "sensor.helios_power_now",
+            CONF_FORECAST_PROVIDERS_ENABLED: [FORECAST_PROVIDER_SOLCAST, FORECAST_PROVIDER_HELIOS],
             CONF_MAX_SIMULTANEOUS_POWER: 4000,
         },
     )
 
     assert result["type"] == "create_entry"
-    assert result["data"][CONF_FORECAST_ENTITIES_SOLCAST] == ["sensor.forecast_today", "sensor.forecast_tomorrow"]
-    assert result["data"][CONF_FORECAST_ENTITIES_HELIOS] == "sensor.helios_power_now"
+    assert result["data"][CONF_FORECAST_CONFIG_ENTRY_SOLCAST] is not None
+    assert result["data"][CONF_FORECAST_CONFIG_ENTRY_HELIOS] is not None
+    assert CONF_FORECAST_PROVIDERS_ENABLED not in result["data"]
+
+
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+async def test_setup_with_only_forecast_solar_enabled_stores_it_alone(hass, enable_custom_integrations):
+    MockConfigEntry(domain="forecast_solar").add_to_hass(hass)
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_FORECAST_PROVIDERS_ENABLED: [FORECAST_PROVIDER_FORECAST_SOLAR], CONF_MAX_SIMULTANEOUS_POWER: 4000},
+    )
+
+    assert result["type"] == "create_entry"
+    assert result["data"][CONF_FORECAST_CONFIG_ENTRY_FORECAST_SOLAR] is not None
+    assert result["data"][CONF_FORECAST_CONFIG_ENTRY_SOLCAST] is None
+    assert result["data"][CONF_FORECAST_CONFIG_ENTRY_HELIOS] is None
 
 
 def test_production_and_consumption_pickers_filter_to_power_sensors():

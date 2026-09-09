@@ -1118,28 +1118,33 @@ test("a short power spike renders at its true peak, not diluted by a bucket aver
 });
 
 test("fixed loads get distinct colors, not a shared gray", () => {
-  const card = new Card();
-  // A single-day view (chart_hours_past/future both narrow), so each load renders exactly one
-  // occurrence regardless of what day offsets _visibleDayOffsets() would otherwise add.
-  card.setConfig({ devices: ["lave_linge"], chart_hours_past: 0, chart_hours_future: 1 });
-  card._hass = {
-    themes: { darkMode: false },
-    states: {
-      ...BASE_CONFIG_ENTITY,
-      ...configEntityWithForecast(buildForecast(new Date())),
-      ...deviceEntities("lave_linge", { name: "Lave-linge", active: false }),
-    },
-  };
-  setDevicesAttr(card, singleProgramDevices(["lave_linge"]));
-  setFixedLoads(card, [
-    { name: "PAC", start_time: "13:00", power_profile: [{ minutes: 60, power_w: 1500 }] },
-    { name: "Base conso", start_time: "00:00", power_profile: [{ minutes: 1440, power_w: 300 }] },
-  ]);
-  card._render();
-  const html = card.shadowRoot.innerHTML;
-  const styleMatches = [...html.matchAll(/style="fill:(#[0-9a-fA-F]+)" class="bar fixed"/g)].map((m) => m[1]);
-  assert.equal(styleMatches.length, 2, "expected a fill color on each fixed-load bar");
-  assert.notEqual(styleMatches[0], styleMatches[1], "the two fixed loads must not share the same color");
+  // Pinned before 13:00: PAC's window (13:00-14:00) must still be today's occurrence and not yet
+  // elapsed, otherwise a 1h-future view (chart_hours_future: 1) has no next-day offset to fall
+  // back to and would drop its bar entirely depending on the real wall-clock time the suite runs at.
+  withFixedNow(8, 0, () => {
+    const card = new Card();
+    // A single-day view (chart_hours_past/future both narrow), so each load renders exactly one
+    // occurrence regardless of what day offsets _visibleDayOffsets() would otherwise add.
+    card.setConfig({ devices: ["lave_linge"], chart_hours_past: 0, chart_hours_future: 1 });
+    card._hass = {
+      themes: { darkMode: false },
+      states: {
+        ...BASE_CONFIG_ENTITY,
+        ...configEntityWithForecast(buildForecast(new Date())),
+        ...deviceEntities("lave_linge", { name: "Lave-linge", active: false }),
+      },
+    };
+    setDevicesAttr(card, singleProgramDevices(["lave_linge"]));
+    setFixedLoads(card, [
+      { name: "PAC", start_time: "13:00", power_profile: [{ minutes: 60, power_w: 1500 }] },
+      { name: "Base conso", start_time: "00:00", power_profile: [{ minutes: 1440, power_w: 300 }] },
+    ]);
+    card._render();
+    const html = card.shadowRoot.innerHTML;
+    const styleMatches = [...html.matchAll(/style="fill:(#[0-9a-fA-F]+)" class="bar fixed"/g)].map((m) => m[1]);
+    assert.equal(styleMatches.length, 2, "expected a fill color on each fixed-load bar");
+    assert.notEqual(styleMatches[0], styleMatches[1], "the two fixed loads must not share the same color");
+  });
 });
 
 test("the forecast-source select is absent with fewer than two options", () => {

@@ -20,8 +20,7 @@ from .const import (
     CONF_CONSUMPTION_ENTITY,
     CONF_DEVICES,
     CONF_FIXED_LOADS,
-    CONF_FORECAST_ENTITIES_HELIOS,
-    CONF_FORECAST_ENTITIES_SOLCAST,
+    CONF_FORECAST_PROVIDERS_ENABLED,
     CONF_MAX_SIMULTANEOUS_POWER,
     CONF_MINUTES,
     CONF_NAME,
@@ -38,42 +37,55 @@ from .const import (
     DEFAULT_MAX_SIMULTANEOUS_POWER,
     DEFAULT_PHASE_CALIBRATION_RUNS,
     DOMAIN,
+    FORECAST_PROVIDER_CONFIG_ENTRY_FIELDS,
+    FORECAST_PROVIDER_DOMAINS,
+    FORECAST_PROVIDER_LABELS,
     WEEKDAYS,
 )
+
+
+def _resolve_provider_selection(hass, user_input: dict[str, Any]) -> None:
+    """Mutate user_input in place: replace the UI-only multi-select of provider keys with the
+    concrete config_entry_id fields resolve_forecast_sources() actually reads, looking up "the"
+    config entry for each ticked provider's real HA domain (there is realistically only ever one).
+    Always sets all three fields (to an id or to None), so un-ticking a previously-enabled
+    provider explicitly clears it instead of leaving a stale value behind after the dict merge in
+    async_step_edit_base().
+    """
+    enabled = set(user_input.pop(CONF_FORECAST_PROVIDERS_ENABLED, []))
+    for provider, field in FORECAST_PROVIDER_CONFIG_ENTRY_FIELDS.items():
+        entry_id = None
+        if provider in enabled:
+            entries = hass.config_entries.async_entries(FORECAST_PROVIDER_DOMAINS[provider])
+            entry_id = entries[0].entry_id if entries else None
+        user_input[field] = entry_id
 
 
 def _base_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     # suggested_value, not default=: a plain default="" fails the selector's own validation
     # (neither a valid entity ID nor UUID) whenever the field is left blank.
     defaults = defaults or {}
-    # device_class/integration filter a picker's suggestions only, not a validation constraint.
-    # integration narrows to that provider's own entities specifically (confirmed against the real
-    # instance: domains "solcast_solar"/"helios_forecast") — device_class alone would suggest every
-    # energy/power sensor in the house, not just the forecast ones. Solcast can expose several
-    # forecast entities (today, tomorrow, day 3, ...) at once, hence multiple=True; Helios Forecast
-    # only ever has one, hence a plain single-entity selector.
-    # No generic "other provider" fallback field: detect_forecast_provider() only ever recognizes
-    # these two shapes, so a third-provider entity could never pass that validation anyway — a
-    # field that can never actually be submitted successfully isn't a real fallback.
-    solcast_sensor = selector.EntitySelector(
-        selector.EntitySelectorConfig(
-            domain="sensor", device_class="energy", integration="solcast_solar", multiple=True
+    # A single multi-select of provider keys, not a config_entry/entity picker per provider: the
+    # user just ticks which of Solcast/Helios Forecast/Forecast.Solar to use.
+    # _resolve_provider_selection() (called from async_step_user/async_step_edit_base) translates
+    # this into the concrete per-provider fields once, at submission time, rather than
+    # resolve_forecast_sources() re-looking up "the" config entry for a domain on every
+    # coordinator read — this field itself is never stored, so its prefill here is derived back
+    # from whichever of those concrete fields are currently set.
+    forecast_providers = selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=[{"value": key, "label": label} for key, label in FORECAST_PROVIDER_LABELS.items()],
+            multiple=True,
         )
     )
-    helios_sensor = selector.EntitySelector(
-        selector.EntitySelectorConfig(domain="sensor", device_class="power", integration="helios_forecast")
-    )
+    enabled_providers = [p for p, field in FORECAST_PROVIDER_CONFIG_ENTRY_FIELDS.items() if defaults.get(field)]
     power_sensor = selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="power"))
     return vol.Schema(
         {
             vol.Optional(
-                CONF_FORECAST_ENTITIES_SOLCAST,
-                description={"suggested_value": defaults.get(CONF_FORECAST_ENTITIES_SOLCAST)},
-            ): solcast_sensor,
-            vol.Optional(
-                CONF_FORECAST_ENTITIES_HELIOS,
-                description={"suggested_value": defaults.get(CONF_FORECAST_ENTITIES_HELIOS)},
-            ): helios_sensor,
+                CONF_FORECAST_PROVIDERS_ENABLED,
+                description={"suggested_value": enabled_providers or None},
+            ): forecast_providers,
             vol.Optional(
                 CONF_PRODUCTION_ENTITY, description={"suggested_value": defaults.get(CONF_PRODUCTION_ENTITY)}
             ): power_sensor,
@@ -293,6 +305,7 @@ class SolarPlannerSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
+            _resolve_provider_selection(self.hass, user_input)
             return self.async_create_entry(
                 title="Solar Planner Scheduler",
                 data=dict(user_input),
@@ -333,10 +346,10 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_edit_base(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
+            _resolve_provider_selection(self.hass, user_input)
             # Merged, not replaced: entry.data also holds the tariff fields from async_step_edit_tariff,
-            # and any legacy forecast_entity/forecast_tomorrow_entity/forecast_provider from an entry
-            # installed before the dedicated per-provider fields existed (no longer in this form, but
-            # resolve_forecast_sources() still falls back to them, so they must not be dropped here).
+            # which aren't part of this form and would otherwise be silently wiped on every base
+            # settings resubmission.
             new_data = {**self.config_entry.data, **user_input}
             self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
             return await self.async_step_init()

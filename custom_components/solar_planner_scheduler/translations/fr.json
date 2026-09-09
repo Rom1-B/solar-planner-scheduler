@@ -4,15 +4,13 @@
       "user": {
         "title": "Solar Planner Scheduler",
         "data": {
-          "forecast_entities_solcast": "Entités Solcast (optionnel)",
-          "forecast_entities_helios": "Entité Helios Forecast (optionnel)",
+          "forecast_providers_enabled": "Fournisseurs de prévision",
           "production_entity": "Entité de production solaire (optionnel)",
           "consumption_entity": "Entité de consommation de la maison (optionnel)",
           "max_simultaneous_power": "Puissance simultanée max (W)"
         },
         "data_description": {
-          "forecast_entities_solcast": "Sélectionnez l'entité \"aujourd'hui\" et toute autre entité de prévision Solcast que vous avez activée (demain, jour 3, ...).",
-          "forecast_entities_helios": "Le capteur de puissance de Helios Forecast."
+          "forecast_providers_enabled": "Cochez ceux que vous avez configurés. Chacun est repéré automatiquement via sa propre entrée de configuration."
         }
       }
     }
@@ -61,15 +59,13 @@
       "edit_base": {
         "title": "Paramètres de base",
         "data": {
-          "forecast_entities_solcast": "Entités Solcast (optionnel)",
-          "forecast_entities_helios": "Entité Helios Forecast (optionnel)",
+          "forecast_providers_enabled": "Fournisseurs de prévision",
           "production_entity": "Entité de production solaire (optionnel)",
           "consumption_entity": "Entité de consommation de la maison (optionnel)",
           "max_simultaneous_power": "Puissance simultanée max (W)"
         },
         "data_description": {
-          "forecast_entities_solcast": "Sélectionnez l'entité \"aujourd'hui\" et toute autre entité de prévision Solcast que vous avez activée (demain, jour 3, ...).",
-          "forecast_entities_helios": "Le capteur de puissance de Helios Forecast."
+          "forecast_providers_enabled": "Cochez ceux que vous avez configurés. Chacun est repéré automatiquement via sa propre entrée de configuration."
         }
       },
       "edit_tariff": {
