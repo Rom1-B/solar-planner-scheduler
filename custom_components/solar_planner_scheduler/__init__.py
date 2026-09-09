@@ -35,7 +35,7 @@ def _card_version(card_path: Path) -> str:
     return hashlib.md5(card_path.read_bytes()).hexdigest()[:8]
 
 
-async def async_setup(hass: "HomeAssistant", config: dict) -> bool:
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Serve the bundled Lovelace card and register it as a Lovelace resource."""
     from pathlib import Path
 
@@ -67,7 +67,7 @@ async def async_setup(hass: "HomeAssistant", config: dict) -> bool:
     return True
 
 
-def _async_register_services(hass: "HomeAssistant") -> None:
+def _async_register_services(hass: HomeAssistant) -> None:
     import voluptuous as vol
     from homeassistant.helpers import config_validation as cv
     from homeassistant.helpers import entity_registry as er
@@ -96,7 +96,7 @@ def _async_register_services(hass: "HomeAssistant") -> None:
     hass.services.async_register(DOMAIN, "reset_to_auto", _reset_to_auto, schema=schema)
 
 
-async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     from datetime import datetime, timedelta
 
     from homeassistant.core import callback
@@ -124,12 +124,12 @@ async def async_setup_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool
     return True
 
 
-async def async_unload_entry(hass: "HomeAssistant", entry: "ConfigEntry") -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
         hass.data[DOMAIN].pop(entry.entry_id)
     return unloaded
 
 
-async def _async_update_listener(hass: "HomeAssistant", entry: "ConfigEntry") -> None:
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await hass.config_entries.async_reload(entry.entry_id)

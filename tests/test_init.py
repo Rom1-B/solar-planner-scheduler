@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 from homeassistant.core import is_callback
@@ -91,7 +91,7 @@ async def test_the_per_minute_timer_also_schedules_a_power_detection_check(hass)
     ):
         await async_setup_entry(hass, entry)
         callback_fn = mock_track.call_args.args[1]
-        now = datetime(2026, 9, 5, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 9, 5, 12, 0, tzinfo=UTC)
         callback_fn(now)
         await hass.async_block_till_done()
 
@@ -123,7 +123,7 @@ async def test_the_per_minute_timer_also_schedules_a_run_progress_check(hass):
     ):
         await async_setup_entry(hass, entry)
         callback_fn = mock_track.call_args.args[1]
-        now = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
         callback_fn(now)
         await hass.async_block_till_done()
 

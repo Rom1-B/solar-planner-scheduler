@@ -1147,7 +1147,7 @@ class SolarPlannerCard extends HTMLElement {
     });
 
     this._bindGanttDrag({ viewStart, viewSpanMs, marginLeft, marginRight, width });
-    this._bindHover({ points, w10Curve, w90Curve, viewStart, viewSpanMs, x, y, marginLeft, marginRight, marginTop, height, width, todayEnd });
+    this._bindHover({ points, w10Curve, w90Curve, viewStart, viewSpanMs, y, marginLeft, marginRight, marginTop, width, todayEnd });
   }
 
   // pointermove moves `x` directly, not via _render() which would drop pointer capture mid-drag.
@@ -1246,7 +1246,7 @@ class SolarPlannerCard extends HTMLElement {
     });
   }
 
-  _bindHover({ points, w10Curve, w90Curve, viewStart, viewSpanMs, x, y, marginLeft, marginRight, marginTop, height, width, todayEnd }) {
+  _bindHover({ points, w10Curve, w90Curve, viewStart, viewSpanMs, y, marginLeft, marginRight, marginTop, width, todayEnd }) {
     const svg = this.shadowRoot.querySelector("svg.chart");
     const catch_ = this.shadowRoot.getElementById("hover-catch");
     const scrollEl = this.shadowRoot.querySelector(".chart-scroll");

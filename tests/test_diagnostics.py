@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -29,7 +29,7 @@ def _set_up_coordinator(hass) -> SolarPlannerSchedulerCoordinator:
 
 async def test_diagnostics_includes_entry_config_and_store_state(hass):
     coordinator = _set_up_coordinator(hass)
-    start = datetime(2026, 9, 2, 9, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 2, 9, 0, tzinfo=UTC)
     coordinator._state["lave_linge"] = {
         "Eco": {
             "active": True,

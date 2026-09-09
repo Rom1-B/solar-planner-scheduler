@@ -315,7 +315,7 @@ class SolarPlannerSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> "SolarPlannerSchedulerOptionsFlow":
+    def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> SolarPlannerSchedulerOptionsFlow:
         return SolarPlannerSchedulerOptionsFlow(config_entry)
 
 

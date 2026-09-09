@@ -147,12 +147,15 @@ config needed) when Home Assistant's recorder has it; otherwise the line starts 
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/pytest tests/      # Python
-cd frontend && node --test   # JS
+.venv/bin/ruff check .        # Python lint
+.venv/bin/pytest tests/       # Python tests
+cd frontend && npm ci
+npm run lint                  # JS lint
+npm test                      # JS tests
 ```
 
-CI runs both suites plus `hassfest` and HACS validation. `./scripts/check-ci.sh` reproduces them
-locally.
+CI runs both suites, both linters, plus `hassfest` and HACS validation. `./scripts/check-ci.sh`
+reproduces them locally.
 
 ## Releasing
 

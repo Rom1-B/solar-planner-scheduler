@@ -7,11 +7,9 @@ test below, to set mock entity states via the `hass` fixture.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
-from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -50,7 +48,6 @@ from custom_components.solar_planner_scheduler.const import (
 )
 from custom_components.solar_planner_scheduler.coordinator import (
     FAILED_TO_START_REPAIR_THRESHOLD,
-    MANUAL_START_TOLERANCE_MINUTES,
     NIGHT_EXTENSION_HOURS,
     PHASE_CALIBRATION_MINUTES_TOLERANCE,
     PHASE_CALIBRATION_WATTS_TOLERANCE_FLOOR_W,
@@ -62,9 +59,9 @@ from custom_components.solar_planner_scheduler.coordinator import (
     SolarPlannerSchedulerCoordinator,
     _ceil_to_five_minutes,
     _day_buckets,
+    _discover_provider_entities,
     _is_relevant_today,
     _migrate_legacy_state,
-    _discover_provider_entities,
     _phases_differ_significantly,
     _read_forecast_points,
     _read_forecast_solar_points,
@@ -88,28 +85,28 @@ async def _flush(coordinator) -> None:
 
 
 def test_ceil_to_five_minutes_rounds_up_to_the_next_mark():
-    now = datetime(2026, 8, 30, 14, 23, 47, 123456, tzinfo=timezone.utc)
-    assert _ceil_to_five_minutes(now) == datetime(2026, 8, 30, 14, 25, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 14, 23, 47, 123456, tzinfo=UTC)
+    assert _ceil_to_five_minutes(now) == datetime(2026, 8, 30, 14, 25, tzinfo=UTC)
 
 
 def test_ceil_to_five_minutes_leaves_an_exact_mark_untouched():
-    now = datetime(2026, 8, 30, 14, 25, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 14, 25, tzinfo=UTC)
     assert _ceil_to_five_minutes(now) == now
 
 
 def test_todays_buckets_start_on_the_next_five_minute_mark_not_now():
-    now = datetime(2026, 8, 30, 14, 23, 47, 123456, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 14, 23, 47, 123456, tzinfo=UTC)
     buckets = _day_buckets(now, day_offset=0)
-    assert buckets[0]["start"] == datetime(2026, 8, 30, 14, 25, tzinfo=timezone.utc)
+    assert buckets[0]["start"] == datetime(2026, 8, 30, 14, 25, tzinfo=UTC)
     assert all(b["start"].minute % 5 == 0 and b["start"].second == 0 for b in buckets)
 
 
 def test_todays_buckets_extend_past_midnight_by_night_extension_hours():
-    now = datetime(2026, 8, 30, 14, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 14, 0, tzinfo=UTC)
     buckets = _day_buckets(now, day_offset=0)
     last_start = buckets[-1]["start"]
-    assert last_start.date() == datetime(2026, 8, 31, tzinfo=timezone.utc).date()
-    assert last_start < datetime(2026, 8, 30, 23, 55, tzinfo=timezone.utc) + timedelta(hours=NIGHT_EXTENSION_HOURS)
+    assert last_start.date() == datetime(2026, 8, 31, tzinfo=UTC).date()
+    assert last_start < datetime(2026, 8, 30, 23, 55, tzinfo=UTC) + timedelta(hours=NIGHT_EXTENSION_HOURS)
 
 
 async def test_read_forecast_points_handles_a_raw_datetime_period_start(hass):
@@ -118,7 +115,7 @@ async def test_read_forecast_points_handles_a_raw_datetime_period_start(hass):
     dt_util.parse_datetime() used to be called on it unconditionally, raising TypeError and
     silently emptying every forecast point.
     """
-    period_start = datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)
+    period_start = datetime(2026, 8, 30, 10, 0, tzinfo=UTC)
     hass.states.async_set(
         "sensor.forecast",
         "3",
@@ -135,7 +132,7 @@ async def test_read_forecast_points_parses_helios_forecast_shape(hass):
     forecast_point_dict()): a "forecast" attribute (not "detailedForecast"), watts already in W
     (not kW), keys "datetime"/"watts"/"p10"/"p90" (not "period_start"/"pv_estimate*").
     """
-    point_time = datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)
+    point_time = datetime(2026, 8, 30, 10, 0, tzinfo=UTC)
     hass.states.async_set(
         "sensor.helios_power_now",
         "1200",
@@ -150,7 +147,7 @@ async def test_read_forecast_points_parses_helios_forecast_shape(hass):
 async def test_read_forecast_points_falls_back_to_solcast_for_unknown_provider(hass):
     """An unrecognized provider key must fall back to Solcast parsing, not raise or silently
     return nothing."""
-    period_start = datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)
+    period_start = datetime(2026, 8, 30, 10, 0, tzinfo=UTC)
     hass.states.async_set(
         "sensor.forecast",
         "3",
@@ -168,7 +165,7 @@ async def test_read_forecast_solar_points_parses_wh_hours_into_uniform_points(ha
     (async_get_integration) rather than via hass.states.async_set() like every other provider's
     tests in this file.
     """
-    point_time = datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)
+    point_time = datetime(2026, 8, 30, 10, 0, tzinfo=UTC)
 
     class _FakePlatform:
         @staticmethod
@@ -273,7 +270,7 @@ def test_discover_provider_entities_ignores_entities_without_the_attribute(hass)
 
 
 async def test_read_solcast_points_merges_every_enabled_entity_on_the_config_entry(hass):
-    today = datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)
+    today = datetime(2026, 8, 30, 10, 0, tzinfo=UTC)
     tomorrow = today + timedelta(days=1)
     entry_id = register_provider_entities(
         hass,
@@ -291,7 +288,7 @@ async def test_read_solcast_points_merges_every_enabled_entity_on_the_config_ent
 
 
 async def test_read_helios_points_reads_the_discovered_entity(hass):
-    point_time = datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)
+    point_time = datetime(2026, 8, 30, 10, 0, tzinfo=UTC)
     entry_id = register_provider_entities(
         hass, "helios_forecast", {"sensor.helios_power_now": {"forecast": [{"datetime": point_time.isoformat(), "watts": 900.0}]}}
     )
@@ -355,7 +352,7 @@ def test_theoretical_forecast_points_carries_percentiles(hass):
     card's confidence band, not just whatever _async_update_data() last computed for scheduling.
     """
     coordinator = _coordinator(hass)
-    point_time = datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)
+    point_time = datetime(2026, 8, 30, 10, 0, tzinfo=UTC)
     coordinator._theoretical_points = [{"time": point_time, "w": 1000.0, "w10": 700.0, "w90": 1300.0}]
 
     assert coordinator.theoretical_forecast_points() == [
@@ -367,42 +364,42 @@ def test_theoretical_forecast_points_carries_percentiles(hass):
 
 
 def test_compute_locked_is_false_with_no_schedule():
-    assert compute_locked(DeviceSchedule("d", None, None, None), datetime(2026, 8, 30, tzinfo=timezone.utc)) is False
+    assert compute_locked(DeviceSchedule("d", None, None, None), datetime(2026, 8, 30, tzinfo=UTC)) is False
 
 
 def test_compute_locked_is_true_when_forced_regardless_of_timing():
-    start = datetime(2026, 8, 30, 20, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 8, 30, 20, 0, tzinfo=UTC)
     end = start + timedelta(minutes=30)
     schedule = DeviceSchedule("d", start, end, 95, forced=True)
-    now = datetime(2026, 8, 30, 9, 0, tzinfo=timezone.utc)  # far from the window, still locked
+    now = datetime(2026, 8, 30, 9, 0, tzinfo=UTC)  # far from the window, still locked
     assert compute_locked(schedule, now) is True
 
 
 def test_compute_locked_is_true_when_imminent():
-    now = datetime(2026, 8, 30, 9, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 9, 0, tzinfo=UTC)
     start = now + timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES - 1)
     schedule = DeviceSchedule("d", start, start + timedelta(minutes=30), 95)
     assert compute_locked(schedule, now) is True
 
 
 def test_compute_locked_is_false_when_far_off_and_not_forced():
-    now = datetime(2026, 8, 30, 9, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 9, 0, tzinfo=UTC)
     start = now + timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES + 1)
     schedule = DeviceSchedule("d", start, start + timedelta(minutes=30), 95)
     assert compute_locked(schedule, now) is False
 
 
 def test_compute_locked_is_true_in_progress():
-    start = datetime(2026, 8, 30, 9, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 8, 30, 9, 0, tzinfo=UTC)
     schedule = DeviceSchedule("d", start, start + timedelta(minutes=30), 95)
     now = start + timedelta(minutes=10)
     assert compute_locked(schedule, now) is True
 
 
 def test_compute_locked_stays_true_once_elapsed_the_same_day():
-    start = datetime(2026, 8, 30, 9, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 8, 30, 9, 0, tzinfo=UTC)
     schedule = DeviceSchedule("d", start, start + timedelta(minutes=30), 95)
-    now = datetime(2026, 8, 30, 23, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 23, 0, tzinfo=UTC)
     assert compute_locked(schedule, now) is True
 
 
@@ -411,17 +408,17 @@ def test_compute_locked_stays_true_after_an_overnight_slot_elapses_on_the_end_da
     changes, not the day it started — using start.date() here would drop lock the instant it
     elapses, defeating "keep showing what ran today".
     """
-    start = datetime(2026, 8, 29, 23, 30, tzinfo=timezone.utc)
-    end = datetime(2026, 8, 30, 1, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 8, 29, 23, 30, tzinfo=UTC)
+    end = datetime(2026, 8, 30, 1, 0, tzinfo=UTC)
     schedule = DeviceSchedule("d", start, end, 95)
-    now = datetime(2026, 8, 30, 10, 0, tzinfo=timezone.utc)  # elapsed, still the day it ended
+    now = datetime(2026, 8, 30, 10, 0, tzinfo=UTC)  # elapsed, still the day it ended
     assert compute_locked(schedule, now) is True
 
 
 def test_compute_locked_is_false_once_the_calendar_day_has_changed():
-    start = datetime(2026, 8, 29, 9, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 8, 29, 9, 0, tzinfo=UTC)
     schedule = DeviceSchedule("d", start, start + timedelta(minutes=30), 95)
-    now = datetime(2026, 8, 30, 9, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 9, 0, tzinfo=UTC)
     assert compute_locked(schedule, now) is False
 
 
@@ -429,11 +426,11 @@ def test_compute_locked_is_false_once_the_calendar_day_has_changed():
 
 
 def test_is_relevant_today_is_false_with_nothing_committed():
-    assert _is_relevant_today(None, datetime(2026, 8, 30, tzinfo=timezone.utc)) is False
+    assert _is_relevant_today(None, datetime(2026, 8, 30, tzinfo=UTC)) is False
 
 
 def test_is_relevant_today_is_true_for_a_slot_started_today():
-    now = datetime(2026, 8, 30, 9, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 9, 0, tzinfo=UTC)
     committed = {"start": now, "end": now + timedelta(minutes=30)}
     assert _is_relevant_today(committed, now) is True
 
@@ -441,19 +438,19 @@ def test_is_relevant_today_is_true_for_a_slot_started_today():
 def test_is_relevant_today_is_true_for_an_overnight_slot_still_running():
     """Started yesterday, still in progress: must still block a sibling's search."""
     committed = {
-        "start": datetime(2026, 8, 29, 23, 30, tzinfo=timezone.utc),
-        "end": datetime(2026, 8, 30, 1, 0, tzinfo=timezone.utc),
+        "start": datetime(2026, 8, 29, 23, 30, tzinfo=UTC),
+        "end": datetime(2026, 8, 30, 1, 0, tzinfo=UTC),
     }
-    now = datetime(2026, 8, 30, 0, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 0, 30, tzinfo=UTC)
     assert _is_relevant_today(committed, now) is True
 
 
 def test_is_relevant_today_is_false_for_a_stale_multi_day_old_commitment():
     committed = {
-        "start": datetime(2026, 8, 20, 9, 0, tzinfo=timezone.utc),
-        "end": datetime(2026, 8, 20, 9, 30, tzinfo=timezone.utc),
+        "start": datetime(2026, 8, 20, 9, 0, tzinfo=UTC),
+        "end": datetime(2026, 8, 20, 9, 30, tzinfo=UTC),
     }
-    now = datetime(2026, 8, 30, 9, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 9, 0, tzinfo=UTC)
     assert _is_relevant_today(committed, now) is False
 
 
@@ -626,7 +623,7 @@ async def test_is_program_active_reactivates_once_today_is_actually_the_auto_day
 
 async def test_set_forced_start_is_readable_before_a_refresh_folds_it_in(hass):
     coordinator = _coordinator(hass)
-    start = datetime(2026, 8, 30, 13, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 8, 30, 13, 0, tzinfo=UTC)
 
     await coordinator.async_set_forced_start("lave_linge", "Eco", start)
     await _flush(coordinator)
@@ -655,7 +652,7 @@ async def test_clear_forced_start_drops_both_pending_and_committed(hass):
 
 def test_reusable_committed_reuses_an_imminent_slot(hass):
     coordinator = _coordinator(hass)
-    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=UTC)
     start = now + timedelta(minutes=2)
     end = start + timedelta(minutes=30)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
@@ -670,7 +667,7 @@ def test_reusable_committed_reuses_an_imminent_slot(hass):
 
 def test_reusable_committed_searches_when_the_target_is_far_off(hass):
     coordinator = _coordinator(hass)
-    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=UTC)
     start = now + timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES + 1)
     end = start + timedelta(minutes=30)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
@@ -685,7 +682,7 @@ def test_reusable_committed_searches_when_nothing_is_committed_yet(hass):
     """No committed entry (a program just activated, or never toggled before) always means a
     fresh search — there's nothing to compare against."""
     coordinator = _coordinator(hass)
-    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=UTC)
 
     slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
 
@@ -695,7 +692,7 @@ def test_reusable_committed_searches_when_nothing_is_committed_yet(hass):
 
 def test_reusable_committed_searches_when_the_program_duration_changed(hass):
     coordinator = _coordinator(hass)
-    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=UTC)
     start = now + timedelta(minutes=2)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, start + timedelta(minutes=30), 95))
 
@@ -708,7 +705,7 @@ def test_reusable_committed_keeps_showing_an_elapsed_slot_on_the_same_day(hass):
     """A program is scheduled once per activation: once its window has passed, don't propose
     another slot the same day, but keep displaying what already ran instead of blanking out."""
     coordinator = _coordinator(hass)
-    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=UTC)
     start = now - timedelta(minutes=40)
     end = start + timedelta(minutes=30)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
@@ -725,10 +722,10 @@ def test_reusable_committed_stays_in_progress_for_a_slot_crossing_midnight(hass)
     as a day rollover mid-run — the in-progress check must win over the date comparison.
     """
     coordinator = _coordinator(hass)
-    start = datetime(2026, 8, 29, 23, 30, tzinfo=timezone.utc)
-    end = datetime(2026, 8, 30, 1, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 8, 29, 23, 30, tzinfo=UTC)
+    end = datetime(2026, 8, 30, 1, 0, tzinfo=UTC)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
-    now = datetime(2026, 8, 30, 0, 30, tzinfo=timezone.utc)  # in progress, day already rolled over
+    now = datetime(2026, 8, 30, 0, 30, tzinfo=UTC)  # in progress, day already rolled over
 
     slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", {}, 90, now, [])
 
@@ -739,10 +736,10 @@ def test_reusable_committed_stays_in_progress_for_a_slot_crossing_midnight(hass)
 
 def test_reusable_committed_continues_the_recurring_schedule_on_an_auto_day(hass):
     coordinator = _coordinator(hass)
-    start = datetime(2026, 8, 29, 13, 0, tzinfo=timezone.utc)  # Saturday
+    start = datetime(2026, 8, 29, 13, 0, tzinfo=UTC)  # Saturday
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, start + timedelta(minutes=30), 95))
 
-    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)  # Sunday
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=UTC)  # Sunday
     slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed(
         "lave_linge", "Eco", {}, 30, now, ["fri", "sun"]
     )
@@ -755,10 +752,10 @@ def test_reusable_committed_stays_dormant_on_a_non_auto_day(hass):
     """On-demand programs (empty auto_days) don't keep proposing a new slot every day on their
     own — they stay dormant until toggled again."""
     coordinator = _coordinator(hass)
-    start = datetime(2026, 8, 29, 13, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 8, 29, 13, 0, tzinfo=UTC)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, start + timedelta(minutes=30), 95))
 
-    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=UTC)
     slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
 
     assert dormant is True
@@ -767,7 +764,7 @@ def test_reusable_committed_stays_dormant_on_a_non_auto_day(hass):
 
 def test_reusable_committed_keeps_a_forced_slot_locked_even_far_in_the_future(hass):
     coordinator = _coordinator(hass)
-    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=UTC)
     start = now + timedelta(hours=6)  # nowhere near imminent
     _seed_committed(
         coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, start + timedelta(minutes=30), 80), forced=True
@@ -781,7 +778,7 @@ def test_reusable_committed_keeps_a_forced_slot_locked_even_far_in_the_future(ha
 
 def test_reusable_committed_unlocks_when_a_power_sensor_shows_it_never_started(hass):
     coordinator = _coordinator(hass)
-    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=UTC)
     start = now - timedelta(minutes=2)
     end = start + timedelta(minutes=30)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
@@ -798,7 +795,7 @@ def test_reusable_committed_ignores_the_power_sensor_when_forced(hass):
     """An explicit forced start is authoritative — the failed-to-start safety net only applies to
     auto-computed slots."""
     coordinator = _coordinator(hass)
-    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=UTC)
     start = now - timedelta(minutes=2)
     end = start + timedelta(minutes=30)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95), forced=True)
@@ -816,7 +813,7 @@ def test_reusable_committed_does_not_unlock_once_seen_running(hass):
     """Regression: a real appliance can finish its actual cycle faster than the configured
     power_profile. A later poll seeing low power must not undo an earlier confirmed run."""
     coordinator = _coordinator(hass)
-    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=UTC)
     start = now - timedelta(minutes=20)
     end = start + timedelta(minutes=150)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
@@ -832,7 +829,7 @@ def test_reusable_committed_does_not_unlock_once_seen_running(hass):
 
 async def test_update_seen_running_latches_once_power_exceeds_idle_threshold(hass):
     coordinator = _coordinator(hass)
-    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=UTC)
     start = now - timedelta(minutes=5)
     end = start + timedelta(minutes=150)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
@@ -859,7 +856,7 @@ async def test_update_seen_running_latches_once_power_exceeds_idle_threshold(has
 
 async def test_update_seen_running_does_nothing_below_idle_threshold(hass):
     coordinator = _coordinator(hass)
-    now = datetime(2026, 8, 30, 9, 13, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=UTC)
     start = now - timedelta(minutes=5)
     end = start + timedelta(minutes=150)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
@@ -889,7 +886,7 @@ async def test_a_short_real_cycle_does_not_get_flagged_as_failed_to_start_later(
     back to idle well before the configured window elapses. A later cycle must still reuse the slot.
     """
     coordinator = _coordinator(hass)
-    start = datetime(2026, 9, 4, 11, 50, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 4, 11, 50, tzinfo=UTC)
     end = start + timedelta(minutes=150)
     _seed_committed(coordinator, "pac", "Eau chaude", DeviceSchedule("pac", start, end, 54))
     device = {CONF_POWER_SENSOR: "sensor.pac_power"}
@@ -913,7 +910,7 @@ async def test_a_short_real_cycle_does_not_get_flagged_as_failed_to_start_later(
 
 async def test_early_power_detection_recalibrates_the_committed_start(hass):
     coordinator = _coordinator(hass)
-    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=UTC)
     end = start + timedelta(minutes=150)
     _seed_committed(coordinator, "pac", "Eau chaude", DeviceSchedule("pac", start, end, 54))
     hass.states.async_set("sensor.pac_power", "1069")
@@ -933,7 +930,7 @@ async def test_early_power_detection_recalibrates_the_committed_start(hass):
 
 async def test_late_power_detection_within_tolerance_also_recalibrates(hass):
     coordinator = _coordinator(hass)
-    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=UTC)
     end = start + timedelta(minutes=150)
     _seed_committed(coordinator, "pac", "Eau chaude", DeviceSchedule("pac", start, end, 54))
     hass.states.async_set("sensor.pac_power", "1069")
@@ -953,7 +950,7 @@ async def test_late_power_detection_within_tolerance_also_recalibrates(hass):
 
 async def test_power_detection_well_after_the_planned_start_still_recalibrates(hass):
     coordinator = _coordinator(hass)
-    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=UTC)
     end = start + timedelta(minutes=150)
     _seed_committed(coordinator, "pac", "Eau chaude", DeviceSchedule("pac", start, end, 54))
     hass.states.async_set("sensor.pac_power", "1069")
@@ -971,7 +968,7 @@ async def test_power_detection_well_after_the_planned_start_still_recalibrates(h
 
 async def test_power_detection_well_before_the_window_does_nothing(hass):
     coordinator = _coordinator(hass)
-    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=UTC)
     end = start + timedelta(minutes=150)
     _seed_committed(coordinator, "pac", "Eau chaude", DeviceSchedule("pac", start, end, 54))
     hass.states.async_set("sensor.pac_power", "1069")
@@ -990,7 +987,7 @@ async def test_power_detection_well_before_the_window_does_nothing(hass):
 
 async def test_power_detection_in_the_imminent_window_recalibrates_without_forcing(hass):
     coordinator = _coordinator(hass)
-    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=UTC)
     end = start + timedelta(minutes=150)
     _seed_committed(coordinator, "pac", "Eau chaude", DeviceSchedule("pac", start, end, 54), forced=False)
     hass.states.async_set("sensor.pac_power", "1069")
@@ -1012,7 +1009,7 @@ async def test_update_seen_running_uses_the_pending_power_detected_at_timestamp(
     power check at this cycle's own `now`, for better than DEFAULT_UPDATE_INTERVAL_MINUTES
     precision."""
     coordinator = _coordinator(hass)
-    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=UTC)
     end = start + timedelta(minutes=150)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
     detected_at = start - timedelta(minutes=12)
@@ -1044,7 +1041,7 @@ async def test_update_seen_running_ignores_a_stale_pending_power_detected_at(has
     """A pending_power_detected_at recorded outside the current window (e.g. against a
     since-replaced commitment) must not be blindly trusted — falls back to a live check."""
     coordinator = _coordinator(hass)
-    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=UTC)
     end = start + timedelta(minutes=150)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
     coordinator._state["lave_linge"]["Eco"]["pending_power_detected_at"] = (start - timedelta(hours=5)).isoformat()
@@ -1212,7 +1209,7 @@ async def test_a_fresh_search_does_not_record_standby_when_the_device_already_lo
 
 def test_reusable_committed_uses_the_passed_idle_threshold(hass):
     coordinator = _coordinator(hass)
-    now = datetime(2026, 9, 5, 13, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 5, 13, 0, tzinfo=UTC)
     start = now - timedelta(minutes=10)
     end = start + timedelta(minutes=150)
     _seed_committed(coordinator, "pac", "Eau chaude", DeviceSchedule("pac", start, end, 54))
@@ -1265,7 +1262,7 @@ async def test_check_power_detection_records_the_precise_minute(hass):
     await coordinator.async_load_state()
     await coordinator.async_set_program_active("lave_linge", "Eco", True)
     await _flush(coordinator)
-    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=UTC)
     end = start + timedelta(minutes=150)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
     hass.states.async_set("sensor.lave_linge_power", "1600")
@@ -1281,7 +1278,7 @@ async def test_check_power_detection_skips_when_already_seen_running(hass):
     await coordinator.async_load_state()
     await coordinator.async_set_program_active("lave_linge", "Eco", True)
     await _flush(coordinator)
-    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=UTC)
     end = start + timedelta(minutes=150)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
     coordinator._state["lave_linge"]["Eco"]["committed"]["seen_running"] = True
@@ -1297,7 +1294,7 @@ async def test_check_power_detection_does_not_overwrite_an_existing_pending_time
     await coordinator.async_load_state()
     await coordinator.async_set_program_active("lave_linge", "Eco", True)
     await _flush(coordinator)
-    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=UTC)
     end = start + timedelta(minutes=150)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
     first_detection = start - timedelta(minutes=10)
@@ -1313,7 +1310,7 @@ async def test_check_power_detection_skips_when_program_inactive(hass):
     coordinator = _active_coordinator_with_sensor(hass)
     await coordinator.async_load_state()
     # Deliberately not activated: switch.lave_linge_eco_active stays off.
-    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=UTC)
     end = start + timedelta(minutes=150)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
     hass.states.async_set("sensor.lave_linge_power", "1600")
@@ -1328,7 +1325,7 @@ async def test_check_power_detection_skips_outside_the_tolerance_window(hass):
     await coordinator.async_load_state()
     await coordinator.async_set_program_active("lave_linge", "Eco", True)
     await _flush(coordinator)
-    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=UTC)
     end = start + timedelta(minutes=150)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
     hass.states.async_set("sensor.lave_linge_power", "1600")
@@ -1343,7 +1340,7 @@ async def test_check_power_detection_skips_below_the_derived_threshold(hass):
     await coordinator.async_load_state()
     await coordinator.async_set_program_active("lave_linge", "Eco", True)
     await _flush(coordinator)
-    start = datetime(2026, 9, 5, 12, 40, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 5, 12, 40, tzinfo=UTC)
     end = start + timedelta(minutes=150)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
     hass.states.async_set("sensor.lave_linge_power", "500")  # below max(10, 1600 * 0.5) = 800
@@ -1400,7 +1397,7 @@ async def test_note_failed_to_start_clears_the_issue_once_a_cycle_succeeds(hass)
 
 
 def test_migrate_legacy_state_converts_a_selected_program_to_active():
-    schedule_start = datetime(2026, 8, 30, 9, 0, tzinfo=timezone.utc)
+    schedule_start = datetime(2026, 8, 30, 9, 0, tzinfo=UTC)
     legacy = {
         "lave_linge": {
             "selected": "Eco",
@@ -2133,7 +2130,7 @@ def _profile_coordinator(hass, profile, power_sensor="sensor.lave_linge_power", 
 
 async def test_async_track_run_progress_records_a_sample_while_in_progress(hass):
     coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 1600}])
-    now = datetime(2026, 9, 8, 12, 10, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 8, 12, 10, tzinfo=UTC)
     schedule = DeviceSchedule("lave_linge", now - timedelta(minutes=5), now + timedelta(minutes=25), 80)
     _seed_committed(coordinator, "lave_linge", "Eco", schedule)
     hass.states.async_set("sensor.lave_linge_power", "1590")
@@ -2145,7 +2142,7 @@ async def test_async_track_run_progress_records_a_sample_while_in_progress(hass)
 
 async def test_async_track_run_progress_does_nothing_when_calibration_runs_is_zero(hass):
     coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 1600}], calibration_runs=0)
-    now = datetime(2026, 9, 8, 12, 10, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 8, 12, 10, tzinfo=UTC)
     schedule = DeviceSchedule("lave_linge", now - timedelta(minutes=5), now + timedelta(minutes=25), 80)
     _seed_committed(coordinator, "lave_linge", "Eco", schedule)
     hass.states.async_set("sensor.lave_linge_power", "1590")
@@ -2158,7 +2155,7 @@ async def test_async_track_run_progress_does_nothing_when_calibration_runs_is_ze
 async def test_async_track_run_progress_skips_finalization_when_calibration_runs_is_zero(hass):
     original_profile = [{CONF_MINUTES: 30, CONF_POWER_W: 1600}]
     coordinator = _profile_coordinator(hass, original_profile, calibration_runs=0)
-    start = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
     end = start + timedelta(minutes=30)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 80))
     # A trace accumulated before the field was set to 0 (e.g. mid-run), left over in the Store.
@@ -2176,7 +2173,7 @@ async def test_async_track_run_progress_finalizes_and_rewrites_config_on_a_signi
     (1650W instead of 1600W): both differences exceed tolerance, so the profile gets rewritten.
     """
     coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 1600}])
-    start = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
     end = start + timedelta(minutes=30)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 80))
     trace = [{"t": (start + timedelta(minutes=i)).isoformat(), "w": 1650.0} for i in range(18)]
@@ -2193,7 +2190,7 @@ async def test_async_track_run_progress_finalizes_and_rewrites_config_on_a_signi
 async def test_async_track_run_progress_skips_calibration_when_the_trace_is_too_short(hass):
     original_profile = [{CONF_MINUTES: 30, CONF_POWER_W: 1600}]
     coordinator = _profile_coordinator(hass, original_profile)
-    start = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
     end = start + timedelta(minutes=30)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 80))
     trace = [{"t": start.isoformat(), "w": 1650.0}] * (RUN_CALIBRATION_MIN_SAMPLES - 1)
@@ -2207,7 +2204,7 @@ async def test_async_track_run_progress_skips_calibration_when_the_trace_is_too_
 
 async def test_async_track_run_progress_does_not_recalibrate_twice_for_the_same_run(hass):
     coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 1600}])
-    start = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
     end = start + timedelta(minutes=30)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 80))
     trace = [{"t": (start + timedelta(minutes=i)).isoformat(), "w": 1650.0} for i in range(18)]
@@ -2241,7 +2238,7 @@ async def _run_and_finalize(coordinator, start, minutes, watts, extra_samples=0)
 
 async def test_async_track_run_progress_accumulates_history_and_uses_the_max_below_three_runs(hass):
     coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 1600}])
-    start = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
 
     await _run_and_finalize(coordinator, start, 10, 1000.0)
     await _run_and_finalize(coordinator, start, 15, 1200.0)
@@ -2257,7 +2254,7 @@ async def test_async_track_run_progress_uses_the_second_highest_once_three_runs_
     lands — one atypical launch no longer dictates the declared profile by itself.
     """
     coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 1600}])
-    start = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
 
     await _run_and_finalize(coordinator, start, 10, 1000.0)
     await _run_and_finalize(coordinator, start, 20, 1400.0)
@@ -2269,7 +2266,7 @@ async def test_async_track_run_progress_uses_the_second_highest_once_three_runs_
 
 async def test_async_track_run_progress_caps_phase_history_at_the_max_run_count(hass):
     coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 1600}])
-    start = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
 
     for minutes in range(10, 10 + DEFAULT_PHASE_CALIBRATION_RUNS + 1):  # one more run than the cap allows
         await _run_and_finalize(coordinator, start, minutes, 1000.0)
@@ -2282,7 +2279,7 @@ async def test_async_track_run_progress_caps_phase_history_at_the_max_run_count(
 
 async def test_async_track_run_progress_uses_a_custom_calibration_runs_cap(hass):
     coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 1600}], calibration_runs=2)
-    start = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
 
     await _run_and_finalize(coordinator, start, 10, 1000.0)
     await _run_and_finalize(coordinator, start, 15, 1200.0)
@@ -2298,7 +2295,7 @@ async def test_async_track_run_progress_bootstraps_a_multi_phase_profile_from_a_
     duration correction applied to that same single declared phase.
     """
     coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 10}])
-    start = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
     end = start + timedelta(minutes=60)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 80))
     trace = [

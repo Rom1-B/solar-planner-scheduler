@@ -3,7 +3,7 @@ values, so this port's behavior is verified against the exact same cases as the 
 rather than re-derived from memory. Keep this file in lockstep with the JS one.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -12,12 +12,12 @@ from custom_components.solar_planner_scheduler.scheduling import (
     DRAG_SNAP_MS,
     aggregate_phase_history,
     average_forecast_points,
+    coverage_percent,
     discover_power_levels,
     find_best_placement,
     find_peak_conflicts,
     instant_deficit_cost,
     instant_deficit_wh,
-    coverage_percent,
     min_forecast_points,
     phase_segments,
     price_at,
@@ -26,7 +26,7 @@ from custom_components.solar_planner_scheduler.scheduling import (
     snap_to_grid,
 )
 
-DAY = datetime(2026, 1, 15, tzinfo=timezone.utc)
+DAY = datetime(2026, 1, 15, tzinfo=UTC)
 
 
 def t(h, m):
@@ -285,8 +285,8 @@ def test_instant_deficit_wh_subtracts_concurrent_others_power():
 def test_find_peak_conflicts_does_not_flag_phases_that_share_a_bucket_but_never_overlap():
     washer = {
         "device_name": "washer",
-        "start": datetime(2026, 8, 23, 13, 12, tzinfo=timezone.utc),
-        "end": datetime(2026, 8, 23, 15, 42, tzinfo=timezone.utc),
+        "start": datetime(2026, 8, 23, 13, 12, tzinfo=UTC),
+        "end": datetime(2026, 8, 23, 15, 42, tzinfo=UTC),
         "profile": [
             {"minutes": 20, "power_w": 150},
             {"minutes": 20, "power_w": 2200},
@@ -295,8 +295,8 @@ def test_find_peak_conflicts_does_not_flag_phases_that_share_a_bucket_but_never_
     }
     dishwasher = {
         "device_name": "dishwasher",
-        "start": datetime(2026, 8, 23, 13, 22, tzinfo=timezone.utc),
-        "end": datetime(2026, 8, 23, 15, 22, tzinfo=timezone.utc),
+        "start": datetime(2026, 8, 23, 13, 22, tzinfo=UTC),
+        "end": datetime(2026, 8, 23, 15, 22, tzinfo=UTC),
         "profile": [
             {"minutes": 32, "power_w": 100},
             {"minutes": 8, "power_w": 2000},
@@ -311,8 +311,8 @@ def test_find_peak_conflicts_does_not_flag_phases_that_share_a_bucket_but_never_
 def test_find_peak_conflicts_still_flags_a_genuine_simultaneous_overlap():
     washer = {
         "device_name": "washer",
-        "start": datetime(2026, 8, 23, 13, 12, tzinfo=timezone.utc),
-        "end": datetime(2026, 8, 23, 15, 42, tzinfo=timezone.utc),
+        "start": datetime(2026, 8, 23, 13, 12, tzinfo=UTC),
+        "end": datetime(2026, 8, 23, 15, 42, tzinfo=UTC),
         "profile": [
             {"minutes": 20, "power_w": 150},
             {"minutes": 20, "power_w": 2200},
@@ -321,8 +321,8 @@ def test_find_peak_conflicts_still_flags_a_genuine_simultaneous_overlap():
     }
     dishwasher = {
         "device_name": "dishwasher",
-        "start": datetime(2026, 8, 23, 13, 12, tzinfo=timezone.utc),
-        "end": datetime(2026, 8, 23, 15, 12, tzinfo=timezone.utc),
+        "start": datetime(2026, 8, 23, 13, 12, tzinfo=UTC),
+        "end": datetime(2026, 8, 23, 15, 12, tzinfo=UTC),
         "profile": [
             {"minutes": 32, "power_w": 100},
             {"minutes": 8, "power_w": 2000},
@@ -335,7 +335,7 @@ def test_find_peak_conflicts_still_flags_a_genuine_simultaneous_overlap():
 
 
 def test_find_best_placement_does_not_falsely_reject_bucket_sharing_non_overlapping_peaks():
-    anchor = datetime(2026, 8, 23, 0, 0, tzinfo=timezone.utc)
+    anchor = datetime(2026, 8, 23, 0, 0, tzinfo=UTC)
     buckets = [{"start": anchor + timedelta(milliseconds=i * BUCKET_MS)} for i in range(8)]
     points = [{"time": anchor + timedelta(milliseconds=i * BUCKET_MS), "w": 3000} for i in range(9)]
     committed = {
@@ -434,7 +434,7 @@ def test_find_best_placement_tiebreaks_zero_deficit_candidates_by_solar_margin()
 
 
 def test_snap_to_grid_rounds_to_nearest_5_minute_mark():
-    base = datetime(2026, 1, 15, 10, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 1, 15, 10, 0, tzinfo=UTC)
     assert snap_to_grid(base + timedelta(minutes=2)) == base
     assert snap_to_grid(base + timedelta(minutes=3)) == base + timedelta(minutes=5)
     assert snap_to_grid(base - timedelta(minutes=3)) == base - timedelta(minutes=5)

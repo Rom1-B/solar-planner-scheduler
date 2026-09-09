@@ -18,8 +18,8 @@ from custom_components.solar_planner_scheduler.config_flow import (
     _base_schema,
     _device_schema,
     _parse_tariff_bands,
-    _TariffParseError,
     _tariff_schema,
+    _TariffParseError,
 )
 from custom_components.solar_planner_scheduler.const import (
     CONF_AUTO_DAYS,

@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import math
 import statistics
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Optional, Sequence
 
 SMOOTH_BUCKET_MS = 5 * 60 * 1000
 DRAG_SNAP_MS = 5 * 60 * 1000
@@ -302,7 +302,7 @@ def _coverage_ratio(
 
     duration_hours = (end - start).total_seconds() / 3600
     avg_power_w = total_energy_wh / duration_hours if duration_hours else 0.0
-    min_ratio: Optional[float] = None
+    min_ratio: float | None = None
     for _, _, mid in _instant_steps(item_segments, other_segments, start, end):
         item_power = _power_at(item_segments, mid)
         if item_power > 0 and item_power >= avg_power_w:
@@ -361,7 +361,7 @@ def find_best_placement(
     others: Sequence[dict],
     blocked: Sequence[dict] = (),
     tariff_bands: Sequence[dict] = (),
-) -> Optional[Placement]:
+) -> Placement | None:
     """Finds the start bucket minimizing estimated cost, breaking ties by coverage ratio.
 
     With tariff_bands empty, price_at() is a flat 1.0, so this reproduces the old ratio-only
@@ -373,7 +373,7 @@ def find_best_placement(
     span = max(1, math.ceil(item["duration_min"] / step_minutes))
     other_segments = [seg for o in others if o.get("start") and o.get("end") for seg in phase_segments(o)]
 
-    best: Optional[Placement] = None
+    best: Placement | None = None
     for i in range(0, len(buckets) - span + 1):
         start = buckets[i]["start"]
         end = start + timedelta(minutes=item["duration_min"])
@@ -396,7 +396,7 @@ def schedule_proposals(
     max_simultaneous_power: float,
     points: Sequence[dict],
     base_load: float,
-    pre_committed: Optional[Sequence[dict]] = None,
+    pre_committed: Sequence[dict] | None = None,
 ) -> list[dict]:
     """pre_committed seeds reserved items; each placed item is added so later ones see it."""
     committed = list(pre_committed or [])
