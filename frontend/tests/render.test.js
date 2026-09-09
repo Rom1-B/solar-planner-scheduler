@@ -642,6 +642,25 @@ test("setConfig accepts an omitted devices array for a forecast-only card", () =
   assert.ok(!Number.isNaN(nowX), "expected the forecast chart to render even with no devices");
 });
 
+test("the forecast line starts at now, not at viewStart, when chart_hours_past reaches into days with no forecast data", () => {
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const card = new Card();
+  card.setConfig({}); // forecast-only card, same real-world config that surfaced this gap
+  card._hass = {
+    themes: { darkMode: false },
+    states: { ...BASE_CONFIG_ENTITY, ...configEntityWithForecast(buildForecast(dayStart)) },
+  };
+  setDevicesAttr(card, []);
+  card._config = { ...card._config, chart_hours_past: 48, chart_hours_future: 0 };
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  const nowX = parseFloat(/x1="([\d.]+)"[^>]*class="now-line"/.exec(html)?.[1] ?? "NaN");
+  const forecastStartX = parseFloat(/<path d="M([\d.]+),[\d.]+[^"]*" class="forecast-line"/.exec(html)?.[1] ?? "NaN");
+  assert.ok(!Number.isNaN(nowX) && !Number.isNaN(forecastStartX), "expected both a now-line and a forecast-line");
+  assert.ok(Math.abs(forecastStartX - nowX) < 0.5, `expected the forecast line to start at "now" (${nowX}), got ${forecastStartX}`);
+});
+
 test("each device's coverage badge reflects its own sensor attribute independently", () => {
   // Coverage subtraction between overlapping devices is now computed server-side (coordinator.py).
   // This only checks the card renders each device's own reported number, not the subtraction math itself.

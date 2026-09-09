@@ -135,8 +135,8 @@ horizontally: leave it unset (or equal to `chart_hours_past + chart_hours_future
 the whole window without scrolling, or set it smaller (e.g. to widen `chart_hours_future` to cover
 several days while still seeing only one day at a time by default).
 
-Note: the forecast curve is never archived, so a large `chart_hours_past` just shows an empty area
-before today; real production/consumption history renders normally over the full window.
+Note: the forecast curve is never archived, so it always starts at "now", never earlier, regardless
+of `chart_hours_past`; real production/consumption history renders normally over the full window.
 
 ## Development
 

@@ -611,7 +611,18 @@ class SolarPlannerCard extends HTMLElement {
     const y = (w) => marginTop + innerH - (Math.max(0, Math.min(w, maxW)) / maxW) * innerH;
 
     // Only the visible window needs path segments; `points` stays unfiltered elsewhere (interpolate, maxW).
-    const visiblePoints = points.filter((p) => p.time >= viewStart && p.time <= viewEnd);
+    // The forecast line/band starts exactly at "now", never earlier: a forecast for already-elapsed
+    // time is redundant with (and less accurate than) the actual production line, which already
+    // covers the full past window. Anchored via interpolate() so the line starts smoothly at the
+    // "now" marker instead of jumping to the next raw forecast point.
+    const w10Curve = points.map((p) => ({ time: p.time, w: p.w10 }));
+    const w90Curve = points.map((p) => ({ time: p.time, w: p.w90 }));
+    const visiblePoints = points.length
+      ? [
+          { time: now, w: interpolate(points, now), w10: interpolate(w10Curve, now), w90: interpolate(w90Curve, now) },
+          ...points.filter((p) => p.time > now && p.time <= viewEnd),
+        ]
+      : [];
     const visibleActualPoints = this._actualPoints.filter((p) => p.time >= viewStart && p.time <= viewEnd);
     const visibleConsumptionPoints = this._consumptionPoints.filter((p) => p.time >= viewStart && p.time <= viewEnd);
     // Closed polygon: P90 left-to-right, then P10 back. Zero width draws an invisible sliver, not a gap.
@@ -1036,9 +1047,6 @@ class SolarPlannerCard extends HTMLElement {
     });
 
     this._bindGanttDrag({ viewStart, viewSpanMs, marginLeft, marginRight, width });
-    // Remapped to interpolate()'s {time, w} shape so the shared helper stays untouched.
-    const w10Curve = points.map((p) => ({ time: p.time, w: p.w10 }));
-    const w90Curve = points.map((p) => ({ time: p.time, w: p.w90 }));
     this._bindHover({ points, w10Curve, w90Curve, viewStart, viewSpanMs, x, y, marginLeft, marginRight, marginTop, height, width, todayEnd });
   }
 
