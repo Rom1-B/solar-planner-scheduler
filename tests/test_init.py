@@ -8,7 +8,7 @@ from unittest.mock import patch
 from homeassistant.core import is_callback
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.solar_planner_scheduler import PLATFORMS, async_setup_entry
+from custom_components.solar_planner_scheduler import PLATFORMS, _card_version, async_setup_entry
 from custom_components.solar_planner_scheduler.const import (
     CONF_FORECAST_ENTITY,
     CONF_MAX_SIMULTANEOUS_POWER,
@@ -18,6 +18,24 @@ from custom_components.solar_planner_scheduler.const import (
 
 def test_select_platform_is_registered():
     assert "select" in PLATFORMS
+
+
+def test_card_version_changes_with_the_file_content(tmp_path):
+    card_path = tmp_path / "solar-planner-card.js"
+    card_path.write_text("console.log('v1');")
+    v1 = _card_version(card_path)
+
+    card_path.write_text("console.log('v2');")
+    v2 = _card_version(card_path)
+
+    assert v1 != v2
+
+
+def test_card_version_is_stable_for_unchanged_content(tmp_path):
+    card_path = tmp_path / "solar-planner-card.js"
+    card_path.write_text("console.log('same');")
+
+    assert _card_version(card_path) == _card_version(card_path)
 
 
 async def test_the_per_minute_refresh_timer_is_a_real_hass_callback(hass):

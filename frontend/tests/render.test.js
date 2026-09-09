@@ -848,6 +848,73 @@ test("the forecast history stays empty when no history entity was resolved serve
   assert.deepEqual(card._forecastHistoryPoints, []);
 });
 
+test("_refresh prefers recorder statistics over raw history for production/consumption", async () => {
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const fiveMinAgo = new Date(Date.now() - 5 * 60000);
+  const card = new Card();
+  card.setConfig({});
+  const base = configEntityWithForecast(buildForecast(dayStart))["sensor.solar_planner_scheduler_config"];
+  card._hass = {
+    themes: { darkMode: false },
+    callWS: async (msg) => {
+      assert.equal(msg.type, "recorder/statistics_during_period", "expected only a statistics call, no raw history fallback");
+      const id = msg.statistic_ids[0];
+      const value = id === "sensor.production" ? 500 : 200;
+      return { [id]: [{ start: fiveMinAgo.getTime(), end: Date.now(), mean: value }] };
+    },
+    states: {
+      ...BASE_CONFIG_ENTITY,
+      "sensor.solar_planner_scheduler_config": {
+        ...base,
+        attributes: { ...base.attributes, production_entity: "sensor.production", consumption_entity: "sensor.consumption" },
+      },
+    },
+  };
+  setDevicesAttr(card, []);
+
+  await card._refresh();
+
+  assert.deepEqual(card._actualCurve.map((p) => p.w), [500]);
+  assert.deepEqual(card._consumptionCurve.map((p) => p.w), [200]);
+});
+
+test("_refresh falls back to raw history when an entity has no recorder statistics", async () => {
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const twoHoursAgo = new Date(Date.now() - 2 * 3600000);
+  const card = new Card();
+  card.setConfig({});
+  const base = configEntityWithForecast(buildForecast(dayStart))["sensor.solar_planner_scheduler_config"];
+  card._hass = {
+    themes: { darkMode: false },
+    callWS: async (msg) => {
+      if (msg.type === "recorder/statistics_during_period") return {};
+      assert.equal(msg.type, "history/history_during_period");
+      assert.equal(msg.minimal_response, true, "expected the raw-history fallback to request the compact minimal_response shape");
+      return { "sensor.production": [{ last_changed: twoHoursAgo.toISOString(), state: "700" }] };
+    },
+    states: {
+      ...BASE_CONFIG_ENTITY,
+      "sensor.solar_planner_scheduler_config": {
+        ...base,
+        attributes: { ...base.attributes, production_entity: "sensor.production", consumption_entity: null },
+      },
+    },
+  };
+  setDevicesAttr(card, []);
+
+  await card._refresh();
+
+  // smoothCurve() forward-fills the single raw sample into every 5-minute bucket, so every bucket
+  // (not just the first) must show it.
+  assert.ok(card._actualCurve.length > 1, JSON.stringify(card._actualCurve));
+  assert.ok(
+    card._actualCurve.every((p) => p.w === 700),
+    `expected every bucket to show the raw-history fallback value, got ${JSON.stringify(card._actualCurve)}`
+  );
+});
+
 test("each device's coverage badge reflects its own sensor attribute independently", () => {
   // Coverage subtraction between overlapping devices is now computed server-side (coordinator.py).
   // This only checks the card renders each device's own reported number, not the subtraction math itself.

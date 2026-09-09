@@ -353,7 +353,7 @@ class SolarPlannerCard extends HTMLElement {
         start_time: start.toISOString(),
         end_time: end.toISOString(),
         entity_ids: [entityId],
-        minimal_response: false,
+        minimal_response: true,
         no_attributes: true,
         significant_changes_only: false,
       });
@@ -366,6 +366,38 @@ class SolarPlannerCard extends HTMLElement {
       console.warn(`solar-planner-card: history fetch failed for ${entityId}`, e);
       return [];
     }
+  }
+
+  // Recorder-precomputed 5-minute means: for a state_class:measurement entity (production/
+  // consumption sensors almost always are), this is orders of magnitude smaller than fetching
+  // every raw state change via _fetchHistory + smoothing it client-side. Empty (not an error) for
+  // an entity with no long-term statistics; _fetchActualCurve() falls back to raw history for that case.
+  async _fetchStatistics(entityId, start, end) {
+    try {
+      const result = await this._hass.callWS({
+        type: "recorder/statistics_during_period",
+        start_time: start.toISOString(),
+        end_time: end.toISOString(),
+        statistic_ids: [entityId],
+        period: "5minute",
+        types: ["mean"],
+      });
+      const raw = result?.[entityId] || [];
+      return raw
+        .map((s) => ({ time: new Date(s.start), value: s.mean }))
+        .filter((s) => s.value != null && !Number.isNaN(s.value))
+        .sort((a, b) => a.time - b.time);
+    } catch (e) {
+      console.warn(`solar-planner-card: statistics fetch failed for ${entityId}`, e);
+      return [];
+    }
+  }
+
+  async _fetchActualCurve(entityId, start, end) {
+    const stats = await this._fetchStatistics(entityId, start, end);
+    if (stats.length) return stats;
+    const raw = await this._fetchHistory(entityId, start, end);
+    return smoothCurve(raw, SMOOTH_BUCKET_MS, start, end);
   }
 
   async _refresh() {
@@ -381,9 +413,9 @@ class SolarPlannerCard extends HTMLElement {
     const jobs = [];
     if (base.production_entity) {
       jobs.push(
-        this._fetchHistory(base.production_entity, historyStart, now).then((pts) => {
-          this._actualPoints = smoothCurve(pts, SMOOTH_BUCKET_MS, historyStart, now);
-          this._actualCurve = this._actualPoints.map((p) => ({ time: p.time, w: p.value }));
+        this._fetchActualCurve(base.production_entity, historyStart, now).then((pts) => {
+          this._actualPoints = pts;
+          this._actualCurve = pts.map((p) => ({ time: p.time, w: p.value }));
         })
       );
     } else {
@@ -392,9 +424,9 @@ class SolarPlannerCard extends HTMLElement {
     }
     if (base.consumption_entity) {
       jobs.push(
-        this._fetchHistory(base.consumption_entity, historyStart, now).then((pts) => {
-          this._consumptionPoints = smoothCurve(pts, SMOOTH_BUCKET_MS, historyStart, now);
-          this._consumptionCurve = this._consumptionPoints.map((p) => ({ time: p.time, w: p.value }));
+        this._fetchActualCurve(base.consumption_entity, historyStart, now).then((pts) => {
+          this._consumptionPoints = pts;
+          this._consumptionCurve = pts.map((p) => ({ time: p.time, w: p.value }));
         })
       );
     } else {

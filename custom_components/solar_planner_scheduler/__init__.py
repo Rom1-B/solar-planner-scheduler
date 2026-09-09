@@ -13,6 +13,8 @@ from homeassistant.helpers import config_validation as cv
 from .const import DOMAIN
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
@@ -22,9 +24,15 @@ PLATFORMS = ["sensor", "binary_sensor", "switch", "datetime", "select"]
 
 CARD_URL_BASE = f"/{DOMAIN}_files"
 CARD_FILENAME = "solar-planner-card.js"
-# Bump manually whenever solar-planner-card.js changes, so the Lovelace resource URL's
-# cache-busting query string actually changes and browsers don't keep serving a stale copy.
-CARD_VERSION = "45"
+
+
+def _card_version(card_path: Path) -> str:
+    """Content hash of the bundled card, used as the Lovelace resource's cache-busting query
+    string: changes automatically whenever solar-planner-card.js changes, no manual bump needed.
+    """
+    import hashlib
+
+    return hashlib.md5(card_path.read_bytes()).hexdigest()[:8]
 
 
 async def async_setup(hass: "HomeAssistant", config: dict) -> bool:
@@ -41,6 +49,8 @@ async def async_setup(hass: "HomeAssistant", config: dict) -> bool:
     if lovelace is None:
         return True
 
+    card_version = await hass.async_add_executor_job(_card_version, www_path / CARD_FILENAME)
+
     async def _register_resource(_now=None) -> None:
         if not lovelace.resources.loaded:
             async_call_later(hass, 5, _register_resource)
@@ -48,9 +58,9 @@ async def async_setup(hass: "HomeAssistant", config: dict) -> bool:
         url = f"{CARD_URL_BASE}/{CARD_FILENAME}"
         existing = next((r for r in lovelace.resources.async_items() if r["url"].split("?")[0] == url), None)
         if existing is None:
-            await lovelace.resources.async_create_item({"res_type": "module", "url": f"{url}?v={CARD_VERSION}"})
-        elif existing["url"].split("?v=")[-1] != CARD_VERSION:
-            await lovelace.resources.async_update_item(existing["id"], {"res_type": "module", "url": f"{url}?v={CARD_VERSION}"})
+            await lovelace.resources.async_create_item({"res_type": "module", "url": f"{url}?v={card_version}"})
+        elif existing["url"].split("?v=")[-1] != card_version:
+            await lovelace.resources.async_update_item(existing["id"], {"res_type": "module", "url": f"{url}?v={card_version}"})
 
     await _register_resource()
     _async_register_services(hass)
