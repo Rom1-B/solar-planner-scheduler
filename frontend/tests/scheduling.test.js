@@ -1,7 +1,15 @@
 import "./dom-shim.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DRAG_SNAP_MS, instantDeficitWh, coveragePercent, phaseSegments, snapToGrid } from "../solar-planner-card.js";
+import {
+  DRAG_SNAP_MS,
+  averageForecastPoints,
+  instantDeficitWh,
+  coveragePercent,
+  minForecastPoints,
+  phaseSegments,
+  snapToGrid,
+} from "../solar-planner-card.js";
 
 // Real bug: a candidate whose 30-min bucket *average* balances out can still have its brief
 // high-power phase land well before the forecast curve actually reaches that power level — invisible
@@ -162,4 +170,93 @@ test("snapToGrid rounds a dragged timestamp to the nearest 5-minute mark", () =>
   assert.equal(snapToGrid(base + 3 * 60000), base + 5 * 60000);
   assert.equal(snapToGrid(base - 3 * 60000), base - 5 * 60000);
   assert.equal(snapToGrid(base + 7 * 60000, DRAG_SNAP_MS), base + 5 * 60000);
+});
+
+// Mirrors scheduling.py's average_forecast_points()/min_forecast_points() test cases exactly
+// (tests/test_scheduling.py), same day/points, so the two stay in lockstep.
+const HDAY = new Date("2026-01-15T00:00:00Z");
+const ht = (h, m) => new Date(HDAY.getTime() + (h * 60 + m) * 60000);
+
+test("averageForecastPoints returns empty for no curves", () => {
+  assert.deepEqual(averageForecastPoints([]), []);
+});
+
+test("averageForecastPoints returns empty when every curve is empty", () => {
+  assert.deepEqual(averageForecastPoints([[], []]), []);
+});
+
+test("averageForecastPoints returns the only non-empty curve unchanged", () => {
+  const curve = [{ time: ht(8, 0), w: 100, w10: 80, w90: 120 }];
+  assert.deepEqual(averageForecastPoints([[], curve]), curve);
+});
+
+test("averageForecastPoints averages two curves on the same grid", () => {
+  const a = [
+    { time: ht(8, 0), w: 100, w10: 80, w90: 120 },
+    { time: ht(9, 0), w: 200, w10: 150, w90: 250 },
+  ];
+  const b = [
+    { time: ht(8, 0), w: 300, w10: 260, w90: 340 },
+    { time: ht(9, 0), w: 400, w10: 350, w90: 450 },
+  ];
+  assert.deepEqual(averageForecastPoints([a, b]), [
+    { time: ht(8, 0), w: 200, w10: 170, w90: 230 },
+    { time: ht(9, 0), w: 300, w10: 250, w90: 350 },
+  ]);
+});
+
+test("averageForecastPoints aligns curves on different time grids", () => {
+  const a = [
+    { time: ht(8, 0), w: 0, w10: 0, w90: 0 },
+    { time: ht(10, 0), w: 200, w10: 200, w90: 200 },
+  ];
+  const b = [{ time: ht(9, 0), w: 500, w10: 500, w90: 500 }];
+  assert.deepEqual(averageForecastPoints([a, b]), [
+    { time: ht(8, 0), w: 250, w10: 250, w90: 250 },
+    { time: ht(9, 0), w: 300, w10: 300, w90: 300 },
+    { time: ht(10, 0), w: 350, w10: 350, w90: 350 },
+  ]);
+});
+
+test("averageForecastPoints averages three curves", () => {
+  const a = [{ time: ht(8, 0), w: 100, w10: 100, w90: 100 }];
+  const b = [{ time: ht(8, 0), w: 200, w10: 200, w90: 200 }];
+  const c = [{ time: ht(8, 0), w: 300, w10: 300, w90: 300 }];
+  assert.deepEqual(averageForecastPoints([a, b, c]), [{ time: ht(8, 0), w: 200, w10: 200, w90: 200 }]);
+});
+
+test("minForecastPoints returns empty for no curves", () => {
+  assert.deepEqual(minForecastPoints([]), []);
+});
+
+test("minForecastPoints takes the minimum of two curves on the same grid", () => {
+  const a = [
+    { time: ht(8, 0), w: 100, w10: 80, w90: 120 },
+    { time: ht(9, 0), w: 200, w10: 150, w90: 250 },
+  ];
+  const b = [
+    { time: ht(8, 0), w: 300, w10: 260, w90: 340 },
+    { time: ht(9, 0), w: 400, w10: 350, w90: 450 },
+  ];
+  assert.deepEqual(minForecastPoints([a, b]), a);
+});
+
+test("minForecastPoints aligns curves on different time grids", () => {
+  const a = [
+    { time: ht(8, 0), w: 0, w10: 0, w90: 0 },
+    { time: ht(10, 0), w: 200, w10: 200, w90: 200 },
+  ];
+  const b = [{ time: ht(9, 0), w: 500, w10: 500, w90: 500 }];
+  assert.deepEqual(minForecastPoints([a, b]), [
+    { time: ht(8, 0), w: 0, w10: 0, w90: 0 },
+    { time: ht(9, 0), w: 100, w10: 100, w90: 100 },
+    { time: ht(10, 0), w: 200, w10: 200, w90: 200 },
+  ]);
+});
+
+test("minForecastPoints takes the minimum of three curves", () => {
+  const a = [{ time: ht(8, 0), w: 300, w10: 300, w90: 300 }];
+  const b = [{ time: ht(8, 0), w: 100, w10: 100, w90: 100 }];
+  const c = [{ time: ht(8, 0), w: 200, w10: 200, w90: 200 }];
+  assert.deepEqual(minForecastPoints([a, b, c]), [{ time: ht(8, 0), w: 100, w10: 100, w90: 100 }]);
 });

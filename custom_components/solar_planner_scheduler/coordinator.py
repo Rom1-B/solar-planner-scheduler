@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -299,6 +300,28 @@ def resolve_forecast_sources(data: dict) -> dict[str, list[str]]:
         result[legacy_provider] = [
             e for e in [data.get(CONF_FORECAST_ENTITY), data.get(CONF_FORECAST_TOMORROW_ENTITY)] if e
         ]
+    return result
+
+
+def resolve_forecast_history_entities(hass: HomeAssistant, data: dict) -> dict[str, str]:
+    """Entity whose own state history reconstructs a provider's forecast curve before "now":
+    detailedForecast/forecast aren't kept by the recorder (verified live), but a provider's plain
+    "power now" sensor is, since it's just a simple numeric state. {provider: entity_id}, only for
+    providers where one was found.
+    """
+    resolved = resolve_forecast_sources(data)
+    result: dict[str, str] = {}
+    if FORECAST_PROVIDER_HELIOS in resolved:
+        # The configured entity already is the "power now" sensor for Helios.
+        result[FORECAST_PROVIDER_HELIOS] = resolved[FORECAST_PROVIDER_HELIOS][0]
+    if FORECAST_PROVIDER_SOLCAST in resolved:
+        registry = er.async_get(hass)
+        anchor = registry.async_get(resolved[FORECAST_PROVIDER_SOLCAST][0])
+        if anchor and anchor.device_id:
+            for sibling in er.async_entries_for_device(registry, anchor.device_id):
+                if sibling.entity_id.endswith("_power_now"):
+                    result[FORECAST_PROVIDER_SOLCAST] = sibling.entity_id
+                    break
     return result
 
 

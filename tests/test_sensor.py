@@ -8,6 +8,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.solar_planner_scheduler.const import (
     CONF_FIXED_LOADS,
+    CONF_FORECAST_ENTITIES_HELIOS,
     CONF_FORECAST_ENTITY,
     CONF_MAX_SIMULTANEOUS_POWER,
     CONF_MINUTES,
@@ -18,6 +19,7 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_START_TIME,
     CONF_TARIFF_BANDS,
     DOMAIN,
+    FORECAST_PROVIDER_HELIOS,
 )
 from custom_components.solar_planner_scheduler.coordinator import SolarPlannerSchedulerCoordinator
 from custom_components.solar_planner_scheduler.sensor import BaseConfigSensor, CurrentPriceSensor
@@ -100,3 +102,11 @@ async def test_base_config_sensor_exposes_theoretical_forecast(hass):
     assert sensor.extra_state_attributes["theoretical_forecast"] == [
         {"time": "2026-08-30T10:00:00+00:00", "w": 1000.0, "w10": 700.0, "w90": 1300.0}
     ]
+
+
+async def test_base_config_sensor_exposes_forecast_history_entities(hass):
+    sensor, _ = _set_up_base_config_sensor(hass, {CONF_FORECAST_ENTITIES_HELIOS: "sensor.helios_power_now"})
+
+    assert sensor.extra_state_attributes["forecast_history_entities"] == {
+        FORECAST_PROVIDER_HELIOS: "sensor.helios_power_now"
+    }

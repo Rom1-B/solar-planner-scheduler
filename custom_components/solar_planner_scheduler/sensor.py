@@ -30,7 +30,7 @@ from .const import (
     CONF_TARIFF_BANDS,
     DOMAIN,
 )
-from .coordinator import SolarPlannerSchedulerCoordinator
+from .coordinator import SolarPlannerSchedulerCoordinator, resolve_forecast_history_entities
 from .scheduling import price_at
 
 
@@ -91,6 +91,7 @@ class BaseConfigSensor(CoordinatorEntity[SolarPlannerSchedulerCoordinator], Sens
             "fixed_loads": fixed_loads,
             "devices": devices,
             "theoretical_forecast": self.coordinator.theoretical_forecast_points(),
+            "forecast_history_entities": resolve_forecast_history_entities(self.coordinator.hass, data),
         }
 
 

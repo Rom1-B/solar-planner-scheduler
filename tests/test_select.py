@@ -135,3 +135,26 @@ async def test_async_select_option_stores_the_min_provider(hass):
     await coordinator.async_shutdown()
 
     assert coordinator.active_forecast_source() == FORECAST_PROVIDER_MIN
+
+
+async def test_extra_state_attributes_exposes_the_raw_provider_key(hass):
+    select, coordinator = _set_up_select(
+        hass,
+        {
+            CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.forecast_today"],
+            CONF_FORECAST_ENTITIES_HELIOS: "sensor.helios_power_now",
+        },
+    )
+    await coordinator.async_load_state()
+    await coordinator.async_set_forecast_source(FORECAST_PROVIDER_AVERAGE)
+    await coordinator.async_shutdown()
+
+    # "provider" is the machine key ("average"), not the display label ("Average"): the card
+    # reads this directly instead of retranslating current_option's label.
+    assert select.extra_state_attributes == {"provider": FORECAST_PROVIDER_AVERAGE}
+
+
+async def test_extra_state_attributes_falls_back_like_current_option(hass):
+    select, _ = _set_up_select(hass, {CONF_FORECAST_ENTITIES_HELIOS: "sensor.helios_power_now"})
+
+    assert select.extra_state_attributes == {"provider": FORECAST_PROVIDER_HELIOS}

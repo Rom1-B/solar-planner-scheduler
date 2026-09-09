@@ -10,6 +10,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -65,6 +67,7 @@ from custom_components.solar_planner_scheduler.coordinator import (
     _phases_differ_significantly,
     _read_forecast_points,
     compute_locked,
+    resolve_forecast_history_entities,
     resolve_forecast_sources,
 )
 
@@ -204,6 +207,47 @@ def test_resolve_forecast_sources_ignores_the_legacy_field_once_a_dedicated_fiel
 
 def test_resolve_forecast_sources_returns_empty_dict_when_nothing_configured():
     assert resolve_forecast_sources({}) == {}
+
+
+def test_resolve_forecast_history_entities_finds_the_helios_entity_directly(hass):
+    # The configured entity already is Helios's "power now" sensor: no lookup needed.
+    data = {CONF_FORECAST_ENTITIES_HELIOS: "sensor.helios_power_now"}
+    assert resolve_forecast_history_entities(hass, data) == {FORECAST_PROVIDER_HELIOS: "sensor.helios_power_now"}
+
+
+async def test_resolve_forecast_history_entities_finds_the_solcast_sibling_via_the_device(hass):
+    entry = MockConfigEntry(domain="solcast_solar")
+    entry.add_to_hass(hass)
+    device = dr.async_get(hass).async_get_or_create(config_entry_id=entry.entry_id, identifiers={("solcast_solar", "home")})
+    registry = er.async_get(hass)
+    registry.async_get_or_create(
+        "sensor", "solcast_solar", "forecast_today_uid", suggested_object_id="solcast_pv_forecast_forecast_today", device_id=device.id
+    )
+    registry.async_get_or_create(
+        "sensor", "solcast_solar", "power_now_uid", suggested_object_id="solcast_pv_forecast_power_now", device_id=device.id
+    )
+
+    data = {CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.solcast_pv_forecast_forecast_today"]}
+
+    assert resolve_forecast_history_entities(hass, data) == {FORECAST_PROVIDER_SOLCAST: "sensor.solcast_pv_forecast_power_now"}
+
+
+async def test_resolve_forecast_history_entities_omits_solcast_without_a_power_now_sibling(hass):
+    entry = MockConfigEntry(domain="solcast_solar")
+    entry.add_to_hass(hass)
+    device = dr.async_get(hass).async_get_or_create(config_entry_id=entry.entry_id, identifiers={("solcast_solar", "home")})
+    er.async_get(hass).async_get_or_create(
+        "sensor", "solcast_solar", "forecast_today_uid", suggested_object_id="solcast_pv_forecast_forecast_today", device_id=device.id
+    )
+
+    data = {CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.solcast_pv_forecast_forecast_today"]}
+
+    assert resolve_forecast_history_entities(hass, data) == {}
+
+
+def test_resolve_forecast_history_entities_omits_solcast_when_the_anchor_entity_is_unregistered(hass):
+    data = {CONF_FORECAST_ENTITIES_SOLCAST: ["sensor.solcast_pv_forecast_forecast_today"]}
+    assert resolve_forecast_history_entities(hass, data) == {}
 
 
 def test_theoretical_forecast_points_carries_percentiles(hass):

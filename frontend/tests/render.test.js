@@ -113,6 +113,15 @@ function setFixedLoads(card, fixedLoads) {
   };
 }
 
+// {provider: entity_id}, matches resolve_forecast_history_entities()'s server-side shape.
+function setForecastHistoryEntities(card, entities) {
+  const entity = card._hass.states["sensor.solar_planner_scheduler_config"];
+  card._hass.states["sensor.solar_planner_scheduler_config"] = {
+    ...entity,
+    attributes: { ...entity.attributes, forecast_history_entities: entities },
+  };
+}
+
 // Server-normalized shape (coordinator.py's theoretical_forecast_points()): {time, w, w10, w90},
 // watts already in W. w10/w90 default to w (no confidence band) unless withConfidence is set.
 function buildForecast(dayStart, peakKw = 3, withConfidence = false) {
@@ -717,6 +726,126 @@ test("the forecast line starts at now, not at viewStart, when chart_hours_past r
   const forecastStartX = parseFloat(/<path d="M([\d.]+),[\d.]+[^"]*" class="forecast-line"/.exec(html)?.[1] ?? "NaN");
   assert.ok(!Number.isNaN(nowX) && !Number.isNaN(forecastStartX), "expected both a now-line and a forecast-line");
   assert.ok(Math.abs(forecastStartX - nowX) < 0.5, `expected the forecast line to start at "now" (${nowX}), got ${forecastStartX}`);
+});
+
+test("the forecast line extends before now once forecast history points are available", () => {
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const card = new Card();
+  card.setConfig({});
+  card._hass = {
+    themes: { darkMode: false },
+    states: { ...BASE_CONFIG_ENTITY, ...configEntityWithForecast(buildForecast(dayStart)) },
+  };
+  setDevicesAttr(card, []);
+  card._forecastHistoryPoints = [{ time: new Date(Date.now() - 2 * 3600000), w: 50, w10: 50, w90: 50 }];
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  const nowX = parseFloat(/x1="([\d.]+)"[^>]*class="now-line"/.exec(html)?.[1] ?? "NaN");
+  const forecastStartX = parseFloat(/<path d="M([\d.]+),[\d.]+[^"]*" class="forecast-line"/.exec(html)?.[1] ?? "NaN");
+  assert.ok(forecastStartX < nowX - 1, `expected the forecast line to start before "now" (${nowX}), got ${forecastStartX}`);
+});
+
+test("_refresh fetches, combines, and stores the active provider's forecast history", async () => {
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const twoHoursAgo = new Date(Date.now() - 2 * 3600000);
+  const card = new Card();
+  card.setConfig({});
+  card._hass = {
+    themes: { darkMode: false },
+    callWS: async ({ entity_ids }) => {
+      const value = entity_ids[0] === "sensor.solcast_power_now" ? "100" : "300";
+      return { [entity_ids[0]]: [{ last_changed: twoHoursAgo.toISOString(), state: value }] };
+    },
+    states: { ...BASE_CONFIG_ENTITY, ...configEntityWithForecast(buildForecast(dayStart)) },
+  };
+  setDevicesAttr(card, []);
+  setForecastHistoryEntities(card, { solcast: "sensor.solcast_power_now", helios_forecast: "sensor.helios_power_now" });
+  card._hass.states["select.solar_planner_scheduler_forecast_source"] = {
+    state: "Average",
+    attributes: { options: ["Solcast", "Helios Forecast", "Average"], provider: "average" },
+  };
+
+  await card._refresh();
+
+  // smoothCurve() forward-fills the single raw sample into every 5-minute bucket since it, not a
+  // 1:1 passthrough of raw samples: every bucket must show the combined value, not just the first.
+  assert.ok(card._forecastHistoryPoints.length > 1, JSON.stringify(card._forecastHistoryPoints));
+  assert.ok(
+    card._forecastHistoryPoints.every((p) => p.w === 200),
+    `expected every bucket to average 100W (Solcast) and 300W (Helios) to 200W, got ${JSON.stringify(card._forecastHistoryPoints)}`
+  );
+});
+
+test("switching the forecast source re-fetches history even within the 5-minute refresh throttle", async () => {
+  // Regression for a live bug: set hass() only calls the throttled _refresh() (the sole place that
+  // fetches forecast history) when REFRESH_INTERVAL_MS has elapsed; a source switch shortly after
+  // page load fell into the else branch (_requestRender() only), leaving _forecastHistoryPoints
+  // frozen on whichever provider was active during the last real refresh.
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const oneHourAgo = new Date(Date.now() - 3600000);
+  let callCount = 0;
+  const callWS = async ({ entity_ids }) => {
+    callCount++;
+    const value = entity_ids[0] === "sensor.solcast_power_now" ? "100" : "300";
+    return { [entity_ids[0]]: [{ last_changed: oneHourAgo.toISOString(), state: value }] };
+  };
+  const forecastConfigEntity = configEntityWithForecast(buildForecast(dayStart))["sensor.solar_planner_scheduler_config"];
+  const statesWithSource = (source, provider) => ({
+    ...BASE_CONFIG_ENTITY,
+    "sensor.solar_planner_scheduler_config": {
+      ...forecastConfigEntity,
+      attributes: {
+        ...forecastConfigEntity.attributes,
+        devices: [],
+        forecast_history_entities: { solcast: "sensor.solcast_power_now", helios_forecast: "sensor.helios_power_now" },
+      },
+    },
+    "select.solar_planner_scheduler_forecast_source": {
+      state: source,
+      attributes: { options: ["Solcast", "Helios Forecast"], provider },
+    },
+  });
+
+  const card = new Card();
+  card.setConfig({});
+  card.hass = { themes: { darkMode: false }, callWS, states: statesWithSource("Solcast", "solcast") };
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(callCount, 2, "expected the first hass= to fetch both providers' history");
+  assert.ok(
+    card._forecastHistoryPoints.every((p) => p.w === 100),
+    `expected Solcast's history, got ${JSON.stringify(card._forecastHistoryPoints)}`
+  );
+
+  card.hass = { themes: { darkMode: false }, callWS, states: statesWithSource("Helios Forecast", "helios_forecast") };
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.equal(callCount, 4, "expected switching source to trigger a second fetch, not reuse the stale one");
+  assert.ok(
+    card._forecastHistoryPoints.every((p) => p.w === 300),
+    `expected Helios's history after switching, got ${JSON.stringify(card._forecastHistoryPoints)}`
+  );
+});
+
+test("the forecast history stays empty when no history entity was resolved server-side", async () => {
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const card = new Card();
+  card.setConfig({});
+  card._hass = {
+    themes: { darkMode: false },
+    callWS: async () => {
+      throw new Error("must not be called when forecast_history_entities is empty");
+    },
+    states: { ...BASE_CONFIG_ENTITY, ...configEntityWithForecast(buildForecast(dayStart)) },
+  };
+  setDevicesAttr(card, []);
+
+  await card._refresh();
+
+  assert.deepEqual(card._forecastHistoryPoints, []);
 });
 
 test("each device's coverage badge reflects its own sensor attribute independently", () => {

@@ -48,14 +48,24 @@ class ForecastSourceSelect(CoordinatorEntity[SolarPlannerSchedulerCoordinator], 
             labels += [_PROVIDER_LABELS[c] for c in FORECAST_COMBINERS]
         return labels
 
-    @property
-    def current_option(self) -> str | None:
+    def _resolved_active_provider(self) -> str | None:
         resolved = resolve_forecast_sources(self._entry.data)
         valid = set(resolved) | (set(FORECAST_COMBINERS) if len(resolved) >= 2 else set())
         active = self.coordinator.active_forecast_source()
         if active not in valid:
             active = next(iter(resolved), None)
+        return active
+
+    @property
+    def current_option(self) -> str | None:
+        active = self._resolved_active_provider()
         return _PROVIDER_LABELS.get(active, active) if active else None
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        # The raw machine key, not the display label: the card reads this instead of retranslating
+        # current_option's label back into a provider key.
+        return {"provider": self._resolved_active_provider()}
 
     async def async_select_option(self, option: str) -> None:
         provider = next((p for p, label in _PROVIDER_LABELS.items() if label == option), option)

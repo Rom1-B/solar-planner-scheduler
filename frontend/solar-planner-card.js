@@ -104,6 +104,30 @@ function interpolate(points, t) {
   return 0;
 }
 
+// Mirrors scheduling.py's _combine_curves()/average_forecast_points()/min_forecast_points(): no
+// server-side equivalent for history (the coordinator never touches the recorder), so combining
+// two providers' historical "power now" curves for Average/Min happens here instead.
+function combineCurves(curves, reduceFn) {
+  const nonEmpty = curves.filter((c) => c.length);
+  if (!nonEmpty.length) return [];
+  if (nonEmpty.length === 1) return nonEmpty[0];
+  const times = [...new Set(nonEmpty.flatMap((c) => c.map((p) => p.time.getTime())))].sort((a, b) => a - b);
+  const fields = ["w", "w10", "w90"];
+  const remapped = nonEmpty.map((c) => Object.fromEntries(fields.map((f) => [f, c.map((p) => ({ time: p.time, w: p[f] }))])));
+  return times.map((t) => {
+    const time = new Date(t);
+    const point = { time };
+    for (const f of fields) point[f] = reduceFn(remapped.map((r) => interpolate(r[f], time)));
+    return point;
+  });
+}
+export function averageForecastPoints(curves) {
+  return combineCurves(curves, (vals) => vals.reduce((a, b) => a + b, 0) / vals.length);
+}
+export function minForecastPoints(curves) {
+  return combineCurves(curves, (vals) => Math.min(...vals));
+}
+
 // Sums every overlapping segment, not just the first match.
 function powerAt(segments, t) {
   let sum = 0;
@@ -192,6 +216,7 @@ class SolarPlannerCard extends HTMLElement {
     this._actualCurve = [];
     this._consumptionPoints = [];
     this._consumptionCurve = [];
+    this._forecastHistoryPoints = [];
     this._lastRefresh = 0;
     this._lastSignature = null;
     // Drag state, not re-rendered per pointermove (see _bindGanttDrag).
@@ -234,6 +259,7 @@ class SolarPlannerCard extends HTMLElement {
       max_simultaneous_power: state ? parseFloat(state.state) : null,
       fixed_loads: fixedLoads,
       devices: attrs.devices || [],
+      forecast_history_entities: attrs.forecast_history_entities || {},
     };
   }
 
@@ -253,9 +279,14 @@ class SolarPlannerCard extends HTMLElement {
   }
 
   set hass(hass) {
+    // The forecast-history curve (unlike the live theoretical curve, re-read fresh every render)
+    // is only computed inside _refresh()'s async fetch+combine: a source switch within the 5-minute
+    // throttle window must force a real _refresh(), not just _requestRender() reusing stale history.
+    const previousSource = this._hass?.states["select.solar_planner_scheduler_forecast_source"]?.state;
+    const sourceChanged = previousSource !== hass.states["select.solar_planner_scheduler_forecast_source"]?.state;
     this._hass = hass;
     if (!this._config) return;
-    if (!this._lastRefresh || Date.now() - this._lastRefresh > REFRESH_INTERVAL_MS) {
+    if (sourceChanged || !this._lastRefresh || Date.now() - this._lastRefresh > REFRESH_INTERVAL_MS) {
       this._refresh();
       return;
     }
@@ -369,6 +400,27 @@ class SolarPlannerCard extends HTMLElement {
     } else {
       this._consumptionPoints = [];
       this._consumptionCurve = [];
+    }
+    const historyEntities = Object.entries(base.forecast_history_entities);
+    if (historyEntities.length) {
+      const activeProvider = this._hass.states["select.solar_planner_scheduler_forecast_source"]?.attributes?.provider;
+      const combiner = activeProvider === "average" ? averageForecastPoints : activeProvider === "min" ? minForecastPoints : null;
+      jobs.push(
+        Promise.all(
+          historyEntities.map(([provider, entityId]) =>
+            this._fetchHistory(entityId, historyStart, now).then((pts) => ({
+              provider,
+              points: smoothCurve(pts, SMOOTH_BUCKET_MS, historyStart, now).map((p) => ({ time: p.time, w: p.value, w10: p.value, w90: p.value })),
+            }))
+          )
+        ).then((curves) => {
+          this._forecastHistoryPoints = combiner
+            ? combiner(curves.map((c) => c.points))
+            : curves.find((c) => c.provider === activeProvider)?.points || [];
+        })
+      );
+    } else {
+      this._forecastHistoryPoints = [];
     }
     await Promise.all(jobs);
     this._requestRender();
@@ -615,6 +667,7 @@ class SolarPlannerCard extends HTMLElement {
         base.max_simultaneous_power,
         ...this._actualPoints.map((p) => p.value),
         ...this._consumptionPoints.map((p) => p.value),
+        ...this._forecastHistoryPoints.map((p) => p.w),
         ...stackedBuckets.map((b) => b.total),
       ].reduce((m, v) => Math.max(m, v), 0) * 1.15;
 
@@ -622,18 +675,22 @@ class SolarPlannerCard extends HTMLElement {
     const y = (w) => marginTop + innerH - (Math.max(0, Math.min(w, maxW)) / maxW) * innerH;
 
     // Only the visible window needs path segments; `points` stays unfiltered elsewhere (interpolate, maxW).
-    // The forecast line/band starts exactly at "now", never earlier: a forecast for already-elapsed
-    // time is redundant with (and less accurate than) the actual production line, which already
-    // covers the full past window. Anchored via interpolate() so the line starts smoothly at the
-    // "now" marker instead of jumping to the next raw forecast point.
+    // The live theoretical curve (`points`) never has data before "now" (never archived server-side),
+    // so the segment before "now" comes from _forecastHistoryPoints instead (the provider's own
+    // "power now" sensor history, reconstructed client-side, see _refresh()); it's simply absent
+    // when no history entity was resolved, same as before this feature. The "now" anchor point is
+    // interpolated so the two segments join smoothly instead of jumping to the next raw point.
     const w10Curve = points.map((p) => ({ time: p.time, w: p.w10 }));
     const w90Curve = points.map((p) => ({ time: p.time, w: p.w90 }));
-    const visiblePoints = points.length
-      ? [
-          { time: now, w: interpolate(points, now), w10: interpolate(w10Curve, now), w90: interpolate(w90Curve, now) },
-          ...points.filter((p) => p.time > now && p.time <= viewEnd),
-        ]
-      : [];
+    const historyPoints = this._forecastHistoryPoints.filter((p) => p.time < now);
+    const visiblePoints =
+      points.length || historyPoints.length
+        ? [
+            ...historyPoints,
+            { time: now, w: interpolate(points, now), w10: interpolate(w10Curve, now), w90: interpolate(w90Curve, now) },
+            ...points.filter((p) => p.time > now && p.time <= viewEnd),
+          ]
+        : [];
     const visibleActualPoints = this._actualPoints.filter((p) => p.time >= viewStart && p.time <= viewEnd);
     const visibleConsumptionPoints = this._consumptionPoints.filter((p) => p.time >= viewStart && p.time <= viewEnd);
     // Closed polygon: P90 left-to-right, then P10 back. Zero width draws an invisible sliver, not a gap.
