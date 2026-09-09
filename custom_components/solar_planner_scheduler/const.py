@@ -28,6 +28,7 @@ CONF_PROGRAMS = "programs"
 CONF_POWER_PROFILE = "power_profile"
 CONF_MINUTES = "minutes"
 CONF_AUTO_DAYS = "auto_days"
+CONF_PHASE_CALIBRATION_RUNS = "phase_calibration_runs"
 
 # ISO weekday order (Monday first), used both as the config_flow multi-select's option values and
 # to index datetime.weekday() (0=Monday) when the coordinator checks today against a program's
@@ -45,6 +46,7 @@ NONE_PROGRAM = "None"
 DEFAULT_MAX_SIMULTANEOUS_POWER = 4000
 DEFAULT_UPDATE_INTERVAL_MINUTES = 5
 DEFAULT_IDLE_POWER_THRESHOLD = 10
+DEFAULT_PHASE_CALIBRATION_RUNS = 7
 
 ATTR_END = "end"
 ATTR_COVERAGE_PCT = "coverage_pct"

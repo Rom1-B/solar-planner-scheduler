@@ -25,6 +25,7 @@ from .const import (
     CONF_MAX_SIMULTANEOUS_POWER,
     CONF_MINUTES,
     CONF_NAME,
+    CONF_PHASE_CALIBRATION_RUNS,
     CONF_POWER_PROFILE,
     CONF_POWER_SENSOR,
     CONF_POWER_W,
@@ -35,6 +36,7 @@ from .const import (
     CONF_SUBSCRIPTION_PRICE_MONTHLY,
     CONF_TARIFF_BANDS,
     DEFAULT_MAX_SIMULTANEOUS_POWER,
+    DEFAULT_PHASE_CALIBRATION_RUNS,
     DOMAIN,
     WEEKDAYS,
 )
@@ -139,7 +141,11 @@ def _phases_to_text(phases: list[dict[str, Any]]) -> str:
     return "\n".join(f"{p[CONF_MINUTES]}min@{p[CONF_POWER_W]:g}W" for p in phases)
 
 
-def _program_phases_schema(default_text: str = "", default_days: list[str] | None = None) -> vol.Schema:
+def _program_phases_schema(
+    default_text: str = "",
+    default_days: list[str] | None = None,
+    default_calibration_runs: int = DEFAULT_PHASE_CALIBRATION_RUNS,
+) -> vol.Schema:
     # Unchecked by default means on-demand (runs when picked), not "never runs".
     return vol.Schema(
         {
@@ -148,6 +154,9 @@ def _program_phases_schema(default_text: str = "", default_days: list[str] | Non
             ),
             vol.Optional(CONF_AUTO_DAYS, default=default_days or []): selector.SelectSelector(
                 selector.SelectSelectorConfig(options=WEEKDAYS, multiple=True, mode=selector.SelectSelectorMode.LIST)
+            ),
+            vol.Optional(CONF_PHASE_CALIBRATION_RUNS, default=default_calibration_runs): vol.All(
+                vol.Coerce(int), vol.Range(min=0)
             ),
         }
     )
@@ -446,7 +455,11 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
             except _PhaseParseError as err:
                 return self.async_show_form(
                     step_id="add_program_phases",
-                    data_schema=_program_phases_schema(user_input["phases"], user_input.get(CONF_AUTO_DAYS)),
+                    data_schema=_program_phases_schema(
+                        user_input["phases"],
+                        user_input.get(CONF_AUTO_DAYS),
+                        user_input.get(CONF_PHASE_CALIBRATION_RUNS, DEFAULT_PHASE_CALIBRATION_RUNS),
+                    ),
                     errors={"phases": err.error_key},
                 )
             device_name = self._editing_device_name
@@ -454,6 +467,7 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
                 CONF_NAME: self._new_program_name,
                 CONF_POWER_PROFILE: phases,
                 CONF_AUTO_DAYS: user_input.get(CONF_AUTO_DAYS, []),
+                CONF_PHASE_CALIBRATION_RUNS: user_input.get(CONF_PHASE_CALIBRATION_RUNS, DEFAULT_PHASE_CALIBRATION_RUNS),
             }
             self._devices = [
                 {**d, CONF_PROGRAMS: [*d.get(CONF_PROGRAMS, []), new_program]} if d[CONF_NAME] == device_name else d
@@ -487,17 +501,29 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
             except _PhaseParseError as err:
                 return self.async_show_form(
                     step_id="edit_program_phases",
-                    data_schema=_program_phases_schema(user_input["phases"], user_input.get(CONF_AUTO_DAYS)),
+                    data_schema=_program_phases_schema(
+                        user_input["phases"],
+                        user_input.get(CONF_AUTO_DAYS),
+                        user_input.get(CONF_PHASE_CALIBRATION_RUNS, DEFAULT_PHASE_CALIBRATION_RUNS),
+                    ),
                     errors={"phases": err.error_key},
                 )
             device_name = self._editing_device_name
             program_name = self._editing_program_name
             auto_days = user_input.get(CONF_AUTO_DAYS, [])
+            calibration_runs = user_input.get(CONF_PHASE_CALIBRATION_RUNS, DEFAULT_PHASE_CALIBRATION_RUNS)
             self._devices = [
                 {
                     **d,
                     CONF_PROGRAMS: [
-                        {**p, CONF_POWER_PROFILE: phases, CONF_AUTO_DAYS: auto_days} if p[CONF_NAME] == program_name else p
+                        {
+                            **p,
+                            CONF_POWER_PROFILE: phases,
+                            CONF_AUTO_DAYS: auto_days,
+                            CONF_PHASE_CALIBRATION_RUNS: calibration_runs,
+                        }
+                        if p[CONF_NAME] == program_name
+                        else p
                         for p in d[CONF_PROGRAMS]
                     ],
                 }
@@ -508,7 +534,11 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
             return await self._finish_step("device_detail")
         return self.async_show_form(
             step_id="edit_program_phases",
-            data_schema=_program_phases_schema(_phases_to_text(program[CONF_POWER_PROFILE]), program.get(CONF_AUTO_DAYS, [])),
+            data_schema=_program_phases_schema(
+                _phases_to_text(program[CONF_POWER_PROFILE]),
+                program.get(CONF_AUTO_DAYS, []),
+                program.get(CONF_PHASE_CALIBRATION_RUNS, DEFAULT_PHASE_CALIBRATION_RUNS),
+            ),
         )
 
     async def async_step_remove_program(self, user_input: dict[str, Any] | None = None):

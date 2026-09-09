@@ -107,10 +107,11 @@
       },
       "add_program_phases": {
         "title": "Program phases",
-        "data": { "phases": "Phases", "auto_days": "Auto-schedule on" },
+        "data": { "phases": "Phases", "auto_days": "Auto-schedule on", "phase_calibration_runs": "Phase calibration: cycles to use" },
         "data_description": {
           "phases": "One phase per line: `20min@150W` or `1.5h@150W`. Rough guesses are fine, corrected automatically after real runs.",
-          "auto_days": "Check days for auto-scheduling."
+          "auto_days": "Check days for auto-scheduling.",
+          "phase_calibration_runs": "How many past runs to average. 0 disables recalibration; below 3, one atypical run can skew it."
         }
       },
       "edit_program": {
@@ -120,10 +121,11 @@
       },
       "edit_program_phases": {
         "title": "Program phases",
-        "data": { "phases": "Phases", "auto_days": "Auto-schedule on" },
+        "data": { "phases": "Phases", "auto_days": "Auto-schedule on", "phase_calibration_runs": "Phase calibration: cycles to use" },
         "data_description": {
           "phases": "One phase per line: `20min@150W` or `1.5h@150W`. Replaces the whole list. Rough guesses are fine, corrected automatically after real runs.",
-          "auto_days": "Check days for auto-scheduling."
+          "auto_days": "Check days for auto-scheduling.",
+          "phase_calibration_runs": "How many past runs to average. 0 disables recalibration; below 3, one atypical run can skew it."
         }
       },
       "remove_program": {

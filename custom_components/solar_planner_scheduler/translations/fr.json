@@ -107,10 +107,11 @@
       },
       "add_program_phases": {
         "title": "Phases du programme",
-        "data": { "phases": "Phases", "auto_days": "Planification auto le" },
+        "data": { "phases": "Phases", "auto_days": "Planification auto le", "phase_calibration_runs": "Recalibration des phases : cycles à utiliser" },
         "data_description": {
           "phases": "Une phase par ligne : `20min@150W` ou `1.5h@150W`. Une estimation suffit, c'est corrigé automatiquement après des lancements réels.",
-          "auto_days": "Cochez les jours de planification auto."
+          "auto_days": "Cochez les jours de planification auto.",
+          "phase_calibration_runs": "Nombre de derniers runs utilisés. 0 désactive le recalcul ; en dessous de 3, un run atypique peut fausser le résultat."
         }
       },
       "edit_program": {
@@ -120,10 +121,11 @@
       },
       "edit_program_phases": {
         "title": "Phases du programme",
-        "data": { "phases": "Phases", "auto_days": "Planification auto le" },
+        "data": { "phases": "Phases", "auto_days": "Planification auto le", "phase_calibration_runs": "Recalibration des phases : cycles à utiliser" },
         "data_description": {
           "phases": "Une phase par ligne : `20min@150W` ou `1.5h@150W`. Remplace toute la liste. Une estimation suffit, c'est corrigé automatiquement après des lancements réels.",
-          "auto_days": "Cochez les jours de planification auto."
+          "auto_days": "Cochez les jours de planification auto.",
+          "phase_calibration_runs": "Nombre de derniers runs utilisés. 0 désactive le recalcul ; en dessous de 3, un run atypique peut fausser le résultat."
         }
       },
       "remove_program": {

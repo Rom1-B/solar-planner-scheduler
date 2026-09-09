@@ -32,6 +32,7 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_FORECAST_PROVIDER,
     CONF_MAX_SIMULTANEOUS_POWER,
     CONF_NAME,
+    CONF_PHASE_CALIBRATION_RUNS,
     CONF_POWER_PROFILE,
     CONF_POWER_SENSOR,
     CONF_PRICE_TRACKING_ENABLED,
@@ -40,6 +41,7 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_START_TIME,
     CONF_SUBSCRIPTION_PRICE_MONTHLY,
     CONF_TARIFF_BANDS,
+    DEFAULT_PHASE_CALIBRATION_RUNS,
     DOMAIN,
 )
 
@@ -111,6 +113,40 @@ async def test_add_program_phases_stores_the_selected_auto_days(hass, enable_cus
     assert result["type"] == "menu"
     program = entry.options[CONF_DEVICES][0][CONF_PROGRAMS][0]
     assert program[CONF_AUTO_DAYS] == ["mon", "wed", "fri"]
+
+
+async def test_add_program_phases_stores_the_calibration_runs_value(hass, enable_custom_integrations):
+    entry = _entry(hass, [{CONF_NAME: "lave_linge", CONF_POWER_SENSOR: "", CONF_PROGRAMS: []}])
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "devices_menu"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "manage_device"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "lave_linge"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_program"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"program_name": "Eco coton"})
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"phases": "20min@150W", CONF_PHASE_CALIBRATION_RUNS: 0}
+    )
+
+    assert result["type"] == "menu"
+    program = entry.options[CONF_DEVICES][0][CONF_PROGRAMS][0]
+    assert program[CONF_PHASE_CALIBRATION_RUNS] == 0
+
+
+async def test_add_program_phases_defaults_the_calibration_runs_value_when_omitted(hass, enable_custom_integrations):
+    entry = _entry(hass, [{CONF_NAME: "lave_linge", CONF_POWER_SENSOR: "", CONF_PROGRAMS: []}])
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "devices_menu"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "manage_device"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "lave_linge"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "add_program"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"program_name": "Eco coton"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"phases": "20min@150W"})
+
+    assert result["type"] == "menu"
+    program = entry.options[CONF_DEVICES][0][CONF_PROGRAMS][0]
+    assert program[CONF_PHASE_CALIBRATION_RUNS] == DEFAULT_PHASE_CALIBRATION_RUNS
 
 
 async def test_add_program_phases_accepts_hours(hass, enable_custom_integrations):
@@ -203,6 +239,42 @@ async def test_edit_program_prefills_and_replaces_phases_in_place(hass, enable_c
     assert programs[0][CONF_NAME] == "Eco coton"
     assert programs[0][CONF_POWER_PROFILE] == [{"minutes": 10, "power_w": 300.0}]
     assert programs[0][CONF_AUTO_DAYS] == ["sat", "sun"]
+
+
+async def test_edit_program_phases_prefills_and_replaces_calibration_runs(hass, enable_custom_integrations):
+    devices = [
+        {
+            CONF_NAME: "lave_linge",
+            CONF_POWER_SENSOR: "",
+            CONF_PROGRAMS: [
+                {
+                    CONF_NAME: "Eco coton",
+                    CONF_POWER_PROFILE: [{"minutes": 20, "power_w": 150.0}],
+                    CONF_AUTO_DAYS: [],
+                    CONF_PHASE_CALIBRATION_RUNS: 3,
+                }
+            ],
+        }
+    ]
+    entry = _entry(hass, devices)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "devices_menu"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "manage_device"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {CONF_NAME: "lave_linge"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_program"})
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"program_name": "Eco coton"})
+    # Pre-filled with the program's current value, not the field's own default.
+    prefilled = result["data_schema"]({})
+    assert prefilled[CONF_PHASE_CALIBRATION_RUNS] == 3
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"phases": "20min@150W", CONF_PHASE_CALIBRATION_RUNS: 0}
+    )
+    assert result["type"] == "menu"
+
+    programs = entry.options[CONF_DEVICES][0][CONF_PROGRAMS]
+    assert programs[0][CONF_PHASE_CALIBRATION_RUNS] == 0
 
 
 async def test_edit_program_aborts_when_no_device_has_a_program(hass, enable_custom_integrations):

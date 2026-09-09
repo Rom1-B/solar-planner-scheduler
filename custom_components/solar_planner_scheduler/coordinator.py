@@ -30,6 +30,7 @@ from .const import (
     CONF_MAX_SIMULTANEOUS_POWER,
     CONF_MINUTES,
     CONF_NAME,
+    CONF_PHASE_CALIBRATION_RUNS,
     CONF_POWER_PROFILE,
     CONF_POWER_SENSOR,
     CONF_POWER_W,
@@ -38,6 +39,7 @@ from .const import (
     CONF_START_TIME,
     CONF_TARIFF_BANDS,
     DEFAULT_IDLE_POWER_THRESHOLD,
+    DEFAULT_PHASE_CALIBRATION_RUNS,
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
     FORECAST_PROVIDER_AVERAGE,
@@ -106,8 +108,6 @@ STANDBY_MARGIN_W = 5
 
 # Below this many samples, a run's trace is too short to trust for phase recalibration.
 RUN_CALIBRATION_MIN_SAMPLES = 3
-# Most recent runs' resegmented profiles kept per program, for aggregate_phase_history().
-PHASE_HISTORY_MAX_RUNS = 7
 # A recalibrated phase is only written back if it differs from the declared one by more than this
 # many minutes, or this fraction of the declared watts (floored, for low-power phases).
 PHASE_CALIBRATION_MINUTES_TOLERANCE = 2
@@ -692,6 +692,8 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                 program_name = program[CONF_NAME]
                 if not self.is_program_active(device_name, program_name, program):
                     continue
+                if program.get(CONF_PHASE_CALIBRATION_RUNS, DEFAULT_PHASE_CALIBRATION_RUNS) == 0:
+                    continue
                 state = self._program_state(device_name, program_name)
                 committed_raw = state.get("committed")
                 if committed_raw is None:
@@ -724,7 +726,8 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             ]
             run_profile = resegment_power_trace(trace, levels)
             if run_profile:
-                history = [*history, run_profile][-PHASE_HISTORY_MAX_RUNS:]
+                max_runs = program.get(CONF_PHASE_CALIBRATION_RUNS, DEFAULT_PHASE_CALIBRATION_RUNS)
+                history = [*history, run_profile][-max_runs:]
         self._state.setdefault(device_name, {})[program_name] = {
             **state,
             "phases_calibrated": True,

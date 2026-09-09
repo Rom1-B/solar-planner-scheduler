@@ -27,6 +27,7 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_MAX_SIMULTANEOUS_POWER,
     CONF_MINUTES,
     CONF_NAME,
+    CONF_PHASE_CALIBRATION_RUNS,
     CONF_POWER_PROFILE,
     CONF_POWER_SENSOR,
     CONF_POWER_W,
@@ -35,6 +36,7 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_START_TIME,
     CONF_TARIFF_BANDS,
     DEFAULT_IDLE_POWER_THRESHOLD,
+    DEFAULT_PHASE_CALIBRATION_RUNS,
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
     FORECAST_PROVIDER_AVERAGE,
@@ -49,7 +51,6 @@ from custom_components.solar_planner_scheduler.coordinator import (
     NIGHT_EXTENSION_HOURS,
     PHASE_CALIBRATION_MINUTES_TOLERANCE,
     PHASE_CALIBRATION_WATTS_TOLERANCE_FLOOR_W,
-    PHASE_HISTORY_MAX_RUNS,
     RUN_CALIBRATION_MIN_SAMPLES,
     STANDBY_MARGIN_W,
     STANDBY_MIN_SAMPLES,
@@ -1835,30 +1836,31 @@ def test_apply_phase_calibration_rewrites_only_the_matching_program(hass):
 # --- async_track_run_progress() / _finalize_run_calibration() -----------------------------------
 
 
-def _device_with_profile(profile, power_sensor="sensor.lave_linge_power"):
+def _device_with_profile(profile, power_sensor="sensor.lave_linge_power", calibration_runs=None):
+    program = {
+        CONF_NAME: "Eco",
+        CONF_POWER_PROFILE: profile,
+        CONF_DURATION_MIN: sum(p[CONF_MINUTES] for p in profile),
+        CONF_AUTO_DAYS: [],
+    }
+    if calibration_runs is not None:
+        program[CONF_PHASE_CALIBRATION_RUNS] = calibration_runs
     return {
         CONF_DEVICES: [
             {
                 CONF_NAME: "lave_linge",
                 CONF_POWER_SENSOR: power_sensor,
-                CONF_PROGRAMS: [
-                    {
-                        CONF_NAME: "Eco",
-                        CONF_POWER_PROFILE: profile,
-                        CONF_DURATION_MIN: sum(p[CONF_MINUTES] for p in profile),
-                        CONF_AUTO_DAYS: [],
-                    }
-                ],
+                CONF_PROGRAMS: [program],
             }
         ]
     }
 
 
-def _profile_coordinator(hass, profile, power_sensor="sensor.lave_linge_power"):
+def _profile_coordinator(hass, profile, power_sensor="sensor.lave_linge_power", calibration_runs=None):
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
-        options=_device_with_profile(profile, power_sensor),
+        options=_device_with_profile(profile, power_sensor, calibration_runs),
     )
     entry.add_to_hass(hass)
     coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
@@ -1876,6 +1878,34 @@ async def test_async_track_run_progress_records_a_sample_while_in_progress(hass)
     await coordinator.async_track_run_progress(now)
 
     assert coordinator._program_state("lave_linge", "Eco")["run_trace"] == [{"t": now.isoformat(), "w": 1590.0}]
+
+
+async def test_async_track_run_progress_does_nothing_when_calibration_runs_is_zero(hass):
+    coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 1600}], calibration_runs=0)
+    now = datetime(2026, 9, 8, 12, 10, tzinfo=timezone.utc)
+    schedule = DeviceSchedule("lave_linge", now - timedelta(minutes=5), now + timedelta(minutes=25), 80)
+    _seed_committed(coordinator, "lave_linge", "Eco", schedule)
+    hass.states.async_set("sensor.lave_linge_power", "1590")
+
+    await coordinator.async_track_run_progress(now)
+
+    assert coordinator._program_state("lave_linge", "Eco").get("run_trace", []) == []
+
+
+async def test_async_track_run_progress_skips_finalization_when_calibration_runs_is_zero(hass):
+    original_profile = [{CONF_MINUTES: 30, CONF_POWER_W: 1600}]
+    coordinator = _profile_coordinator(hass, original_profile, calibration_runs=0)
+    start = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=30)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 80))
+    # A trace accumulated before the field was set to 0 (e.g. mid-run), left over in the Store.
+    trace = [{"t": (start + timedelta(minutes=i)).isoformat(), "w": 1650.0} for i in range(18)]
+    coordinator._state["lave_linge"]["Eco"]["run_trace"] = trace
+
+    await coordinator.async_track_run_progress(end)
+
+    assert coordinator._program_state("lave_linge", "Eco").get("phases_calibrated") is not True
+    assert coordinator.entry.options[CONF_DEVICES][0][CONF_PROGRAMS][0][CONF_POWER_PROFILE] == original_profile
 
 
 async def test_async_track_run_progress_finalizes_and_rewrites_config_on_a_significant_change(hass):
@@ -1978,13 +2008,25 @@ async def test_async_track_run_progress_caps_phase_history_at_the_max_run_count(
     coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 1600}])
     start = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
 
-    for minutes in range(10, 10 + PHASE_HISTORY_MAX_RUNS + 1):  # one more run than the cap allows
+    for minutes in range(10, 10 + DEFAULT_PHASE_CALIBRATION_RUNS + 1):  # one more run than the cap allows
         await _run_and_finalize(coordinator, start, minutes, 1000.0)
 
     history = coordinator._program_state("lave_linge", "Eco")["phase_history"]
-    assert len(history) == PHASE_HISTORY_MAX_RUNS
+    assert len(history) == DEFAULT_PHASE_CALIBRATION_RUNS
     assert history[0] == [{"minutes": 11, "power_w": 1000}]  # the first run (10min) was pushed out
-    assert history[-1] == [{"minutes": 10 + PHASE_HISTORY_MAX_RUNS, "power_w": 1000}]
+    assert history[-1] == [{"minutes": 10 + DEFAULT_PHASE_CALIBRATION_RUNS, "power_w": 1000}]
+
+
+async def test_async_track_run_progress_uses_a_custom_calibration_runs_cap(hass):
+    coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 1600}], calibration_runs=2)
+    start = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+
+    await _run_and_finalize(coordinator, start, 10, 1000.0)
+    await _run_and_finalize(coordinator, start, 15, 1200.0)
+    await _run_and_finalize(coordinator, start, 20, 1400.0)
+
+    history = coordinator._program_state("lave_linge", "Eco")["phase_history"]
+    assert history == [[{"minutes": 15, "power_w": 1200}], [{"minutes": 20, "power_w": 1400}]]
 
 
 async def test_async_track_run_progress_bootstraps_a_multi_phase_profile_from_a_placeholder(hass):
