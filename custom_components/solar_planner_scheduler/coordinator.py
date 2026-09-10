@@ -261,18 +261,30 @@ def _read_forecast_points(hass: HomeAssistant, entity_id: str | None, provider: 
     return sorted(parser(state), key=lambda pt: pt["time"])
 
 
-def _discover_provider_entities(hass: HomeAssistant, config_entry_id: str, attribute_key: str) -> list[str]:
+def _discover_provider_entities(
+    hass: HomeAssistant, config_entry_id: str, attribute_key: str, device_class: str
+) -> list[str]:
     """Every entity registered under a config entry whose *current* state carries the given list
-    attribute. A disabled entity has no state at all (hass.states.get() returns None), so this
-    naturally only picks up entities the user has actually enabled — most of Solcast's day_3..7
-    sensors are disabled by default, and must be included automatically once the user enables one,
-    never hand-maintained as a fixed "today"/"tomorrow" list.
+    attribute and device_class. A disabled entity has no state at all (hass.states.get() returns
+    None), so this naturally only picks up entities the user has actually enabled — most of
+    Solcast's day_3..7 sensors are disabled by default, and must be included automatically once the
+    user enables one, never hand-maintained as a fixed "today"/"tomorrow" list.
+
+    The device_class filter matters: Helios Forecast exposes its own "forecast" list attribute on
+    several unrelated sensors too (cloud_cover, temperature, wind_speed, snow_depth, irradiance),
+    none of which carry a "watts" key, so without this filter they'd get parsed as a flood of
+    0-valued points at their own (hourly) timestamps, interleaved with power_now's real (15-min)
+    ones — the exact "drops to 0 every hour" artifact reported live 2026-09-10.
     """
     registry = er.async_get(hass)
     entity_ids = []
     for entry in er.async_entries_for_config_entry(registry, config_entry_id):
         state = hass.states.get(entry.entity_id)
-        if state is not None and isinstance(state.attributes.get(attribute_key), list):
+        if (
+            state is not None
+            and isinstance(state.attributes.get(attribute_key), list)
+            and state.attributes.get("device_class") == device_class
+        ):
             entity_ids.append(entry.entity_id)
     return entity_ids
 
@@ -283,7 +295,7 @@ async def _read_solcast_points(hass: HomeAssistant, config_entry_id: str) -> lis
     in Solcast's own entity list is used automatically.
     """
     points = []
-    for entity_id in _discover_provider_entities(hass, config_entry_id, "detailedForecast"):
+    for entity_id in _discover_provider_entities(hass, config_entry_id, "detailedForecast", "energy"):
         points += _read_forecast_points(hass, entity_id, FORECAST_PROVIDER_SOLCAST)
     return sorted(points, key=lambda pt: pt["time"])
 
@@ -294,7 +306,7 @@ async def _read_helios_points(hass: HomeAssistant, config_entry_id: str) -> list
     work with no code change here).
     """
     points = []
-    for entity_id in _discover_provider_entities(hass, config_entry_id, "forecast"):
+    for entity_id in _discover_provider_entities(hass, config_entry_id, "forecast", "power"):
         points += _read_forecast_points(hass, entity_id, FORECAST_PROVIDER_HELIOS)
     return sorted(points, key=lambda pt: pt["time"])
 
@@ -402,7 +414,7 @@ def resolve_forecast_history_entities(hass: HomeAssistant, data: dict) -> dict[s
     resolved = resolve_forecast_sources(data)
     result: dict[str, str] = {}
     if FORECAST_PROVIDER_HELIOS in resolved:
-        entities = _discover_provider_entities(hass, resolved[FORECAST_PROVIDER_HELIOS][0], "forecast")
+        entities = _discover_provider_entities(hass, resolved[FORECAST_PROVIDER_HELIOS][0], "forecast", "power")
         if entities:
             result[FORECAST_PROVIDER_HELIOS] = entities[0]
     if FORECAST_PROVIDER_SOLCAST in resolved:

@@ -254,7 +254,7 @@ def test_discover_provider_entities_skips_a_disabled_entity(hass):
             "sensor.solcast_forecast_day_3": None,  # registered, but no state: disabled
         },
     )
-    assert _discover_provider_entities(hass, entry_id, "detailedForecast") == ["sensor.solcast_forecast_today"]
+    assert _discover_provider_entities(hass, entry_id, "detailedForecast", "energy") == ["sensor.solcast_forecast_today"]
 
 
 def test_discover_provider_entities_ignores_entities_without_the_attribute(hass):
@@ -266,7 +266,7 @@ def test_discover_provider_entities_ignores_entities_without_the_attribute(hass)
             "sensor.solcast_api_used": {"unrelated": 3},
         },
     )
-    assert _discover_provider_entities(hass, entry_id, "detailedForecast") == ["sensor.solcast_forecast_today"]
+    assert _discover_provider_entities(hass, entry_id, "detailedForecast", "energy") == ["sensor.solcast_forecast_today"]
 
 
 async def test_read_solcast_points_merges_every_enabled_entity_on_the_config_entry(hass):
@@ -291,6 +291,25 @@ async def test_read_helios_points_reads_the_discovered_entity(hass):
     point_time = datetime(2026, 8, 30, 10, 0, tzinfo=UTC)
     entry_id = register_provider_entities(
         hass, "helios_forecast", {"sensor.helios_power_now": {"forecast": [{"datetime": point_time.isoformat(), "watts": 900.0}]}}
+    )
+
+    assert await _read_helios_points(hass, entry_id) == [{"time": point_time, "w": 900.0, "w10": 900.0, "w90": 900.0}]
+
+
+async def test_read_helios_points_ignores_other_sensors_sharing_the_forecast_attribute(hass):
+    """Real Helios Forecast installs expose a "forecast" list on cloud_cover/temperature/wind_speed/
+    snow_depth/irradiance sensors too, none of them carrying a "watts" key: without the device_class
+    filter these get parsed as a flood of 0-valued points at their own (hourly) timestamps, the live
+    "drops to 0 every hour" bug reported 2026-09-10. Confirmed failing pre-fix.
+    """
+    point_time = datetime(2026, 8, 30, 10, 0, tzinfo=UTC)
+    entry_id = register_provider_entities(
+        hass,
+        "helios_forecast",
+        {
+            "sensor.helios_power_now": {"forecast": [{"datetime": point_time.isoformat(), "watts": 900.0}]},
+            "sensor.helios_cloud_cover": {"forecast": [{"datetime": point_time.isoformat(), "cloud_cover": 10.0}], "device_class": None},
+        },
     )
 
     assert await _read_helios_points(hass, entry_id) == [{"time": point_time, "w": 900.0, "w10": 900.0, "w90": 900.0}]

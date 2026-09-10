@@ -25,6 +25,8 @@ def register_provider_entities(hass, domain: str, entities: dict[str, dict], ent
     hand-picked entity_id — see resolve_forecast_sources()/_discover_provider_entities() in
     coordinator.py). Passing no attributes for an entity_id registers it without ever calling
     hass.states.async_set(), i.e. a disabled/no-state entity, to test that discovery skips it.
+    Auto-fills device_class ("energy" for detailedForecast, "power" for forecast) when the caller
+    doesn't set one explicitly, matching _discover_provider_entities()'s real filter.
     """
     if entry is None:
         entry = MockConfigEntry(domain=domain)
@@ -36,5 +38,10 @@ def register_provider_entities(hass, domain: str, entities: dict[str, dict], ent
             object_domain, domain, f"{object_id}_uid", suggested_object_id=object_id, config_entry=entry
         )
         if attributes is not None:
+            if "device_class" not in attributes:
+                if "detailedForecast" in attributes:
+                    attributes = {**attributes, "device_class": "energy"}
+                elif "forecast" in attributes:
+                    attributes = {**attributes, "device_class": "power"}
             hass.states.async_set(entity_id, "0", attributes)
     return entry.entry_id
