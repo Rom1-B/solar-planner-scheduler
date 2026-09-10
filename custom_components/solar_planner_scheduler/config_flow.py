@@ -30,7 +30,6 @@ from .const import (
     CONF_PRICE_TRACKING_ENABLED,
     CONF_PROGRAMS,
     CONF_START_TIME,
-    CONF_SUBSCRIPTION_PRICE_MONTHLY,
     CONF_TARIFF_BANDS,
     DEFAULT_MAX_SIMULTANEOUS_POWER,
     DEFAULT_PHASE_CALIBRATION_RUNS,
@@ -203,9 +202,6 @@ def _tariff_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
             vol.Required(
                 CONF_PRICE_TRACKING_ENABLED, default=defaults.get(CONF_PRICE_TRACKING_ENABLED, False)
             ): selector.BooleanSelector(),
-            vol.Optional(
-                CONF_SUBSCRIPTION_PRICE_MONTHLY, default=defaults.get(CONF_SUBSCRIPTION_PRICE_MONTHLY, 0.0)
-            ): vol.Coerce(float),
             vol.Required(
                 "tariff_bands_text", default=defaults.get("tariff_bands_text", "00:00@0.22")
             ): selector.TextSelector(selector.TextSelectorConfig(multiline=True)),
@@ -357,7 +353,6 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
             new_data = {
                 **self.config_entry.data,
                 CONF_PRICE_TRACKING_ENABLED: user_input[CONF_PRICE_TRACKING_ENABLED],
-                CONF_SUBSCRIPTION_PRICE_MONTHLY: user_input.get(CONF_SUBSCRIPTION_PRICE_MONTHLY, 0.0),
                 CONF_TARIFF_BANDS: tariff_bands,
             }
             self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)

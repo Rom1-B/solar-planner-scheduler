@@ -1239,6 +1239,7 @@ def test_strip_legacy_entry_data_keys_drops_production_and_consumption_entity():
         CONF_MAX_SIMULTANEOUS_POWER: 4000,
         "production_entity": "sensor.elec_solar_power",
         "consumption_entity": "sensor.elec_0_power",
+        "subscription_price_monthly": 12.5,
     }
 
     cleaned, changed = strip_legacy_entry_data_keys(data)

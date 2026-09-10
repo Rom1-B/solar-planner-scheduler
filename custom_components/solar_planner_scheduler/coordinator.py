@@ -161,9 +161,12 @@ def strip_legacy_device_options(devices: list[dict]) -> tuple[list[dict], bool]:
 
 # production_entity/consumption_entity (2026-09-10): moved from the integration's own config to the
 # card's own YAML config, since coordinator.py never read either for scheduling, only sensor.py
-# exposed them for the card to plot the actual/consumption curves — pure display, no reason to
+# exposed them for the card to plot the actual/consumption curves: pure display, no reason to
 # centralize them here once the "avoid redeclaring per card instance" tradeoff was reconsidered.
-LEGACY_ENTRY_DATA_KEYS = ("production_entity", "consumption_entity")
+# subscription_price_monthly (2026-09-10): collected since the tariff feature shipped, never read
+# by any code (scheduling ranks by €/kWh deficit cost, never touches a flat monthly fee); dropped
+# outright, no replacement field anywhere, nothing in this project computes a real monthly bill.
+LEGACY_ENTRY_DATA_KEYS = ("production_entity", "consumption_entity", "subscription_price_monthly")
 
 
 def strip_legacy_entry_data_keys(data: dict) -> tuple[dict, bool]:

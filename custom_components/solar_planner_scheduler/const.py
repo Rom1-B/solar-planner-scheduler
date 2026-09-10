@@ -73,7 +73,6 @@ WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 CONF_IDLE_POWER_THRESHOLD = "idle_power_threshold"
 
 CONF_PRICE_TRACKING_ENABLED = "price_tracking_enabled"
-CONF_SUBSCRIPTION_PRICE_MONTHLY = "subscription_price_monthly"
 CONF_TARIFF_BANDS = "tariff_bands"
 
 NONE_PROGRAM = "None"

@@ -49,8 +49,8 @@ Devices, programs and fixed loads are managed via "Configure":
 - **Fixed load**: something that also draws power but that this integration can't move or
   control (a pool pump, a fridge cycle), so it's just subtracted from available solar capacity
   when scheduling everything else.
-- **Tariffs** (optional): enable tariff tracking, set a monthly subscription price and price bands
-  (`HH:MM@price`, one per line, e.g. `22:00@0.1589`). Slot selection always minimizes estimated
+- **Tariffs** (optional): enable tariff tracking, set price bands (`HH:MM@price`, one per line, e.g.
+  `22:00@0.1589`). Slot selection always minimizes estimated
   cost, falling back to solar coverage when tracking is off; the real price only shows once enabled.
 
 Turning a program on searches for today's best slot immediately, extending up to 6h past midnight

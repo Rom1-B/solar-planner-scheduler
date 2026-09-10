@@ -38,7 +38,6 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_PRICE_TRACKING_ENABLED,
     CONF_PROGRAMS,
     CONF_START_TIME,
-    CONF_SUBSCRIPTION_PRICE_MONTHLY,
     CONF_TARIFF_BANDS,
     DEFAULT_PHASE_CALIBRATION_RUNS,
     DOMAIN,
@@ -339,14 +338,12 @@ async def test_edit_tariff_writes_price_tracking_config_to_entry_data(hass, enab
         result["flow_id"],
         {
             CONF_PRICE_TRACKING_ENABLED: True,
-            CONF_SUBSCRIPTION_PRICE_MONTHLY: 12.5,
             "tariff_bands_text": "06:00@0.1892\n22:00@0.1589",
         },
     )
 
     assert result["type"] == "menu"
     assert entry.data[CONF_PRICE_TRACKING_ENABLED] is True
-    assert entry.data[CONF_SUBSCRIPTION_PRICE_MONTHLY] == 12.5
     assert entry.data[CONF_TARIFF_BANDS] == [
         {"start": "06:00", "price": 0.1892},
         {"start": "22:00", "price": 0.1589},
