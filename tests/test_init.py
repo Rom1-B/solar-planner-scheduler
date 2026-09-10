@@ -10,8 +10,12 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.solar_planner_scheduler import PLATFORMS, _card_version, async_setup_entry
 from custom_components.solar_planner_scheduler.const import (
+    CONF_DEVICES,
     CONF_FORECAST_ENTITY,
     CONF_MAX_SIMULTANEOUS_POWER,
+    CONF_NAME,
+    CONF_POWER_SENSOR,
+    CONF_PROGRAMS,
     DOMAIN,
 )
 
@@ -128,3 +132,65 @@ async def test_the_per_minute_timer_also_schedules_a_run_progress_check(hass):
         await hass.async_block_till_done()
 
     mock_track_run.assert_called_once_with(now)
+
+
+async def test_async_setup_entry_strips_legacy_device_option_keys(hass):
+    """See CLAUDE.local.md, "Per-program activation..." — accepted_date/accepted_day/manual/
+    manual_start/selected_program are leftover from the pre-2026-08-31 mechanic, unread by any
+    code since then; a real installed entry still carried them, never cleaned up until now."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options={
+            CONF_DEVICES: [
+                {
+                    CONF_NAME: "lave_linge",
+                    CONF_POWER_SENSOR: "sensor.lave_linge_power",
+                    "accepted_date": "2026-08-29",
+                    "accepted_day": "tomorrow",
+                    "manual": True,
+                    "manual_start": "2026-08-30T15:05:00+00:00",
+                    "selected_program": "None",
+                    CONF_PROGRAMS: [],
+                }
+            ]
+        },
+    )
+    entry.add_to_hass(hass)
+
+    with (
+        patch(
+            "custom_components.solar_planner_scheduler.coordinator."
+            "SolarPlannerSchedulerCoordinator.async_config_entry_first_refresh"
+        ),
+        patch("homeassistant.config_entries.ConfigEntries.async_forward_entry_setups"),
+        patch("homeassistant.helpers.event.async_track_time_interval"),
+    ):
+        await async_setup_entry(hass, entry)
+
+    assert entry.options[CONF_DEVICES] == [
+        {CONF_NAME: "lave_linge", CONF_POWER_SENSOR: "sensor.lave_linge_power", CONF_PROGRAMS: []}
+    ]
+
+
+async def test_async_setup_entry_does_not_touch_already_clean_options(hass):
+    clean_devices = [{CONF_NAME: "lave_linge", CONF_POWER_SENSOR: "sensor.lave_linge_power", CONF_PROGRAMS: []}]
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options={CONF_DEVICES: clean_devices},
+    )
+    entry.add_to_hass(hass)
+
+    with (
+        patch(
+            "custom_components.solar_planner_scheduler.coordinator."
+            "SolarPlannerSchedulerCoordinator.async_config_entry_first_refresh"
+        ),
+        patch("homeassistant.config_entries.ConfigEntries.async_forward_entry_setups"),
+        patch("homeassistant.helpers.event.async_track_time_interval"),
+        patch("homeassistant.config_entries.ConfigEntries.async_update_entry") as mock_update,
+    ):
+        await async_setup_entry(hass, entry)
+
+    mock_update.assert_not_called()

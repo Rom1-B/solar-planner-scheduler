@@ -71,6 +71,7 @@ from custom_components.solar_planner_scheduler.coordinator import (
     compute_locked,
     resolve_forecast_history_entities,
     resolve_forecast_sources,
+    strip_legacy_device_options,
 )
 from tests.conftest import register_provider_entities
 
@@ -1492,6 +1493,38 @@ def test_migrate_legacy_state_is_idempotent_on_the_current_schema():
     current = {"lave_linge": {"Eco": {"active": True}}}
 
     assert _migrate_legacy_state(current) == current
+
+
+# --- strip_legacy_device_options() ---------------------------------------------------------------
+
+
+def test_strip_legacy_device_options_drops_pre_2026_08_31_keys():
+    devices = [
+        {
+            CONF_NAME: "lave_linge",
+            CONF_POWER_SENSOR: "sensor.lave_linge_power",
+            "accepted_date": "2026-08-29",
+            "accepted_day": "tomorrow",
+            "manual": True,
+            "manual_start": "2026-08-30T15:05:00+00:00",
+            "selected_program": "None",
+            CONF_PROGRAMS: [],
+        }
+    ]
+
+    cleaned, changed = strip_legacy_device_options(devices)
+
+    assert changed is True
+    assert cleaned == [{CONF_NAME: "lave_linge", CONF_POWER_SENSOR: "sensor.lave_linge_power", CONF_PROGRAMS: []}]
+
+
+def test_strip_legacy_device_options_is_a_no_op_on_already_clean_devices():
+    devices = [{CONF_NAME: "lave_linge", CONF_POWER_SENSOR: "sensor.lave_linge_power", CONF_PROGRAMS: []}]
+
+    cleaned, changed = strip_legacy_device_options(devices)
+
+    assert changed is False
+    assert cleaned == devices
 
 
 # --- _async_update_data() -----------------------------------------------------------------------

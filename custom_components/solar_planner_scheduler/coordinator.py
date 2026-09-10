@@ -140,6 +140,25 @@ def _migrate_legacy_state(raw: dict) -> dict:
     return migrated
 
 
+# Per-device option keys from the pre-2026-08-31 scheduling mechanic (select.<device>_program +
+# a single shared manual start); unread by any code since then, left behind in entry.options
+# because no user action writes options outside an explicit config_flow submission.
+LEGACY_DEVICE_OPTION_KEYS = ("accepted_date", "accepted_day", "manual", "manual_start", "selected_program")
+
+
+def strip_legacy_device_options(devices: list[dict]) -> tuple[list[dict], bool]:
+    """Drop LEGACY_DEVICE_OPTION_KEYS from each device dict. Returns (cleaned, changed) so the
+    caller only writes entry.options back when something actually needed dropping."""
+    changed = False
+    cleaned = []
+    for device in devices:
+        if any(key in device for key in LEGACY_DEVICE_OPTION_KEYS):
+            changed = True
+            device = {k: v for k, v in device.items() if k not in LEGACY_DEVICE_OPTION_KEYS}
+        cleaned.append(device)
+    return cleaned, changed
+
+
 @dataclass
 class DeviceSchedule:
     name: str
