@@ -324,7 +324,17 @@ class SolarPlannerCard extends HTMLElement {
 
   connectedCallback() {
     this._interval = setInterval(() => this._refresh(), REFRESH_INTERVAL_MS);
-    this._countdownInterval = setInterval(() => this._requestRender(), COUNTDOWN_REFRESH_INTERVAL_MS);
+    this._countdownInterval = setInterval(() => this._updateCountdowns(), COUNTDOWN_REFRESH_INTERVAL_MS);
+  }
+
+  // Advancing a countdown's minute figure is the only reason this timer exists: updating just the
+  // `.countdown` spans' text avoids a full _render() (whole-chart innerHTML rebuild) every minute.
+  _updateCountdowns() {
+    const now = new Date();
+    this.shadowRoot.querySelectorAll(".countdown[data-target]").forEach((el) => {
+      const text = fmtCountdown(new Date(el.dataset.target), now);
+      el.textContent = text ? (el.dataset.wrap === "paren" ? ` (${text})` : text) : "";
+    });
   }
 
   disconnectedCallback() {
@@ -885,8 +895,8 @@ class SolarPlannerCard extends HTMLElement {
                     : ""
                 }
                 ${
-                  ds.start && !ds.shouldRun && fmtCountdown(ds.start, now)
-                    ? `<span class="countdown">${fmtCountdown(ds.start, now)}</span>`
+                  ds.start && !ds.shouldRun
+                    ? `<span class="countdown" data-target="${ds.start.toISOString()}">${fmtCountdown(ds.start, now) || ""}</span>`
                     : ""
                 }`
               : "";
@@ -964,7 +974,11 @@ class SolarPlannerCard extends HTMLElement {
         const started = p.start && p.start <= now;
         return `<tr class="${started ? "row-started" : ""}">
           <td>${p.deviceName}${p.fixed ? " (external)" : ` - ${p.programName}`}</td>
-          <td>${p.start ? `${dayLabel}${fmtTime(p.start)} - ${fmtTime(p.end)}${countdown ? ` (${countdown})` : ""}` : "no window"}</td>
+          <td>${
+            p.start
+              ? `${dayLabel}${fmtTime(p.start)} - ${fmtTime(p.end)}<span class="countdown" data-target="${p.start.toISOString()}" data-wrap="paren">${countdown ? ` (${countdown})` : ""}</span>`
+              : "no window"
+          }</td>
           ${showEnergyColumn ? `<td>${fmtWh(p.energyWh)}</td>` : ""}
           ${showCostColumn ? `<td>${p.estimatedCost != null ? `~${p.estimatedCost.toFixed(2)} ${p.currency ?? ""}` : "-"}</td>` : ""}
         </tr>`;

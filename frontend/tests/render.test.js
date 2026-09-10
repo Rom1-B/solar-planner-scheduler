@@ -275,7 +275,7 @@ test("the table shows energy in kWh, merging the Device and Program columns", ()
   assert.ok(html.includes("<th>Energy</th>"), "expected the table header to read Energy, not Power");
   assert.ok(!html.includes("<th>Power</th>"), "expected no leftover Power header");
   assert.ok(!html.includes("<th>Program</th>"), "expected the Program column merged into Device");
-  assert.match(html, /<td>PAC \(external\)<\/td>\s*<td>[^<]*<\/td>\s*<td>1\.5 kWh<\/td>/);
+  assert.match(html, /<td>PAC \(external\)<\/td>\s*<td>[\s\S]*?<\/td>\s*<td>1\.5 kWh<\/td>/);
   assert.match(html, /<td>Lave-linge - Eco<\/td>/);
 });
 
@@ -332,7 +332,7 @@ test("the table's Cost column shows a fixed load's estimated_cost when the serve
   card._showTable = true;
   card._render();
   const html = card.shadowRoot.innerHTML;
-  assert.match(html, /<td>PAC \(external\)<\/td>\s*<td>[^<]*<\/td>\s*<td>[^<]*<\/td>\s*<td>~0.28 EUR<\/td>/);
+  assert.match(html, /<td>PAC \(external\)<\/td>\s*<td>[\s\S]*?<\/td>\s*<td>[^<]*<\/td>\s*<td>~0.28 EUR<\/td>/);
 });
 
 test("an inactive program renders no gantt bar or stack segment", () => {
@@ -587,7 +587,7 @@ test("the table marks tomorrow's fixed-load occurrence so it doesn't read as an 
   card._showTable = true;
   card._render();
   const html = card.shadowRoot.innerHTML;
-  const rows = [...html.matchAll(/<td>PAC[^<]*<\/td>\s*<td>([^<]*)<\/td>/g)].map((m) => m[1]);
+  const rows = [...html.matchAll(/<td>PAC[^<]*<\/td>\s*<td>([\s\S]*?)<\/td>/g)].map((m) => m[1]);
   assert.equal(rows.length, 2, `expected two PAC rows (today + tomorrow), got ${rows.length}`);
   assert.ok(
     rows.some((r) => r.startsWith("Tomorrow ")) && rows.some((r) => !r.startsWith("Tomorrow ")),
@@ -604,7 +604,7 @@ test("a daily fixed load still shows exactly today+tomorrow just after midnight,
     card._showTable = true;
     card._render();
     const html = card.shadowRoot.innerHTML;
-    const rows = [...html.matchAll(/<td>PAC[^<]*<\/td>\s*<td>([^<]*)<\/td>/g)].map((m) => m[1]);
+    const rows = [...html.matchAll(/<td>PAC[^<]*<\/td>\s*<td>([\s\S]*?)<\/td>/g)].map((m) => m[1]);
     assert.equal(rows.length, 2, `expected exactly two PAC rows (today + tomorrow), got ${rows.length}: ${JSON.stringify(rows)}`);
   });
 });
@@ -622,7 +622,7 @@ test("a fixed load that already finished earlier today still shows as recent his
     card._showTable = true;
     card._render();
     const html = card.shadowRoot.innerHTML;
-    const rows = [...html.matchAll(/<td>PAC[^<]*<\/td>\s*<td>([^<]*)<\/td>/g)].map((m) => m[1]);
+    const rows = [...html.matchAll(/<td>PAC[^<]*<\/td>\s*<td>([\s\S]*?)<\/td>/g)].map((m) => m[1]);
     assert.ok(
       rows.some((r) => r.startsWith("08:00")),
       `expected PAC's already-elapsed-today 08:00 occurrence to still show, got ${JSON.stringify(rows)}`
@@ -636,7 +636,7 @@ test("the table labels a day boundary past tomorrow with its weekday name, not a
   card._showTable = true;
   card._render();
   const html = card.shadowRoot.innerHTML;
-  const rows = [...html.matchAll(/<td>PAC[^<]*<\/td>\s*<td>([^<]*)<\/td>/g)].map((m) => m[1]);
+  const rows = [...html.matchAll(/<td>PAC[^<]*<\/td>\s*<td>([\s\S]*?)<\/td>/g)].map((m) => m[1]);
   assert.ok(rows.length >= 3, `expected at least 3 PAC rows across a 96h future window, got ${JSON.stringify(rows)}`);
   assert.ok(rows.some((r) => r.startsWith("Tomorrow ")), `expected one row marked "Tomorrow ", got ${JSON.stringify(rows)}`);
   const dayAfterTomorrow = new Date();
@@ -1321,7 +1321,7 @@ test("an active program's slot shows a countdown to its start, hidden once it's 
   const card = buildCard();
   card._render();
   // buildCard() schedules Lave-linge 10 minutes from now.
-  assert.match(card.shadowRoot.innerHTML, /<span class="countdown">in \d+m<\/span>/, "expected a countdown span for a future start");
+  assert.match(card.shadowRoot.innerHTML, /<span class="countdown" data-target="[^"]+">in \d+m<\/span>/, "expected a countdown span for a future start");
 
   // buildCard() schedules both devices at the same slotStart, flip both to running.
   card._hass.states["binary_sensor.lave_linge_should_run"] = { state: "on" };
@@ -1335,7 +1335,10 @@ test("the table's Window column includes a countdown to a future fixed load's st
   card._showTable = true;
   card._render();
   // PAC (buildCard()'s fixed load) starts 20 minutes from now.
-  assert.match(card.shadowRoot.innerHTML, /PAC \(external\)<\/td>\s*<td>[\d:]+ - [\d:]+ \(in \d+m\)<\/td>/);
+  assert.match(
+    card.shadowRoot.innerHTML,
+    /PAC \(external\)<\/td>\s*<td>[\d:]+ - [\d:]+<span class="countdown" data-target="[^"]+" data-wrap="paren"> \(in \d+m\)<\/span><\/td>/
+  );
 });
 
 test("a full-day fixed load's tomorrow occurrence is deduped out of the table, unlike a shorter daily one", () => {
@@ -1355,10 +1358,10 @@ test("a full-day fixed load's tomorrow occurrence is deduped out of the table, u
   card._render();
   const html = card.shadowRoot.innerHTML;
 
-  const baseRows = [...html.matchAll(/<td>Conso de base[^<]*<\/td>\s*<td>([^<]*)<\/td>/g)];
+  const baseRows = [...html.matchAll(/<td>Conso de base[^<]*<\/td>\s*<td>([\s\S]*?)<\/td>/g)];
   assert.equal(baseRows.length, 1, `expected the full-day load's duplicate "Tomorrow" row removed, got ${baseRows.length} rows`);
 
-  const pacRows = [...html.matchAll(/<td>PAC[^<]*<\/td>\s*<td>([^<]*)<\/td>/g)];
+  const pacRows = [...html.matchAll(/<td>PAC[^<]*<\/td>\s*<td>([\s\S]*?)<\/td>/g)];
   assert.equal(pacRows.length, 2, `expected a genuinely daily-recurring load to still show both today and tomorrow, got ${pacRows.length}`);
 });
 
@@ -1393,23 +1396,36 @@ test("the chart and table sections toggle independently of each other", () => {
   assert.ok(!html.includes("<table>"), "expected the table to stay closed, collapsing the chart must not open it");
 });
 
-test("connectedCallback re-renders periodically so a displayed countdown keeps advancing, not just every full refresh", (t) => {
+test("connectedCallback refreshes the countdown display periodically, not via a full re-render", (t) => {
   mock.timers.enable({ apis: ["setInterval"] });
   t.after(() => mock.timers.reset());
 
   const card = buildCard();
   card._render();
   let renderCount = 0;
+  let updateCount = 0;
   card._render = () => renderCount++;
+  card._updateCountdowns = () => updateCount++;
 
   card.connectedCallback();
   mock.timers.tick(60 * 1000);
-  assert.ok(renderCount >= 1, "expected a re-render within 60s, well under the 5-minute full-refresh interval");
+  assert.ok(updateCount >= 1, "expected a countdown update within 60s, well under the 5-minute full-refresh interval");
+  assert.equal(renderCount, 0, "expected the countdown timer to skip the full innerHTML rebuild");
 
-  const countIn60s = renderCount;
+  const countIn60s = updateCount;
   card.disconnectedCallback();
   mock.timers.tick(5 * 60 * 1000);
-  assert.equal(renderCount, countIn60s, "expected disconnectedCallback to stop the countdown timer too");
+  assert.equal(updateCount, countIn60s, "expected disconnectedCallback to stop the countdown timer too");
+});
+
+test("_updateCountdowns runs against the fake shadowRoot without throwing", () => {
+  // This suite's dom-shim.js stubs querySelectorAll/querySelector to always return []/null (no real
+  // DOM), so the actual per-span text mutation can't be asserted here — only that the method's own
+  // logic (reading el.dataset, computing fmtCountdown) doesn't blow up when nothing matches.
+  // The span markup itself (data-target/data-wrap) is covered by the innerHTML regex tests above.
+  const card = buildCard();
+  card._render();
+  assert.doesNotThrow(() => card._updateCountdowns());
 });
 
 test("table_show_energy/table_show_cost hide their respective table columns", () => {
