@@ -235,8 +235,6 @@ class SolarPlannerCard extends HTMLElement {
     return {
       forecast_entity: attrs.forecast_entity,
       forecast_tomorrow_entity: attrs.forecast_tomorrow_entity,
-      production_entity: attrs.production_entity,
-      consumption_entity: attrs.consumption_entity,
       max_simultaneous_power: state ? parseFloat(state.state) : null,
       fixed_loads: fixedLoads,
       devices: attrs.devices || [],
@@ -437,12 +435,11 @@ class SolarPlannerCard extends HTMLElement {
     if (!this._hass || !this._config) return;
     this._lastRefresh = Date.now();
 
-    const base = this._baseConfig();
     const { now, historyStart } = this._historyWindow();
     const jobs = [];
-    if (base.production_entity) {
+    if (this._config.production_entity) {
       jobs.push(
-        this._fetchActualCurve(base.production_entity, historyStart, now).then((pts) => {
+        this._fetchActualCurve(this._config.production_entity, historyStart, now).then((pts) => {
           this._actualPoints = pts;
           this._actualCurve = pts.map((p) => ({ time: p.time, w: p.value }));
         })
@@ -451,9 +448,9 @@ class SolarPlannerCard extends HTMLElement {
       this._actualPoints = [];
       this._actualCurve = [];
     }
-    if (base.consumption_entity) {
+    if (this._config.consumption_entity) {
       jobs.push(
-        this._fetchActualCurve(base.consumption_entity, historyStart, now).then((pts) => {
+        this._fetchActualCurve(this._config.consumption_entity, historyStart, now).then((pts) => {
           this._consumptionPoints = pts;
           this._consumptionCurve = pts.map((p) => ({ time: p.time, w: p.value }));
         })

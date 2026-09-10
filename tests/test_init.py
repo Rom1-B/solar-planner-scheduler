@@ -194,3 +194,31 @@ async def test_async_setup_entry_does_not_touch_already_clean_options(hass):
         await async_setup_entry(hass, entry)
 
     mock_update.assert_not_called()
+
+
+async def test_async_setup_entry_strips_legacy_production_and_consumption_entity(hass):
+    """production_entity/consumption_entity moved from entry.data to the card's own config
+    (2026-09-10): a real installed entry still carries the old keys, never cleaned up until now."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_FORECAST_ENTITY: "sensor.forecast",
+            CONF_MAX_SIMULTANEOUS_POWER: 4000,
+            "production_entity": "sensor.elec_solar_power",
+            "consumption_entity": "sensor.elec_0_power",
+        },
+        options={},
+    )
+    entry.add_to_hass(hass)
+
+    with (
+        patch(
+            "custom_components.solar_planner_scheduler.coordinator."
+            "SolarPlannerSchedulerCoordinator.async_config_entry_first_refresh"
+        ),
+        patch("homeassistant.config_entries.ConfigEntries.async_forward_entry_setups"),
+        patch("homeassistant.helpers.event.async_track_time_interval"),
+    ):
+        await async_setup_entry(hass, entry)
+
+    assert entry.data == {CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000}

@@ -103,11 +103,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     from homeassistant.helpers.event import async_track_time_interval
 
     from .const import CONF_DEVICES
-    from .coordinator import SolarPlannerSchedulerCoordinator, strip_legacy_device_options
+    from .coordinator import SolarPlannerSchedulerCoordinator, strip_legacy_device_options, strip_legacy_entry_data_keys
 
-    cleaned_devices, changed = strip_legacy_device_options(entry.options.get(CONF_DEVICES, []))
-    if changed:
+    cleaned_devices, options_changed = strip_legacy_device_options(entry.options.get(CONF_DEVICES, []))
+    if options_changed:
         hass.config_entries.async_update_entry(entry, options={**entry.options, CONF_DEVICES: cleaned_devices})
+
+    cleaned_data, data_changed = strip_legacy_entry_data_keys(entry.data)
+    if data_changed:
+        hass.config_entries.async_update_entry(entry, data=cleaned_data)
 
     coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
     await coordinator.async_load_state()

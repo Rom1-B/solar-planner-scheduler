@@ -15,7 +15,6 @@ from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 
 from .const import (
-    CONF_CONSUMPTION_ENTITY,
     CONF_DEVICES,
     CONF_FIXED_LOADS,
     CONF_FORECAST_ENTITY,
@@ -24,7 +23,6 @@ from .const import (
     CONF_NAME,
     CONF_POWER_PROFILE,
     CONF_PRICE_TRACKING_ENABLED,
-    CONF_PRODUCTION_ENTITY,
     CONF_PROGRAMS,
     CONF_START_TIME,
     CONF_TARIFF_BANDS,
@@ -95,8 +93,6 @@ class BaseConfigSensor(CoordinatorEntity[SolarPlannerSchedulerCoordinator], Sens
         return {
             "forecast_entity": data.get(CONF_FORECAST_ENTITY),
             "forecast_tomorrow_entity": data.get(CONF_FORECAST_TOMORROW_ENTITY),
-            "production_entity": data.get(CONF_PRODUCTION_ENTITY),
-            "consumption_entity": data.get(CONF_CONSUMPTION_ENTITY),
             "fixed_loads": fixed_loads,
             "devices": devices,
             "theoretical_forecast": self.coordinator.theoretical_forecast_points(),

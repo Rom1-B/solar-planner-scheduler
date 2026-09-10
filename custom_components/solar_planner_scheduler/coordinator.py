@@ -159,6 +159,21 @@ def strip_legacy_device_options(devices: list[dict]) -> tuple[list[dict], bool]:
     return cleaned, changed
 
 
+# production_entity/consumption_entity (2026-09-10): moved from the integration's own config to the
+# card's own YAML config, since coordinator.py never read either for scheduling, only sensor.py
+# exposed them for the card to plot the actual/consumption curves — pure display, no reason to
+# centralize them here once the "avoid redeclaring per card instance" tradeoff was reconsidered.
+LEGACY_ENTRY_DATA_KEYS = ("production_entity", "consumption_entity")
+
+
+def strip_legacy_entry_data_keys(data: dict) -> tuple[dict, bool]:
+    """Drop LEGACY_ENTRY_DATA_KEYS from entry.data. Returns (cleaned, changed) so the caller only
+    writes entry.data back when something actually needed dropping."""
+    if not any(key in data for key in LEGACY_ENTRY_DATA_KEYS):
+        return data, False
+    return {k: v for k, v in data.items() if k not in LEGACY_ENTRY_DATA_KEYS}, True
+
+
 @dataclass
 class DeviceSchedule:
     name: str

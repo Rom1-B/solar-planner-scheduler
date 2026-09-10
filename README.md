@@ -33,8 +33,8 @@ Or manually: copy `custom_components/solar_planner_scheduler/` into your HA
 
 ## Configuration
 
-Initial setup asks for the shared entities (forecast, forecast tomorrow, production, consumption,
-max simultaneous power). Devices, programs and fixed loads are managed via "Configure":
+Initial setup asks for the shared entities (forecast, forecast tomorrow, max simultaneous power).
+Devices, programs and fixed loads are managed via "Configure":
 
 - **Device**: name + optional power sensor, used to detect when a program actually starts and to
   learn its real phases over time. "Manage a device" then opens a menu scoped to that one device
@@ -134,6 +134,8 @@ type: custom:solar-planner-card
 devices:                # optional, omit for a forecast-only card with no device rows
   - lave_linge          # or use "*" (a plain string, not a list) to show every device the
   - lave_vaisselle      # integration reports, in its own config order
+production_entity: sensor.solar_power     # optional, real production curve on the chart
+consumption_entity: sensor.house_power    # optional, real consumption curve on the chart
 chart_expanded: true    # optional, default true (the forecast chart/gantt/device rows)
 table_expanded: false   # optional, default false (the summary table)
 table_show_energy: true # optional, default true (the table's Energy column)
@@ -142,6 +144,10 @@ chart_hours_past: 6     # optional, default 6 (hours shown before now)
 chart_hours_future: 24  # optional, default 24 (hours shown after now)
 chart_visible_hours: 30 # optional, default chart_hours_past + chart_hours_future (no scroll)
 ```
+
+`production_entity`/`consumption_entity` are card config, not integration config: display only
+(the actual/consumption lines on the chart), never read for scheduling. Repeat them in every card
+instance that should show those curves.
 
 Each section has its own toggle icon in the card itself; `chart_expanded`/`table_expanded`
 only set which state it starts in. The table's Window column shows a countdown to a future start

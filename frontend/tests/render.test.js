@@ -33,16 +33,15 @@ function withFixedNow(hours, minutes, fn) {
   }
 }
 
-// The card reads forecast/production/consumption/max_simultaneous_power from this sensor's
-// attributes instead of its own config: spread into every test's `states` object.
+// The card reads forecast/max_simultaneous_power from this sensor's attributes instead of its own
+// config (production_entity/consumption_entity are card config, see setConfig()): spread into
+// every test's `states` object.
 const BASE_CONFIG_ENTITY = {
   "sensor.solar_planner_scheduler_config": {
     state: "4000",
     attributes: {
       forecast_entity: "sensor.forecast",
       forecast_tomorrow_entity: null,
-      production_entity: null,
-      consumption_entity: null,
       fixed_loads: [],
       devices: [],
       theoretical_forecast: [],
@@ -911,7 +910,7 @@ test("_refresh prefers recorder statistics over raw history for production/consu
   dayStart.setHours(0, 0, 0, 0);
   const fiveMinAgo = new Date(Date.now() - 5 * 60000);
   const card = new Card();
-  card.setConfig({});
+  card.setConfig({ production_entity: "sensor.production", consumption_entity: "sensor.consumption" });
   const base = configEntityWithForecast(buildForecast(dayStart))["sensor.solar_planner_scheduler_config"];
   card._hass = {
     themes: { darkMode: false },
@@ -921,13 +920,7 @@ test("_refresh prefers recorder statistics over raw history for production/consu
       const value = id === "sensor.production" ? 500 : 200;
       return { [id]: [{ start: fiveMinAgo.getTime(), end: Date.now(), mean: value }] };
     },
-    states: {
-      ...BASE_CONFIG_ENTITY,
-      "sensor.solar_planner_scheduler_config": {
-        ...base,
-        attributes: { ...base.attributes, production_entity: "sensor.production", consumption_entity: "sensor.consumption" },
-      },
-    },
+    states: { ...BASE_CONFIG_ENTITY, "sensor.solar_planner_scheduler_config": base },
   };
   setDevicesAttr(card, []);
 
@@ -942,7 +935,7 @@ test("_refresh falls back to raw history when an entity has no recorder statisti
   dayStart.setHours(0, 0, 0, 0);
   const twoHoursAgo = new Date(Date.now() - 2 * 3600000);
   const card = new Card();
-  card.setConfig({});
+  card.setConfig({ production_entity: "sensor.production" });
   const base = configEntityWithForecast(buildForecast(dayStart))["sensor.solar_planner_scheduler_config"];
   card._hass = {
     themes: { darkMode: false },
@@ -952,13 +945,7 @@ test("_refresh falls back to raw history when an entity has no recorder statisti
       assert.equal(msg.minimal_response, true, "expected the raw-history fallback to request the compact minimal_response shape");
       return { "sensor.production": [{ last_changed: twoHoursAgo.toISOString(), state: "700" }] };
     },
-    states: {
-      ...BASE_CONFIG_ENTITY,
-      "sensor.solar_planner_scheduler_config": {
-        ...base,
-        attributes: { ...base.attributes, production_entity: "sensor.production", consumption_entity: null },
-      },
-    },
+    states: { ...BASE_CONFIG_ENTITY, "sensor.solar_planner_scheduler_config": base },
   };
   setDevicesAttr(card, []);
 

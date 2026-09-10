@@ -17,7 +17,6 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_AUTO_DAYS,
-    CONF_CONSUMPTION_ENTITY,
     CONF_DEVICES,
     CONF_FIXED_LOADS,
     CONF_FORECAST_PROVIDERS_ENABLED,
@@ -29,7 +28,6 @@ from .const import (
     CONF_POWER_SENSOR,
     CONF_POWER_W,
     CONF_PRICE_TRACKING_ENABLED,
-    CONF_PRODUCTION_ENTITY,
     CONF_PROGRAMS,
     CONF_START_TIME,
     CONF_SUBSCRIPTION_PRICE_MONTHLY,
@@ -79,19 +77,12 @@ def _base_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
         )
     )
     enabled_providers = [p for p, field in FORECAST_PROVIDER_CONFIG_ENTRY_FIELDS.items() if defaults.get(field)]
-    power_sensor = selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="power"))
     return vol.Schema(
         {
             vol.Optional(
                 CONF_FORECAST_PROVIDERS_ENABLED,
                 description={"suggested_value": enabled_providers or None},
             ): forecast_providers,
-            vol.Optional(
-                CONF_PRODUCTION_ENTITY, description={"suggested_value": defaults.get(CONF_PRODUCTION_ENTITY)}
-            ): power_sensor,
-            vol.Optional(
-                CONF_CONSUMPTION_ENTITY, description={"suggested_value": defaults.get(CONF_CONSUMPTION_ENTITY)}
-            ): power_sensor,
             vol.Required(
                 CONF_MAX_SIMULTANEOUS_POWER,
                 default=defaults.get(CONF_MAX_SIMULTANEOUS_POWER, DEFAULT_MAX_SIMULTANEOUS_POWER),

@@ -64,6 +64,7 @@ from custom_components.solar_planner_scheduler.coordinator import (
     _phases_differ_significantly,
     compute_locked,
     strip_legacy_device_options,
+    strip_legacy_entry_data_keys,
 )
 from tests.conftest import register_provider_entities
 
@@ -1228,6 +1229,31 @@ def test_strip_legacy_device_options_is_a_no_op_on_already_clean_devices():
 
     assert changed is False
     assert cleaned == devices
+
+
+# --- strip_legacy_entry_data_keys() ---------------------------------------------------------------
+
+
+def test_strip_legacy_entry_data_keys_drops_production_and_consumption_entity():
+    data = {
+        CONF_MAX_SIMULTANEOUS_POWER: 4000,
+        "production_entity": "sensor.elec_solar_power",
+        "consumption_entity": "sensor.elec_0_power",
+    }
+
+    cleaned, changed = strip_legacy_entry_data_keys(data)
+
+    assert changed is True
+    assert cleaned == {CONF_MAX_SIMULTANEOUS_POWER: 4000}
+
+
+def test_strip_legacy_entry_data_keys_is_a_no_op_on_already_clean_data():
+    data = {CONF_MAX_SIMULTANEOUS_POWER: 4000}
+
+    cleaned, changed = strip_legacy_entry_data_keys(data)
+
+    assert changed is False
+    assert cleaned == data
 
 
 # --- _async_update_data() -----------------------------------------------------------------------

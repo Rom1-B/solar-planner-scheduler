@@ -23,7 +23,6 @@ from custom_components.solar_planner_scheduler.config_flow import (
 )
 from custom_components.solar_planner_scheduler.const import (
     CONF_AUTO_DAYS,
-    CONF_CONSUMPTION_ENTITY,
     CONF_DEVICES,
     CONF_FIXED_LOADS,
     CONF_FORECAST_CONFIG_ENTRY_FORECAST_SOLAR,
@@ -37,7 +36,6 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_POWER_PROFILE,
     CONF_POWER_SENSOR,
     CONF_PRICE_TRACKING_ENABLED,
-    CONF_PRODUCTION_ENTITY,
     CONF_PROGRAMS,
     CONF_START_TIME,
     CONF_SUBSCRIPTION_PRICE_MONTHLY,
@@ -314,8 +312,7 @@ async def test_add_device_without_a_power_sensor_does_not_crash(hass, enable_cus
     assert entry.options[CONF_DEVICES][0][CONF_POWER_SENSOR] == ""
 
 
-async def test_edit_base_accepts_omitted_optional_entities(hass, enable_custom_integrations):
-    """Regression test: same default="" bug as add_device, in the base-settings form."""
+async def test_edit_base_writes_max_power_and_resolves_the_provider_selection(hass, enable_custom_integrations):
     entry = _entry(hass, [])
     MockConfigEntry(domain="solcast_solar").add_to_hass(hass)
 
@@ -328,7 +325,6 @@ async def test_edit_base_accepts_omitted_optional_entities(hass, enable_custom_i
 
     assert result["type"] == "menu"
     assert entry.data[CONF_MAX_SIMULTANEOUS_POWER] == 3000
-    assert entry.data.get("production_entity") is None
     assert entry.data[CONF_FORECAST_CONFIG_ENTRY_SOLCAST] is not None
     assert CONF_FORECAST_PROVIDERS_ENABLED not in entry.data
 
@@ -645,14 +641,6 @@ async def test_setup_with_only_forecast_solar_enabled_stores_it_alone(hass, enab
     assert result["data"][CONF_FORECAST_CONFIG_ENTRY_FORECAST_SOLAR] is not None
     assert result["data"][CONF_FORECAST_CONFIG_ENTRY_SOLCAST] is None
     assert result["data"][CONF_FORECAST_CONFIG_ENTRY_HELIOS] is None
-
-
-def test_production_and_consumption_pickers_filter_to_power_sensors():
-    schema = _base_schema()
-    for field in (CONF_PRODUCTION_ENTITY, CONF_CONSUMPTION_ENTITY):
-        selector = _selector_for(schema, field)
-        assert selector.config["domain"] == ["sensor"]
-        assert selector.config["device_class"] == ["power"]
 
 
 def test_device_power_sensor_picker_filters_to_power_sensors():
