@@ -117,6 +117,22 @@ def test_theoretical_forecast_points_carries_percentiles(hass):
     ]
 
 
+async def test_theoretical_points_keeps_the_last_known_curve_when_a_cycle_returns_nothing(hass):
+    """Reported live: right after an HA restart, the chart's forecast line briefly went blank
+    because the very first coordinator cycle ran before the forecast provider had published any
+    data yet. A transient empty result must not blank a chart that already had a real curve.
+    """
+    coordinator = _coordinator(hass)
+    point_time = datetime(2026, 8, 30, 10, 0, tzinfo=UTC)
+    coordinator._theoretical_points = [{"time": point_time, "w": 1000.0, "w10": 700.0, "w90": 1300.0}]
+
+    # No CONF_FORECAST_CONFIG_ENTRY_* field set: resolve_forecast_sources() resolves nothing, so
+    # this cycle's own points come back empty, same as a provider not being ready yet.
+    await coordinator._resolve_active_points({}, dt_util.now())
+
+    assert coordinator._theoretical_points == [{"time": point_time, "w": 1000.0, "w10": 700.0, "w90": 1300.0}]
+
+
 # --- compute_locked() -------------------------------------------------------------------------
 
 

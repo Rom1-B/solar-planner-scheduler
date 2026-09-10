@@ -860,7 +860,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             active_source = next(iter(resolved_sources), None)
         # Fetched for every resolved provider regardless of which one is actually selected: cheap,
         # since a provider's points come from hass.states (already cached) or a config_entry-keyed
-        # energy-platform hook, never a network call — and needed unconditionally for
+        # energy-platform hook, never a network call: and needed unconditionally for
         # average_forecast_power_now()/min_forecast_power_now() below, not just the combiner branch.
         provider_points = {p: await _read_provider_points(self.hass, resolved_sources, p) for p in resolved_sources}
         helios_weight = (
@@ -877,7 +877,13 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             points = provider_points.get(active_source, [])
         else:
             points = []
-        self._theoretical_points = points
+        if points:
+            # A transient empty result (e.g. a provider not up yet right after an HA restart, or a
+            # momentary state hiccup) must not blank a chart that already had a real curve: keep
+            # showing the last known-good one instead. Only ever empty on a genuinely fresh
+            # coordinator (self._theoretical_points still at its __init__ default) or once nothing
+            # is configured at all, both already correctly represented by an untouched [].
+            self._theoretical_points = points
 
         if average_available:
             curves = list(provider_points.values())
