@@ -30,7 +30,8 @@ from .const import (
     CONF_TARIFF_BANDS,
     DOMAIN,
 )
-from .coordinator import SolarPlannerSchedulerCoordinator, resolve_forecast_history_entities
+from .coordinator import SolarPlannerSchedulerCoordinator
+from .forecast_providers import resolve_forecast_history_entities
 from .scheduling import price_at
 
 

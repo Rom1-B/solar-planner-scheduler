@@ -20,7 +20,8 @@ from .const import (
     FORECAST_PROVIDER_SOLCAST,
     FORECAST_PROVIDER_WEIGHTED,
 )
-from .coordinator import FORECAST_COMBINERS, SolarPlannerSchedulerCoordinator, resolve_forecast_sources
+from .coordinator import SolarPlannerSchedulerCoordinator
+from .forecast_providers import FORECAST_COMBINERS, resolve_forecast_sources
 
 _PROVIDER_LABELS = {**FORECAST_PROVIDER_LABELS, "average": "Average", "min": "Min", "weighted": "Weighted"}
 
