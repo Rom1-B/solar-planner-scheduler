@@ -1357,13 +1357,18 @@ test("stack order mirrors the gantt's top-to-bottom config order, not reversed",
 });
 
 test("a forecast entity with P10/P90 percentiles renders a confidence band", () => {
-  const dayStart = new Date();
-  dayStart.setHours(0, 0, 0, 0);
-  const card = buildCard();
-  setForecastPoints(card, buildForecast(dayStart, 3, true));
-  card._render();
-  const html = card.shadowRoot.innerHTML;
-  assert.ok(/<path d="M[^"]+Z" class="confidence-band"/.test(html), "expected a closed confidence-band path");
+  // Pinned mid-afternoon: buildForecast() only covers 6:00-20:00, so the default 24h-future view
+  // needs "now" comfortably inside that range, or the band has no data left past "now" depending
+  // on the real wall-clock time the suite runs at.
+  withFixedNow(14, 0, () => {
+    const dayStart = new Date();
+    dayStart.setHours(0, 0, 0, 0);
+    const card = buildCard();
+    setForecastPoints(card, buildForecast(dayStart, 3, true));
+    card._render();
+    const html = card.shadowRoot.innerHTML;
+    assert.ok(/<path d="M[^"]+Z" class="confidence-band"/.test(html), "expected a closed confidence-band path");
+  });
 });
 
 test("a forecast entity without P10/P90 draws no confidence band", () => {
