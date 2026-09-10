@@ -1135,6 +1135,12 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                     # time, chasing "now" forever every time it gets forced again.
                     power = self._current_power(device.get(CONF_POWER_SENSOR))
                     already_running = power is not None and power >= idle_threshold
+                    if power is not None and not already_running:
+                        # Same standby-learning opportunity as the fresh-search branch below: a
+                        # forced start is also a moment the device is confirmed idle just before
+                        # running, which an on-demand program driven only by forced starts (never
+                        # by an accepted auto-search proposal) would otherwise never get.
+                        await self._record_standby_sample(device_name, power)
                     await self._set_committed(
                         device_name,
                         program_name,

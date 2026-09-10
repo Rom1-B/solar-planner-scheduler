@@ -1923,6 +1923,35 @@ async def test_a_pending_forced_start_marks_seen_running_when_already_drawing_po
     assert committed["seen_running"] is True
 
 
+async def test_a_pending_forced_start_records_a_standby_sample_when_the_device_looks_idle(hass):
+    """An on-demand program driven only by forced starts (never an accepted auto-search proposal)
+    would otherwise never learn its standby power at all.
+    """
+    coordinator = _active_coordinator_with_sensor(hass)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_linge", "Eco", True)
+    hass.states.async_set("sensor.lave_linge_power", "5")
+    await coordinator.async_set_forced_start("lave_linge", "Eco", dt_util.now() + timedelta(hours=2))
+    await _flush(coordinator)
+
+    await coordinator._async_update_data()
+
+    assert coordinator._standby_samples("lave_linge") == [5.0]
+
+
+async def test_a_pending_forced_start_does_not_record_standby_when_the_device_already_looks_running(hass):
+    coordinator = _active_coordinator_with_sensor(hass)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_linge", "Eco", True)
+    hass.states.async_set("sensor.lave_linge_power", "1600")
+    await coordinator.async_set_forced_start("lave_linge", "Eco", dt_util.now() - timedelta(minutes=12))
+    await _flush(coordinator)
+
+    await coordinator._async_update_data()
+
+    assert coordinator._standby_samples("lave_linge") == []
+
+
 async def test_two_active_programs_of_the_same_device_never_get_overlapping_slots(hass):
     """The scenario that motivated per-program activation: two programs of the same washing
     machine, both active the same day. Even though their combined power stays well under
