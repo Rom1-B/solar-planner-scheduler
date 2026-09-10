@@ -1572,6 +1572,73 @@ async def test_no_forecast_data_does_not_commit_a_guessed_now_slot(hass):
     assert coordinator._get_committed("lave_vaisselle", "Eco") is None
 
 
+async def test_no_forecast_data_still_displays_an_already_committed_not_yet_imminent_slot(hass):
+    """Reported live: right after an HA restart, a program that was already scheduled (its
+    committed slot still hours away, so _reusable_committed() wants to re-search and chase a
+    better window every cycle) briefly looked unscheduled on the card whenever the forecast
+    integration hadn't come back up yet. should_search=True with empty points must keep showing
+    the existing Store commitment for display, not blank it — the Store itself stays untouched
+    either way, so the next real search (once forecast data loads) is unaffected.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options=_device_options(),
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_vaisselle", "Eco", True)
+    future_start = dt_util.now() + timedelta(hours=2)
+    _seed_committed(
+        coordinator,
+        "lave_vaisselle",
+        "Eco",
+        DeviceSchedule("lave_vaisselle", future_start, future_start + timedelta(minutes=30), 80),
+    )
+    await _flush(coordinator)
+    # sensor.forecast is deliberately never set: _read_forecast_points() returns [] for a missing state.
+
+    results = await coordinator._async_update_data()
+
+    assert results[("lave_vaisselle", "Eco")].start == future_start
+    committed = coordinator._get_committed("lave_vaisselle", "Eco")
+    assert committed["start"] == future_start
+
+
+async def test_no_forecast_data_does_not_shift_an_already_forced_slot(hass):
+    """A manually forced (dragged) slot must never be affected by the empty-forecast fallback
+    above: _reusable_committed() already keeps should_search False for a forced slot regardless of
+    timing, so this end-to-end path never even reaches the branch that fallback lives in.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options=_device_options(),
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_vaisselle", "Eco", True)
+    forced_start = dt_util.now() + timedelta(hours=6)
+    _seed_committed(
+        coordinator,
+        "lave_vaisselle",
+        "Eco",
+        DeviceSchedule("lave_vaisselle", forced_start, forced_start + timedelta(minutes=30), 80),
+        forced=True,
+    )
+    await _flush(coordinator)
+    # sensor.forecast is deliberately never set: _read_forecast_points() returns [] for a missing state.
+
+    results = await coordinator._async_update_data()
+
+    assert results[("lave_vaisselle", "Eco")].start == forced_start
+    assert results[("lave_vaisselle", "Eco")].forced is True
+    committed = coordinator._get_committed("lave_vaisselle", "Eco")
+    assert committed["start"] == forced_start
+
+
 async def test_activating_a_program_searches_immediately_regardless_of_auto_days(hass):
     solcast_entry_id = register_provider_entities(
         hass, "solcast_solar", {"sensor.forecast": {"detailedForecast": [{"period_start": dt_util.now(), "pv_estimate": 3.0}]}}

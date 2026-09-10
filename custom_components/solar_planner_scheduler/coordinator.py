@@ -1224,8 +1224,15 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                                 slot["cost"],
                             )
                     else:
-                        # No forecast data yet: wait for it instead of committing a guessed slot.
-                        slot = None
+                        # No forecast data yet (e.g. the forecast integration isn't up yet right
+                        # after an HA restart): don't commit a guessed slot, but keep displaying
+                        # whatever was already committed instead of blanking the card — should_search
+                        # stays True next cycle regardless, and the Store itself is left untouched
+                        # either way, so this only affects this cycle's display/blocked-list, never
+                        # what gets searched or persisted.
+                        slot = self._get_committed(device_name, program_name)
+                        if slot is not None:
+                            forced = slot["forced"]
 
                 _finalize(slot)
                 results[key] = self._schedule_from_slot(device_name, slot, item, forced)
