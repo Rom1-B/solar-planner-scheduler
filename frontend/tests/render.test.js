@@ -709,6 +709,59 @@ test("setConfig accepts an omitted devices array for a forecast-only card", () =
   assert.ok(!Number.isNaN(nowX), "expected the forecast chart to render even with no devices");
 });
 
+test('devices: "*" renders every device the server reports, without listing them by hand', () => {
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const card = new Card();
+  assert.doesNotThrow(() => card.setConfig({ devices: "*" }));
+  card._hass = {
+    themes: { darkMode: false },
+    states: {
+      ...BASE_CONFIG_ENTITY,
+      ...configEntityWithForecast(buildForecast(dayStart)),
+      ...deviceEntities("lave_linge", { name: "Lave-linge" }),
+      ...deviceEntities("lave_vaisselle", { name: "Lave-vaisselle" }),
+    },
+  };
+  setDevicesAttr(
+    card,
+    singleProgramDevices(["lave_linge", "lave_vaisselle"], { names: { lave_linge: "Lave-linge", lave_vaisselle: "Lave-vaisselle" } })
+  );
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  assert.match(html, /Lave-linge/);
+  assert.match(html, /Lave-vaisselle/);
+});
+
+test('devices: "*" picks up a device added later server-side with no card config change', () => {
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const card = new Card();
+  card.setConfig({ devices: "*" });
+  card._hass = {
+    themes: { darkMode: false },
+    states: {
+      ...BASE_CONFIG_ENTITY,
+      ...configEntityWithForecast(buildForecast(dayStart)),
+      ...deviceEntities("lave_linge", { name: "Lave-linge" }),
+    },
+  };
+  setDevicesAttr(card, singleProgramDevices(["lave_linge"], { names: { lave_linge: "Lave-linge" } }));
+  card._render();
+  assert.match(card.shadowRoot.innerHTML, /Lave-linge/);
+  assert.doesNotMatch(card.shadowRoot.innerHTML, /Ballon/);
+
+  card._hass.states = { ...card._hass.states, ...deviceEntities("ballon", { name: "Ballon" }) };
+  setDevicesAttr(card, singleProgramDevices(["lave_linge", "ballon"], { names: { lave_linge: "Lave-linge", ballon: "Ballon" } }));
+  card._render();
+  assert.match(card.shadowRoot.innerHTML, /Ballon/, "expected the newly-added device to appear with no config change");
+});
+
+test('setConfig rejects a devices value that is neither an array nor "*"', () => {
+  const card = new Card();
+  assert.throws(() => card.setConfig({ devices: "lave_linge" }), /must be an array of device slugs, or "\*"/);
+});
+
 test("the forecast line starts at now, not at viewStart, when chart_hours_past reaches into days with no forecast data", () => {
   const dayStart = new Date();
   dayStart.setHours(0, 0, 0, 0);

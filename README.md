@@ -119,8 +119,8 @@ Served and registered automatically, no separate install.
 ```yaml
 type: custom:solar-planner-card
 devices:                # optional, omit for a forecast-only card with no device rows
-  - lave_linge
-  - lave_vaisselle
+  - lave_linge          # or use "*" (a plain string, not a list) to show every device the
+  - lave_vaisselle      # integration reports, in its own config order
 chart_expanded: true    # optional, default true (the forecast chart/gantt/device rows)
 table_expanded: false   # optional, default false (the summary table)
 table_show_energy: true # optional, default true (the table's Energy column)

@@ -225,17 +225,21 @@ class SolarPlannerCard extends HTMLElement {
 
   // config.devices is a list of device slugs; entity_ids are built from each program's own
   // server-computed "slug" (see _baseConfig()), never approximated client-side. Omitted/empty is
-  // valid: a forecast-only card (no device rows) has no need for it.
+  // valid: a forecast-only card (no device rows) has no need for it. The literal string "*" means
+  // "every device the server reports", resolved lazily in _programRows() (the device list itself
+  // isn't known yet at setConfig() time, only once _hass is set) — kept distinct from omitted/empty
+  // rather than overloading either, since both "no devices" and "all devices" are real, different
+  // configs (a forecast-only card vs. a large install that doesn't want to hand-list every device).
   setConfig(config) {
-    if (config.devices !== undefined && !Array.isArray(config.devices)) {
-      throw new Error("solar-planner-card: 'devices' must be an array of device slugs");
+    if (config.devices !== undefined && config.devices !== "*" && !Array.isArray(config.devices)) {
+      throw new Error("solar-planner-card: 'devices' must be an array of device slugs, or \"*\" for all of them");
     }
-    for (const slug of config.devices || []) {
+    for (const slug of Array.isArray(config.devices) ? config.devices : []) {
       if (typeof slug !== "string" || !slug) {
         throw new Error("solar-planner-card: each entry in 'devices' must be a non-empty slug string");
       }
     }
-    this._config = { ...config, devices: config.devices || [] };
+    this._config = { ...config, devices: config.devices === "*" ? "*" : config.devices || [] };
     this._showChart = config.chart_expanded !== false;
     this._showTable = !!config.table_expanded;
     this._lastRefresh = 0;
@@ -266,9 +270,11 @@ class SolarPlannerCard extends HTMLElement {
   // One row per (device, program) pair; a device missing from the config sensor is skipped.
   _programRows() {
     if (!this._hass || !this._config) return [];
-    const byDeviceSlug = new Map(this._baseConfig().devices.map((d) => [d.slug, d]));
+    const serverDevices = this._baseConfig().devices;
+    const byDeviceSlug = new Map(serverDevices.map((d) => [d.slug, d]));
+    const deviceSlugs = this._config.devices === "*" ? serverDevices.map((d) => d.slug) : this._config.devices;
     const rows = [];
-    for (const deviceSlug of this._config.devices) {
+    for (const deviceSlug of deviceSlugs) {
       const device = byDeviceSlug.get(deviceSlug);
       if (!device) continue;
       for (const program of device.programs) {
