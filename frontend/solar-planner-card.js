@@ -193,6 +193,7 @@ class SolarPlannerCard extends HTMLElement {
     this._consumptionPoints = [];
     this._consumptionCurve = [];
     this._forecastHistoryPoints = [];
+    this._forecastSourcePending = false;
     this._lastRefresh = 0;
     this._lastSignature = null;
     // Drag state, not re-rendered per pointermove (see _bindGanttDrag).
@@ -275,7 +276,10 @@ class SolarPlannerCard extends HTMLElement {
     if (sourceChanged) {
       // Production/consumption don't depend on the forecast provider: a mid-throttle source switch
       // only needs the (cheaper) forecast-history refetch, not a full _refresh().
-      this._refreshForecastHistory().then(() => this._requestRender());
+      this._refreshForecastHistory().then(() => {
+        this._forecastSourcePending = false;
+        this._requestRender();
+      });
       return;
     }
     const sig = this._relevantSignature();
@@ -460,6 +464,7 @@ class SolarPlannerCard extends HTMLElement {
     }
     jobs.push(this._refreshForecastHistory());
     await Promise.all(jobs);
+    this._forecastSourcePending = false;
     this._requestRender();
   }
 
@@ -577,10 +582,22 @@ class SolarPlannerCard extends HTMLElement {
   }
 
   async _onForecastSourceChange(option) {
-    await this._hass.callService("select", "select_option", {
-      entity_id: "select.solar_planner_scheduler_forecast_source",
-      option,
-    });
+    // Dim the chart the instant the choice is made, not once the round trip finally lands: the
+    // server-side switch always runs a full coordinator refresh before the service call even
+    // resolves (the new source drives real scheduling, not just display), so with no feedback here
+    // the old curve is left looking frozen for however long that takes.
+    this._forecastSourcePending = true;
+    this._render();
+    try {
+      await this._hass.callService("select", "select_option", {
+        entity_id: "select.solar_planner_scheduler_forecast_source",
+        option,
+      });
+    } catch (err) {
+      this._forecastSourcePending = false;
+      this._render();
+      throw err;
+    }
   }
 
   _render() {
@@ -1039,6 +1056,7 @@ class SolarPlannerCard extends HTMLElement {
         table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 0.85em; }
         th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--divider-color); }
         .row-started { opacity: 0.5; }
+        .chart-scroll.pending { opacity: 0.4; pointer-events: none; transition: opacity 0.15s; }
       </style>
       <ha-card>
         <div class="header">
@@ -1050,7 +1068,7 @@ class SolarPlannerCard extends HTMLElement {
             </button>
             ${
               showForecastSourceSelect
-                ? `<select class="forecast-source-select" id="forecast-source-select">
+                ? `<select class="forecast-source-select" id="forecast-source-select" ${this._forecastSourcePending ? "disabled" : ""}>
               ${forecastSourceOptions
                 .map(
                   (option) =>
@@ -1073,7 +1091,7 @@ class SolarPlannerCard extends HTMLElement {
         </div>
         ${
           this._showChart
-            ? `<div class="chart-scroll">
+            ? `<div class="chart-scroll${this._forecastSourcePending ? " pending" : ""}">
           <svg class="chart" viewBox="0 0 ${width} ${height}" style="width: ${chartWidthPercent}%">
             ${wTicks.join("")}
             ${hourTicks.join("")}

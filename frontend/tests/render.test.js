@@ -1251,6 +1251,68 @@ test("changing the forecast source calls select.select_option with the chosen op
   ]);
 });
 
+test("selecting a new forecast source dims the chart and disables the select before the service call resolves", async () => {
+  // The server-side switch always runs a full coordinator refresh before the service call itself
+  // resolves (the new source drives real scheduling, not just display): with no immediate feedback
+  // here the old curve was left looking frozen for however long that round trip takes.
+  const card = buildCard();
+  card._hass.states["select.solar_planner_scheduler_forecast_source"] = {
+    state: "Solcast",
+    attributes: { options: ["Solcast", "Helios Forecast"] },
+  };
+  card._showChart = true;
+  let resolveCall;
+  card._hass.callService = () => new Promise((resolve) => (resolveCall = resolve));
+
+  const changePromise = card._onForecastSourceChange("Helios Forecast");
+  await new Promise((r) => setTimeout(r, 0)); // let the synchronous _render() before the await land
+
+  let html = card.shadowRoot.innerHTML;
+  assert.match(html, /class="chart-scroll pending"/, "expected the chart dimmed while the switch is in flight");
+  assert.match(html, /id="forecast-source-select" disabled/, "expected the select disabled while the switch is in flight");
+
+  resolveCall();
+  await changePromise;
+});
+
+test("the pending dim clears once a forecast-source switch actually completes", async () => {
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const forecastConfigEntity = configEntityWithForecast(buildForecast(dayStart))["sensor.solar_planner_scheduler_config"];
+  const statesWithSource = (source, provider) => ({
+    ...BASE_CONFIG_ENTITY,
+    "sensor.solar_planner_scheduler_config": {
+      ...forecastConfigEntity,
+      attributes: {
+        ...forecastConfigEntity.attributes,
+        devices: [],
+        forecast_history_entities: { solcast: "sensor.solcast_power_now", helios_forecast: "sensor.helios_power_now" },
+      },
+    },
+    "select.solar_planner_scheduler_forecast_source": {
+      state: source,
+      attributes: { options: ["Solcast", "Helios Forecast"], provider },
+    },
+  });
+  const callWS = async ({ entity_ids }) => ({ [entity_ids[0]]: [] });
+
+  const card = new Card();
+  card.setConfig({});
+  card.hass = { themes: { darkMode: false }, callWS, states: statesWithSource("Solcast", "solcast") };
+  await new Promise((r) => setTimeout(r, 10));
+
+  card._forecastSourcePending = true;
+  card._showChart = true;
+  card._render();
+  assert.match(card.shadowRoot.innerHTML, /class="chart-scroll pending"/);
+
+  card.hass = { themes: { darkMode: false }, callWS, states: statesWithSource("Helios Forecast", "helios_forecast") };
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.equal(card._forecastSourcePending, false, "expected the switch's own refresh to clear the pending flag");
+  assert.doesNotMatch(card.shadowRoot.innerHTML, /class="chart-scroll pending"/);
+});
+
 test("activating a program calls switch.turn_on with the right entity", async () => {
   const card = buildCard({ withActiveSelections: false });
   const calls = [];
@@ -1403,27 +1465,32 @@ test("the table's Window column includes a countdown to a future fixed load's st
 });
 
 test("a full-day fixed load's tomorrow occurrence is deduped out of the table, unlike a shorter daily one", () => {
-  const dayStart = new Date();
-  dayStart.setHours(0, 0, 0, 0);
-  const tomorrowStart = new Date(dayStart);
-  tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+  // Pinned mid-morning: PAC's window (14:00-15:00) must still be today's occurrence and not yet
+  // elapsed relative to the 6h-past view start, or it drops out depending on the real wall-clock
+  // time the suite runs at (viewStart = now - 6h must stay <= PAC's own end, 15:00).
+  withFixedNow(8, 0, () => {
+    const dayStart = new Date();
+    dayStart.setHours(0, 0, 0, 0);
+    const tomorrowStart = new Date(dayStart);
+    tomorrowStart.setDate(tomorrowStart.getDate() + 1);
 
-  const card = buildCard();
-  enableTomorrowForecast(card);
-  addForecastPoints(card, buildForecast(tomorrowStart));
-  setFixedLoads(card, [
-    { name: "Conso de base", start_time: "00:00", power_profile: [{ minutes: 1440, power_w: 110 }] },
-    { name: "PAC", start_time: "14:00", power_profile: [{ minutes: 60, power_w: 1500 }] },
-  ]);
-  card._showTable = true;
-  card._render();
-  const html = card.shadowRoot.innerHTML;
+    const card = buildCard();
+    enableTomorrowForecast(card);
+    addForecastPoints(card, buildForecast(tomorrowStart));
+    setFixedLoads(card, [
+      { name: "Conso de base", start_time: "00:00", power_profile: [{ minutes: 1440, power_w: 110 }] },
+      { name: "PAC", start_time: "14:00", power_profile: [{ minutes: 60, power_w: 1500 }] },
+    ]);
+    card._showTable = true;
+    card._render();
+    const html = card.shadowRoot.innerHTML;
 
-  const baseRows = [...html.matchAll(/<td>Conso de base[^<]*<\/td>\s*<td>([\s\S]*?)<\/td>/g)];
-  assert.equal(baseRows.length, 1, `expected the full-day load's duplicate "Tomorrow" row removed, got ${baseRows.length} rows`);
+    const baseRows = [...html.matchAll(/<td>Conso de base[^<]*<\/td>\s*<td>([\s\S]*?)<\/td>/g)];
+    assert.equal(baseRows.length, 1, `expected the full-day load's duplicate "Tomorrow" row removed, got ${baseRows.length} rows`);
 
-  const pacRows = [...html.matchAll(/<td>PAC[^<]*<\/td>\s*<td>([\s\S]*?)<\/td>/g)];
-  assert.equal(pacRows.length, 2, `expected a genuinely daily-recurring load to still show both today and tomorrow, got ${pacRows.length}`);
+    const pacRows = [...html.matchAll(/<td>PAC[^<]*<\/td>\s*<td>([\s\S]*?)<\/td>/g)];
+    assert.equal(pacRows.length, 2, `expected a genuinely daily-recurring load to still show both today and tomorrow, got ${pacRows.length}`);
+  });
 });
 
 test("chart_expanded/table_expanded config defaults drive which section renders open", () => {
