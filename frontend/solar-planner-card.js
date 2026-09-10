@@ -104,30 +104,6 @@ function interpolate(points, t) {
   return 0;
 }
 
-// Mirrors scheduling.py's _combine_curves()/average_forecast_points()/min_forecast_points(): no
-// server-side equivalent for history (the coordinator never touches the recorder), so combining
-// two providers' historical "power now" curves for Average/Min happens here instead.
-function combineCurves(curves, reduceFn) {
-  const nonEmpty = curves.filter((c) => c.length);
-  if (!nonEmpty.length) return [];
-  if (nonEmpty.length === 1) return nonEmpty[0];
-  const times = [...new Set(nonEmpty.flatMap((c) => c.map((p) => p.time.getTime())))].sort((a, b) => a - b);
-  const fields = ["w", "w10", "w90"];
-  const remapped = nonEmpty.map((c) => Object.fromEntries(fields.map((f) => [f, c.map((p) => ({ time: p.time, w: p[f] }))])));
-  return times.map((t) => {
-    const time = new Date(t);
-    const point = { time };
-    for (const f of fields) point[f] = reduceFn(remapped.map((r) => interpolate(r[f], time)));
-    return point;
-  });
-}
-export function averageForecastPoints(curves) {
-  return combineCurves(curves, (vals) => vals.reduce((a, b) => a + b, 0) / vals.length);
-}
-export function minForecastPoints(curves) {
-  return combineCurves(curves, (vals) => Math.min(...vals));
-}
-
 // Sums every overlapping segment, not just the first match.
 function powerAt(segments, t) {
   let sum = 0;
@@ -430,30 +406,27 @@ class SolarPlannerCard extends HTMLElement {
     return { now, historyStart: new Date(now.getTime() - chartHoursPast * 3600000) };
   }
 
-  // Only fetches the provider(s) the current selection actually needs: a single fetch for a plain
-  // provider selection, every configured provider only when Average/Min needs them combined.
+  // Fetches only the active provider's own history entity. "average"/"min" resolve server-side to
+  // this entry's own AverageForecastPowerNowSensor/MinForecastPowerNowSensor (coordinator.py's
+  // resolve_forecast_history_entities()), a plain recorded sensor exactly like a raw provider's
+  // "power now" one — no client-side combining needed here anymore, unlike the live curve (which
+  // still combines in _theoreticalPoints() territory server-side too, see coordinator.py).
   async _refreshForecastHistory() {
     const base = this._baseConfig();
     const { now, historyStart } = this._historyWindow();
-    const historyEntities = Object.entries(base.forecast_history_entities);
-    if (!historyEntities.length) {
+    const activeProvider = this._hass.states["select.solar_planner_scheduler_forecast_source"]?.attributes?.provider;
+    const entityId = base.forecast_history_entities[activeProvider];
+    if (!entityId) {
       this._forecastHistoryPoints = [];
       return;
     }
-    const activeProvider = this._hass.states["select.solar_planner_scheduler_forecast_source"]?.attributes?.provider;
-    const combiner = activeProvider === "average" ? averageForecastPoints : activeProvider === "min" ? minForecastPoints : null;
-    const neededEntities = combiner ? historyEntities : historyEntities.filter(([provider]) => provider === activeProvider);
-    const curves = await Promise.all(
-      neededEntities.map(([provider, entityId]) =>
-        this._fetchHistory(entityId, historyStart, now).then((pts) => ({
-          provider,
-          points: smoothCurve(pts, SMOOTH_BUCKET_MS, historyStart, now).map((p) => ({ time: p.time, w: p.value, w10: p.value, w90: p.value })),
-        }))
-      )
-    );
-    this._forecastHistoryPoints = combiner
-      ? combiner(curves.map((c) => c.points))
-      : curves.find((c) => c.provider === activeProvider)?.points || [];
+    const pts = await this._fetchHistory(entityId, historyStart, now);
+    this._forecastHistoryPoints = smoothCurve(pts, SMOOTH_BUCKET_MS, historyStart, now).map((p) => ({
+      time: p.time,
+      w: p.value,
+      w10: p.value,
+      w90: p.value,
+    }));
   }
 
   async _refresh() {

@@ -799,7 +799,13 @@ test("the forecast line extends before now once forecast history points are avai
   assert.ok(forecastStartX < nowX - 1, `expected the forecast line to start before "now" (${nowX}), got ${forecastStartX}`);
 });
 
-test("_refresh fetches, combines, and stores the active provider's forecast history", async () => {
+test("_refresh fetches and stores the active provider's forecast history", async () => {
+  // "average"/"min" resolve server-side to this entry's own AverageForecastPowerNowSensor/
+  // MinForecastPowerNowSensor (coordinator.py's resolve_forecast_history_entities()) now, a plain
+  // recorded entity exactly like a raw provider's own "power now" one: the card just fetches
+  // whichever single entity forecast_history_entities[activeProvider] points to, no client-side
+  // combining left to test here (see scheduling.test.js's Python-mirrored combine tests instead,
+  // now gone from this file since coordinator.py owns that math unconditionally).
   const dayStart = new Date();
   dayStart.setHours(0, 0, 0, 0);
   const twoHoursAgo = new Date(Date.now() - 2 * 3600000);
@@ -807,14 +813,11 @@ test("_refresh fetches, combines, and stores the active provider's forecast hist
   card.setConfig({});
   card._hass = {
     themes: { darkMode: false },
-    callWS: async ({ entity_ids }) => {
-      const value = entity_ids[0] === "sensor.solcast_power_now" ? "100" : "300";
-      return { [entity_ids[0]]: [{ last_changed: twoHoursAgo.toISOString(), state: value }] };
-    },
+    callWS: async ({ entity_ids }) => ({ [entity_ids[0]]: [{ last_changed: twoHoursAgo.toISOString(), state: "200" }] }),
     states: { ...BASE_CONFIG_ENTITY, ...configEntityWithForecast(buildForecast(dayStart)) },
   };
   setDevicesAttr(card, []);
-  setForecastHistoryEntities(card, { solcast: "sensor.solcast_power_now", helios_forecast: "sensor.helios_power_now" });
+  setForecastHistoryEntities(card, { average: "sensor.solar_planner_scheduler_forecast_average_power_now" });
   card._hass.states["select.solar_planner_scheduler_forecast_source"] = {
     state: "Average",
     attributes: { options: ["Solcast", "Helios Forecast", "Average"], provider: "average" },
@@ -823,11 +826,11 @@ test("_refresh fetches, combines, and stores the active provider's forecast hist
   await card._refresh();
 
   // smoothCurve() forward-fills the single raw sample into every 5-minute bucket since it, not a
-  // 1:1 passthrough of raw samples: every bucket must show the combined value, not just the first.
+  // 1:1 passthrough of raw samples: every bucket must show the fetched value, not just the first.
   assert.ok(card._forecastHistoryPoints.length > 1, JSON.stringify(card._forecastHistoryPoints));
   assert.ok(
     card._forecastHistoryPoints.every((p) => p.w === 200),
-    `expected every bucket to average 100W (Solcast) and 300W (Helios) to 200W, got ${JSON.stringify(card._forecastHistoryPoints)}`
+    `expected every bucket to show the average sensor's 200W, got ${JSON.stringify(card._forecastHistoryPoints)}`
   );
 });
 

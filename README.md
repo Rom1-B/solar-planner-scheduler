@@ -73,6 +73,14 @@ pessimistic of the two).
 `sensor.solar_planner_scheduler_current_price` exposes the live €/kWh price (when tariff tracking
 is enabled), usable as the Energy dashboard's "current price" source for grid-consumption cost.
 
+`sensor.solar_planner_scheduler_forecast_average_power_now`/`..._forecast_min_power_now` expose the
+instantaneous Average/Min across every *configured* provider (regardless of which one is currently
+selected in `select.solar_planner_scheduler_forecast_source`), `None` with fewer than 2 providers
+configured. Unlike the card's own forecast curve, these are plain recorded sensors, so their
+history can be compared against a raw provider's own "power now" sensor (e.g. in an
+apexcharts-card `series` entry) or against real production, the same way any other sensor's history
+would be.
+
 The integration never turns a device on/off itself. Two examples:
 
 1. A device HA controls directly: start it when `should_run` turns on.

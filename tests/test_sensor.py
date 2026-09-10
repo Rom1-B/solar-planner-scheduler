@@ -22,7 +22,12 @@ from custom_components.solar_planner_scheduler.const import (
     FORECAST_PROVIDER_HELIOS,
 )
 from custom_components.solar_planner_scheduler.coordinator import SolarPlannerSchedulerCoordinator
-from custom_components.solar_planner_scheduler.sensor import BaseConfigSensor, CurrentPriceSensor
+from custom_components.solar_planner_scheduler.sensor import (
+    AverageForecastPowerNowSensor,
+    BaseConfigSensor,
+    CurrentPriceSensor,
+    MinForecastPowerNowSensor,
+)
 from tests.conftest import register_provider_entities
 
 # A single band covering the whole day makes native_value deterministic regardless of the real
@@ -114,3 +119,36 @@ async def test_base_config_sensor_exposes_forecast_history_entities(hass):
     assert sensor.extra_state_attributes["forecast_history_entities"] == {
         FORECAST_PROVIDER_HELIOS: "sensor.helios_power_now"
     }
+
+
+def _set_up_forecast_power_now_entry(hass) -> tuple[SolarPlannerSchedulerCoordinator, MockConfigEntry]:
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_MAX_SIMULTANEOUS_POWER: 4000}, options={"devices": []})
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    return coordinator, entry
+
+
+async def test_average_forecast_power_now_sensor_reads_the_coordinators_computed_value(hass):
+    coordinator, entry = _set_up_forecast_power_now_entry(hass)
+    coordinator._average_power_now = 1234.5
+    sensor = AverageForecastPowerNowSensor(coordinator, entry)
+
+    assert sensor.native_value == 1234.5
+    assert sensor.unique_id == f"{entry.entry_id}_forecast_average_power_now"
+
+
+async def test_average_forecast_power_now_sensor_is_none_with_fewer_than_two_providers(hass):
+    coordinator, entry = _set_up_forecast_power_now_entry(hass)
+    sensor = AverageForecastPowerNowSensor(coordinator, entry)
+
+    assert sensor.native_value is None
+
+
+async def test_min_forecast_power_now_sensor_reads_the_coordinators_computed_value(hass):
+    coordinator, entry = _set_up_forecast_power_now_entry(hass)
+    coordinator._min_power_now = 456.0
+    sensor = MinForecastPowerNowSensor(coordinator, entry)
+
+    assert sensor.native_value == 456.0
+    assert sensor.unique_id == f"{entry.entry_id}_forecast_min_power_now"

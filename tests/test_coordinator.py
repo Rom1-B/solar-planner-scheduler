@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -337,7 +338,7 @@ async def test_resolve_forecast_history_entities_finds_the_helios_entity(hass):
         hass, "helios_forecast", {"sensor.helios_power_now": {"forecast": [{"datetime": "x", "watts": 1}]}}
     )
     data = {CONF_FORECAST_CONFIG_ENTRY_HELIOS: entry_id}
-    assert resolve_forecast_history_entities(hass, data) == {FORECAST_PROVIDER_HELIOS: "sensor.helios_power_now"}
+    assert resolve_forecast_history_entities(hass, "own_entry", data) == {FORECAST_PROVIDER_HELIOS: "sensor.helios_power_now"}
 
 
 async def test_resolve_forecast_history_entities_finds_the_solcast_power_now_entity(hass):
@@ -351,19 +352,51 @@ async def test_resolve_forecast_history_entities_finds_the_solcast_power_now_ent
     )
     data = {CONF_FORECAST_CONFIG_ENTRY_SOLCAST: entry_id}
 
-    assert resolve_forecast_history_entities(hass, data) == {FORECAST_PROVIDER_SOLCAST: "sensor.solcast_pv_forecast_power_now"}
+    assert resolve_forecast_history_entities(hass, "own_entry", data) == {FORECAST_PROVIDER_SOLCAST: "sensor.solcast_pv_forecast_power_now"}
 
 
 async def test_resolve_forecast_history_entities_omits_solcast_without_a_power_now_entity(hass):
     entry_id = register_provider_entities(hass, "solcast_solar", {"sensor.solcast_pv_forecast_forecast_today": {"detailedForecast": []}})
     data = {CONF_FORECAST_CONFIG_ENTRY_SOLCAST: entry_id}
 
-    assert resolve_forecast_history_entities(hass, data) == {}
+    assert resolve_forecast_history_entities(hass, "own_entry", data) == {}
 
 
 def test_resolve_forecast_history_entities_omits_solcast_for_a_nonexistent_config_entry(hass):
     data = {CONF_FORECAST_CONFIG_ENTRY_SOLCAST: "nonexistent"}
-    assert resolve_forecast_history_entities(hass, data) == {}
+    assert resolve_forecast_history_entities(hass, "own_entry", data) == {}
+
+
+async def test_resolve_forecast_history_entities_resolves_average_and_min_to_this_entrys_own_sensors(hass):
+    solcast_entry_id = register_provider_entities(hass, "solcast_solar", {"sensor.solcast_pv_forecast_power_now": {"unit": "W"}})
+    helios_entry_id = register_provider_entities(
+        hass, "helios_forecast", {"sensor.helios_power_now": {"forecast": [{"datetime": "x", "watts": 1}]}}
+    )
+    own_entry_id = "own_entry"
+    registry = er.async_get(hass)
+    registry.async_get_or_create("sensor", DOMAIN, f"{own_entry_id}_forecast_average_power_now", suggested_object_id="spf_average")
+    registry.async_get_or_create("sensor", DOMAIN, f"{own_entry_id}_forecast_min_power_now", suggested_object_id="spf_min")
+    data = {CONF_FORECAST_CONFIG_ENTRY_SOLCAST: solcast_entry_id, CONF_FORECAST_CONFIG_ENTRY_HELIOS: helios_entry_id}
+
+    result = resolve_forecast_history_entities(hass, own_entry_id, data)
+
+    assert result[FORECAST_PROVIDER_AVERAGE] == "sensor.spf_average"
+    assert result[FORECAST_PROVIDER_MIN] == "sensor.spf_min"
+
+
+async def test_resolve_forecast_history_entities_omits_average_and_min_with_only_one_provider(hass):
+    helios_entry_id = register_provider_entities(
+        hass, "helios_forecast", {"sensor.helios_power_now": {"forecast": [{"datetime": "x", "watts": 1}]}}
+    )
+    own_entry_id = "own_entry"
+    registry = er.async_get(hass)
+    registry.async_get_or_create("sensor", DOMAIN, f"{own_entry_id}_forecast_average_power_now", suggested_object_id="spf_average")
+    data = {CONF_FORECAST_CONFIG_ENTRY_HELIOS: helios_entry_id}
+
+    result = resolve_forecast_history_entities(hass, own_entry_id, data)
+
+    assert FORECAST_PROVIDER_AVERAGE not in result
+    assert FORECAST_PROVIDER_MIN not in result
 
 
 def test_theoretical_forecast_points_carries_percentiles(hass):
@@ -1728,6 +1761,56 @@ async def test_async_update_data_falls_back_from_average_when_only_one_provider_
     results = await coordinator._async_update_data()
 
     assert results[("lave_vaisselle", "Eco")].start is not None
+
+
+async def test_average_and_min_power_now_are_computed_regardless_of_the_active_selection(hass):
+    """average_forecast_power_now()/min_forecast_power_now() back always-on comparison sensors, so
+    they must reflect every *configured* provider even when a single real one (not "Average"/"Min")
+    is the active select choice.
+    """
+    now = dt_util.now()
+    solcast_entry_id = register_provider_entities(
+        hass, "solcast_solar", {"sensor.forecast_today": {"detailedForecast": [{"period_start": now, "pv_estimate": 1.0}]}}
+    )
+    helios_entry_id = _helios_entry(hass, watts=3000.0, at=now)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_FORECAST_CONFIG_ENTRY_SOLCAST: solcast_entry_id,
+            CONF_FORECAST_CONFIG_ENTRY_HELIOS: helios_entry_id,
+            CONF_MAX_SIMULTANEOUS_POWER: 4000,
+        },
+        options={},
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await coordinator.async_set_forecast_source(FORECAST_PROVIDER_SOLCAST)
+    await _flush(coordinator)
+
+    await coordinator._async_update_data()
+
+    # solcast: pv_estimate 1.0 kW -> 1000 W ; helios: 3000 W already -> mean 2000 W, min 1000 W.
+    assert coordinator.average_forecast_power_now() == 2000.0
+    assert coordinator.min_forecast_power_now() == 1000.0
+
+
+async def test_average_and_min_power_now_are_none_with_only_one_provider_configured(hass):
+    helios_entry_id = _helios_entry(hass)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_CONFIG_ENTRY_HELIOS: helios_entry_id, CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options={},
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await _flush(coordinator)
+
+    await coordinator._async_update_data()
+
+    assert coordinator.average_forecast_power_now() is None
+    assert coordinator.min_forecast_power_now() is None
 
 
 async def test_async_update_data_merges_points_from_every_discovered_solcast_entity(hass):

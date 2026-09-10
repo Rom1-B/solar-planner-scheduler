@@ -59,6 +59,7 @@ from .scheduling import (
     discover_power_levels,
     find_best_placement,
     instant_deficit_cost,
+    interpolate,
     min_forecast_points,
     phase_segments,
     resegment_power_trace,
@@ -404,25 +405,36 @@ def resolve_forecast_sources(data: dict) -> dict[str, list[str]]:
     return result
 
 
-def resolve_forecast_history_entities(hass: HomeAssistant, data: dict) -> dict[str, str]:
-    """Entity whose own state history reconstructs a provider's forecast curve before "now":
-    detailedForecast/forecast aren't kept by the recorder (verified live), but a provider's plain
-    "power now" sensor is, since it's just a simple numeric state. {provider: entity_id}, only for
-    providers where one was found. forecast_solar has no history-entity support: its data never
-    comes through an entity at all.
+def resolve_forecast_history_entities(hass: HomeAssistant, entry_id: str, data: dict) -> dict[str, str]:
+    """Entity whose own state history reconstructs a forecast curve before "now": detailedForecast/
+    forecast aren't kept by the recorder (verified live), but a provider's plain "power now" sensor
+    is, since it's just a simple numeric state. {provider: entity_id}, only for providers where one
+    was found. forecast_solar has no history-entity support: its data never comes through an entity
+    at all. "average"/"min" resolve to this entry's own AverageForecastPowerNowSensor/
+    MinForecastPowerNowSensor (sensor.py) instead of a raw provider entity, once 2+ providers are
+    configured — looked up by unique_id via the entity registry, not string-built, so a user rename
+    doesn't break the mapping.
     """
     resolved = resolve_forecast_sources(data)
+    registry = er.async_get(hass)
     result: dict[str, str] = {}
     if FORECAST_PROVIDER_HELIOS in resolved:
         entities = _discover_provider_entities(hass, resolved[FORECAST_PROVIDER_HELIOS][0], "forecast", "power")
         if entities:
             result[FORECAST_PROVIDER_HELIOS] = entities[0]
     if FORECAST_PROVIDER_SOLCAST in resolved:
-        registry = er.async_get(hass)
         for entry in er.async_entries_for_config_entry(registry, resolved[FORECAST_PROVIDER_SOLCAST][0]):
             if entry.entity_id.endswith("_power_now"):
                 result[FORECAST_PROVIDER_SOLCAST] = entry.entity_id
                 break
+    if len(resolved) >= 2:
+        for provider, unique_suffix in (
+            (FORECAST_PROVIDER_AVERAGE, "forecast_average_power_now"),
+            (FORECAST_PROVIDER_MIN, "forecast_min_power_now"),
+        ):
+            entity_id = registry.async_get_entity_id("sensor", DOMAIN, f"{entry_id}_{unique_suffix}")
+            if entity_id:
+                result[provider] = entity_id
     return result
 
 
@@ -483,6 +495,14 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         # confidence band. Initialized empty so theoretical_forecast_points() is safe to call
         # before the first successful _async_update_data().
         self._theoretical_points: list[dict] = []
+        # Instantaneous Average/Min across every *configured* provider, recomputed every cycle
+        # regardless of which one is actually selected in select.*_forecast_source — unlike
+        # theoretical_forecast_points() above (display-only, never recorded), these back
+        # AverageForecastPowerNowSensor/MinForecastPowerNowSensor so the recorder builds real,
+        # comparable history for them, the same way it already does for a raw provider's own
+        # "power now" sensor. None until 2+ providers are configured (see FORECAST_COMBINERS).
+        self._average_power_now: float | None = None
+        self._min_power_now: float | None = None
 
     def fixed_load_cost(self, name: str) -> float | None:
         """€ cost of a fixed load's daily window, or None if tariff tracking is off."""
@@ -494,6 +514,12 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             {"time": pt["time"].isoformat(), "w": pt["w"], "w10": pt["w10"], "w90": pt["w90"]}
             for pt in self._theoretical_points
         ]
+
+    def average_forecast_power_now(self) -> float | None:
+        return self._average_power_now
+
+    def min_forecast_power_now(self) -> float | None:
+        return self._min_power_now
 
     def active_forecast_source(self) -> str | None:
         """Provider chosen via select.<entry>_forecast_source, or None if never chosen — the
@@ -1033,16 +1059,28 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         valid_sources = set(resolved_sources) | (set(FORECAST_COMBINERS) if average_available else set())
         if active_source not in valid_sources:
             active_source = next(iter(resolved_sources), None)
+        # Fetched for every resolved provider regardless of which one is actually selected: cheap,
+        # since a provider's points come from hass.states (already cached) or a config_entry-keyed
+        # energy-platform hook, never a network call — and needed unconditionally for
+        # average_forecast_power_now()/min_forecast_power_now() below, not just the combiner branch.
+        provider_points = {p: await _read_provider_points(self.hass, resolved_sources, p) for p in resolved_sources}
         combiner = FORECAST_COMBINERS.get(active_source)
         if combiner:
-            points = combiner([await _read_provider_points(self.hass, resolved_sources, p) for p in resolved_sources])
+            points = combiner(list(provider_points.values()))
         elif active_source:
-            points = await _read_provider_points(self.hass, resolved_sources, active_source)
+            points = provider_points.get(active_source, [])
         else:
             points = []
         self._theoretical_points = points
 
         now = dt_util.now()
+        if average_available:
+            curves = list(provider_points.values())
+            self._average_power_now = interpolate(average_forecast_points(curves), now)
+            self._min_power_now = interpolate(min_forecast_points(curves), now)
+        else:
+            self._average_power_now = None
+            self._min_power_now = None
         # No live background-consumption estimate: only declared consumers are deducted.
         base_load = 0.0
 

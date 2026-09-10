@@ -6,7 +6,7 @@ what used to be a separate read-only sensor.
 
 from __future__ import annotations
 
-from homeassistant.components.sensor import SensorEntity, SensorStateClass
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -36,7 +36,14 @@ from .scheduling import price_at
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
     coordinator: SolarPlannerSchedulerCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([BaseConfigSensor(coordinator, entry), CurrentPriceSensor(coordinator, entry)])
+    async_add_entities(
+        [
+            BaseConfigSensor(coordinator, entry),
+            CurrentPriceSensor(coordinator, entry),
+            AverageForecastPowerNowSensor(coordinator, entry),
+            MinForecastPowerNowSensor(coordinator, entry),
+        ]
+    )
 
 
 class BaseConfigSensor(CoordinatorEntity[SolarPlannerSchedulerCoordinator], SensorEntity):
@@ -91,7 +98,7 @@ class BaseConfigSensor(CoordinatorEntity[SolarPlannerSchedulerCoordinator], Sens
             "fixed_loads": fixed_loads,
             "devices": devices,
             "theoretical_forecast": self.coordinator.theoretical_forecast_points(),
-            "forecast_history_entities": resolve_forecast_history_entities(self.coordinator.hass, data),
+            "forecast_history_entities": resolve_forecast_history_entities(self.coordinator.hass, self._entry.entry_id, data),
         }
 
 
@@ -122,3 +129,44 @@ class CurrentPriceSensor(CoordinatorEntity[SolarPlannerSchedulerCoordinator], Se
             return None
         tariff_bands = self._entry.data.get(CONF_TARIFF_BANDS, [])
         return price_at(dt_util.now(), tariff_bands)
+
+
+class _CombinedForecastPowerNowSensor(CoordinatorEntity[SolarPlannerSchedulerCoordinator], SensorEntity):
+    """Base for AverageForecastPowerNowSensor/MinForecastPowerNowSensor: unlike
+    theoretical_forecast_points() (a display-only snapshot, never recorded), these are always-on
+    plain numeric sensors so the recorder builds real history for them, comparable in something like
+    apexcharts-card against a raw provider's own "power now" sensor — combining every *configured*
+    provider regardless of which one is actually selected in select.*_forecast_source. None (not 0)
+    below 2 configured providers, where "Average"/"Min" are meaningless. Always created regardless of
+    provider count (matching CurrentPriceSensor's pattern for a disabled feature): the entity_id
+    must not appear/disappear as the user edits forecast provider settings.
+    """
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = "W"
+    _unique_id_suffix: str
+    _name_suffix: str
+
+    def __init__(self, coordinator: SolarPlannerSchedulerCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_{self._unique_id_suffix}"
+        self._attr_name = f"Solar Planner Scheduler {self._name_suffix}"
+
+
+class AverageForecastPowerNowSensor(_CombinedForecastPowerNowSensor):
+    _unique_id_suffix = "forecast_average_power_now"
+    _name_suffix = "forecast average power now"
+
+    @property
+    def native_value(self) -> float | None:
+        return self.coordinator.average_forecast_power_now()
+
+
+class MinForecastPowerNowSensor(_CombinedForecastPowerNowSensor):
+    _unique_id_suffix = "forecast_min_power_now"
+    _name_suffix = "forecast min power now"
+
+    @property
+    def native_value(self) -> float | None:
+        return self.coordinator.min_forecast_power_now()
