@@ -2367,3 +2367,34 @@ async def test_async_track_run_progress_bootstraps_a_multi_phase_profile_from_a_
 
     updated = coordinator.entry.options[CONF_DEVICES][0][CONF_PROGRAMS][0]
     assert updated[CONF_POWER_PROFILE] == [{"minutes": 10, "power_w": 1000}, {"minutes": 50, "power_w": 5}]
+
+
+async def test_the_per_minute_passes_degrade_gracefully_without_a_power_sensor(hass):
+    """Robustness check ahead of a HACS default-store submission: this project has only ever run
+    against one real install, which always has power_sensor set. A device configured without one
+    (_device_options()'s own default) must not crash either per-minute pass; detection/calibration
+    simply never has anything to latch onto.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options=_device_options(),
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    start = dt_util.now() - timedelta(minutes=5)
+    end = start + timedelta(minutes=30)
+    _seed_committed(coordinator, "lave_vaisselle", "Eco", DeviceSchedule("lave_vaisselle", start, end, 80))
+    await coordinator.async_set_program_active("lave_vaisselle", "Eco", True)
+    await _flush(coordinator)
+
+    await coordinator.async_check_power_detection(dt_util.now())
+    await coordinator.async_track_run_progress(dt_util.now())
+    await coordinator.async_track_run_progress(end)
+
+    committed = coordinator._get_committed("lave_vaisselle", "Eco")
+    assert committed["seen_running"] is False
+    state = coordinator._program_state("lave_vaisselle", "Eco")
+    assert state.get("phases_calibrated") is True
+    assert state.get("run_trace", []) == []
