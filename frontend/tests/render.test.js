@@ -813,7 +813,9 @@ test("switching the forecast source re-fetches history even within the 5-minute 
   card.setConfig({});
   card.hass = { themes: { darkMode: false }, callWS, states: statesWithSource("Solcast", "solcast") };
   await new Promise((r) => setTimeout(r, 10));
-  assert.equal(callCount, 2, "expected the first hass= to fetch both providers' history");
+  // Only the active provider's history is fetched, not every configured one: see the "faster card
+  // load, especially on a provider switch" optimization (2026-09-10).
+  assert.equal(callCount, 1, "expected the first hass= to fetch only the active provider's history");
   assert.ok(
     card._forecastHistoryPoints.every((p) => p.w === 100),
     `expected Solcast's history, got ${JSON.stringify(card._forecastHistoryPoints)}`
@@ -822,7 +824,7 @@ test("switching the forecast source re-fetches history even within the 5-minute 
   card.hass = { themes: { darkMode: false }, callWS, states: statesWithSource("Helios Forecast", "helios_forecast") };
   await new Promise((r) => setTimeout(r, 10));
 
-  assert.equal(callCount, 4, "expected switching source to trigger a second fetch, not reuse the stale one");
+  assert.equal(callCount, 2, "expected switching source to trigger a second fetch, not reuse the stale one");
   assert.ok(
     card._forecastHistoryPoints.every((p) => p.w === 300),
     `expected Helios's history after switching, got ${JSON.stringify(card._forecastHistoryPoints)}`

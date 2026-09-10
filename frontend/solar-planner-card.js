@@ -281,13 +281,19 @@ class SolarPlannerCard extends HTMLElement {
   set hass(hass) {
     // The forecast-history curve (unlike the live theoretical curve, re-read fresh every render)
     // is only computed inside _refresh()'s async fetch+combine: a source switch within the 5-minute
-    // throttle window must force a real _refresh(), not just _requestRender() reusing stale history.
+    // throttle window must force a real fetch, not just _requestRender() reusing stale history.
     const previousSource = this._hass?.states["select.solar_planner_scheduler_forecast_source"]?.state;
     const sourceChanged = previousSource !== hass.states["select.solar_planner_scheduler_forecast_source"]?.state;
     this._hass = hass;
     if (!this._config) return;
-    if (sourceChanged || !this._lastRefresh || Date.now() - this._lastRefresh > REFRESH_INTERVAL_MS) {
+    if (!this._lastRefresh || Date.now() - this._lastRefresh > REFRESH_INTERVAL_MS) {
       this._refresh();
+      return;
+    }
+    if (sourceChanged) {
+      // Production/consumption don't depend on the forecast provider: a mid-throttle source switch
+      // only needs the (cheaper) forecast-history refetch, not a full _refresh().
+      this._refreshForecastHistory().then(() => this._requestRender());
       return;
     }
     const sig = this._relevantSignature();
@@ -400,16 +406,46 @@ class SolarPlannerCard extends HTMLElement {
     return smoothCurve(raw, SMOOTH_BUCKET_MS, start, end);
   }
 
+  _historyWindow() {
+    const now = new Date();
+    // Matches the chart's own display window, so the actual/consumption curves don't truncate
+    // at midnight while the forecast/gantt already show further back.
+    const chartHoursPast = this._config.chart_hours_past ?? 6;
+    return { now, historyStart: new Date(now.getTime() - chartHoursPast * 3600000) };
+  }
+
+  // Only fetches the provider(s) the current selection actually needs: a single fetch for a plain
+  // provider selection, every configured provider only when Average/Min needs them combined.
+  async _refreshForecastHistory() {
+    const base = this._baseConfig();
+    const { now, historyStart } = this._historyWindow();
+    const historyEntities = Object.entries(base.forecast_history_entities);
+    if (!historyEntities.length) {
+      this._forecastHistoryPoints = [];
+      return;
+    }
+    const activeProvider = this._hass.states["select.solar_planner_scheduler_forecast_source"]?.attributes?.provider;
+    const combiner = activeProvider === "average" ? averageForecastPoints : activeProvider === "min" ? minForecastPoints : null;
+    const neededEntities = combiner ? historyEntities : historyEntities.filter(([provider]) => provider === activeProvider);
+    const curves = await Promise.all(
+      neededEntities.map(([provider, entityId]) =>
+        this._fetchHistory(entityId, historyStart, now).then((pts) => ({
+          provider,
+          points: smoothCurve(pts, SMOOTH_BUCKET_MS, historyStart, now).map((p) => ({ time: p.time, w: p.value, w10: p.value, w90: p.value })),
+        }))
+      )
+    );
+    this._forecastHistoryPoints = combiner
+      ? combiner(curves.map((c) => c.points))
+      : curves.find((c) => c.provider === activeProvider)?.points || [];
+  }
+
   async _refresh() {
     if (!this._hass || !this._config) return;
     this._lastRefresh = Date.now();
 
     const base = this._baseConfig();
-    const now = new Date();
-    // Matches the chart's own display window, so the actual/consumption curves don't truncate
-    // at midnight while the forecast/gantt already show further back.
-    const chartHoursPast = this._config.chart_hours_past ?? 6;
-    const historyStart = new Date(now.getTime() - chartHoursPast * 3600000);
+    const { now, historyStart } = this._historyWindow();
     const jobs = [];
     if (base.production_entity) {
       jobs.push(
@@ -433,27 +469,7 @@ class SolarPlannerCard extends HTMLElement {
       this._consumptionPoints = [];
       this._consumptionCurve = [];
     }
-    const historyEntities = Object.entries(base.forecast_history_entities);
-    if (historyEntities.length) {
-      const activeProvider = this._hass.states["select.solar_planner_scheduler_forecast_source"]?.attributes?.provider;
-      const combiner = activeProvider === "average" ? averageForecastPoints : activeProvider === "min" ? minForecastPoints : null;
-      jobs.push(
-        Promise.all(
-          historyEntities.map(([provider, entityId]) =>
-            this._fetchHistory(entityId, historyStart, now).then((pts) => ({
-              provider,
-              points: smoothCurve(pts, SMOOTH_BUCKET_MS, historyStart, now).map((p) => ({ time: p.time, w: p.value, w10: p.value, w90: p.value })),
-            }))
-          )
-        ).then((curves) => {
-          this._forecastHistoryPoints = combiner
-            ? combiner(curves.map((c) => c.points))
-            : curves.find((c) => c.provider === activeProvider)?.points || [];
-        })
-      );
-    } else {
-      this._forecastHistoryPoints = [];
-    }
+    jobs.push(this._refreshForecastHistory());
     await Promise.all(jobs);
     this._requestRender();
   }
