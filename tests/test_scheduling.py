@@ -24,6 +24,7 @@ from custom_components.solar_planner_scheduler.scheduling import (
     resegment_power_trace,
     schedule_proposals,
     snap_to_grid,
+    weighted_average_forecast_points,
 )
 
 DAY = datetime(2026, 1, 15, tzinfo=UTC)
@@ -688,3 +689,28 @@ def test_min_forecast_points_takes_the_minimum_of_three_curves():
     b = [{"time": t(8, 0), "w": 100, "w10": 100, "w90": 100}]
     c = [{"time": t(8, 0), "w": 200, "w10": 200, "w90": 200}]
     assert min_forecast_points([a, b, c]) == [{"time": t(8, 0), "w": 100, "w10": 100, "w90": 100}]
+
+
+def test_weighted_average_forecast_points_full_weight_returns_the_primary_curve():
+    primary = [{"time": t(8, 0), "w": 100, "w10": 80, "w90": 120}]
+    secondary = [{"time": t(8, 0), "w": 300, "w10": 260, "w90": 340}]
+    assert weighted_average_forecast_points(primary, 1.0, secondary) == primary
+
+
+def test_weighted_average_forecast_points_zero_weight_returns_the_secondary_curve():
+    primary = [{"time": t(8, 0), "w": 100, "w10": 80, "w90": 120}]
+    secondary = [{"time": t(8, 0), "w": 300, "w10": 260, "w90": 340}]
+    assert weighted_average_forecast_points(primary, 0.0, secondary) == secondary
+
+
+def test_weighted_average_forecast_points_half_weight_averages_both_curves():
+    primary = [{"time": t(8, 0), "w": 100, "w10": 80, "w90": 120}]
+    secondary = [{"time": t(8, 0), "w": 300, "w10": 260, "w90": 340}]
+    assert weighted_average_forecast_points(primary, 0.5, secondary) == [
+        {"time": t(8, 0), "w": 200.0, "w10": 170.0, "w90": 230.0}
+    ]
+
+
+def test_weighted_average_forecast_points_returns_the_only_non_empty_curve_unweighted():
+    secondary = [{"time": t(8, 0), "w": 300, "w10": 260, "w90": 340}]
+    assert weighted_average_forecast_points([], 0.5, secondary) == secondary

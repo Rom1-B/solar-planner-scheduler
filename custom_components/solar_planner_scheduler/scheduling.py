@@ -98,6 +98,16 @@ def min_forecast_points(curves: Sequence[Sequence[dict]]) -> list[dict]:
     return _combine_curves(curves, min)
 
 
+def weighted_average_forecast_points(primary: Sequence[dict], primary_weight: float, secondary: Sequence[dict]) -> list[dict]:
+    """Convex combination of exactly two forecast curves (see _combine_curves): primary_weight in
+    [0, 1] is primary's share, secondary gets the complement. Always bounded by the two curves at
+    every point, unlike average_forecast_points()/min_forecast_points()'s N-ary form. Used by the
+    "Weighted" forecast source mode (Helios+Solcast only), where primary_weight comes from Helios's
+    own live reliability score.
+    """
+    return _combine_curves([primary, secondary], lambda values: values[0] * primary_weight + values[1] * (1 - primary_weight))
+
+
 def phase_segments(item: dict) -> list[dict]:
     """Breaks an item into absolute-time phase segments; no profile means one flat segment."""
     profile = item.get("profile")

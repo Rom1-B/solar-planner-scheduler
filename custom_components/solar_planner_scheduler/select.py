@@ -13,10 +13,20 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, FORECAST_PROVIDER_LABELS
+from .const import (
+    DOMAIN,
+    FORECAST_PROVIDER_HELIOS,
+    FORECAST_PROVIDER_LABELS,
+    FORECAST_PROVIDER_SOLCAST,
+    FORECAST_PROVIDER_WEIGHTED,
+)
 from .coordinator import FORECAST_COMBINERS, SolarPlannerSchedulerCoordinator, resolve_forecast_sources
 
-_PROVIDER_LABELS = {**FORECAST_PROVIDER_LABELS, "average": "Average", "min": "Min"}
+_PROVIDER_LABELS = {**FORECAST_PROVIDER_LABELS, "average": "Average", "min": "Min", "weighted": "Weighted"}
+
+
+def _weighted_available(resolved) -> bool:
+    return FORECAST_PROVIDER_SOLCAST in resolved and FORECAST_PROVIDER_HELIOS in resolved
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
@@ -41,11 +51,17 @@ class ForecastSourceSelect(CoordinatorEntity[SolarPlannerSchedulerCoordinator], 
         labels = [_PROVIDER_LABELS.get(p, p) for p in resolved]
         if len(resolved) >= 2:
             labels += [_PROVIDER_LABELS[c] for c in FORECAST_COMBINERS]
+        if _weighted_available(resolved):
+            labels.append(_PROVIDER_LABELS[FORECAST_PROVIDER_WEIGHTED])
         return labels
 
     def _resolved_active_provider(self) -> str | None:
         resolved = resolve_forecast_sources(self._entry.data)
-        valid = set(resolved) | (set(FORECAST_COMBINERS) if len(resolved) >= 2 else set())
+        valid = (
+            set(resolved)
+            | (set(FORECAST_COMBINERS) if len(resolved) >= 2 else set())
+            | ({FORECAST_PROVIDER_WEIGHTED} if _weighted_available(resolved) else set())
+        )
         active = self.coordinator.active_forecast_source()
         if active not in valid:
             active = next(iter(resolved), None)

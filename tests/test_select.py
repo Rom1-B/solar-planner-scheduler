@@ -13,6 +13,7 @@ from custom_components.solar_planner_scheduler.const import (
     FORECAST_PROVIDER_HELIOS,
     FORECAST_PROVIDER_MIN,
     FORECAST_PROVIDER_SOLCAST,
+    FORECAST_PROVIDER_WEIGHTED,
 )
 from custom_components.solar_planner_scheduler.coordinator import SolarPlannerSchedulerCoordinator
 from custom_components.solar_planner_scheduler.select import ForecastSourceSelect
@@ -35,14 +36,38 @@ def _set_up_select(
 
 async def test_options_lists_every_combiner_last_when_both_solcast_and_helios_resolved(hass):
     select, _ = _set_up_select(hass, [FORECAST_PROVIDER_SOLCAST, FORECAST_PROVIDER_HELIOS])
-    assert select.options == ["Solcast", "Helios Forecast", "Average", "Min"]
+    assert select.options == ["Solcast", "Helios Forecast", "Average", "Min", "Weighted"]
 
 
 async def test_options_lists_forecast_solar_alongside_the_other_two_providers(hass):
     select, _ = _set_up_select(
         hass, [FORECAST_PROVIDER_SOLCAST, FORECAST_PROVIDER_HELIOS, FORECAST_PROVIDER_FORECAST_SOLAR]
     )
-    assert select.options == ["Solcast", "Helios Forecast", "Forecast.Solar", "Average", "Min"]
+    assert select.options == ["Solcast", "Helios Forecast", "Forecast.Solar", "Average", "Min", "Weighted"]
+
+
+async def test_options_excludes_weighted_without_both_solcast_and_helios(hass):
+    select, _ = _set_up_select(hass, [FORECAST_PROVIDER_HELIOS, FORECAST_PROVIDER_FORECAST_SOLAR])
+    assert select.options == ["Helios Forecast", "Forecast.Solar", "Average", "Min"]
+
+
+async def test_current_option_falls_back_when_stored_weighted_is_no_longer_valid(hass):
+    select, coordinator = _set_up_select(hass, [FORECAST_PROVIDER_HELIOS])
+    await coordinator.async_load_state()
+    await coordinator.async_set_forecast_source(FORECAST_PROVIDER_WEIGHTED)
+    await coordinator.async_shutdown()
+
+    assert select.current_option == "Helios Forecast"
+
+
+async def test_async_select_option_stores_the_weighted_provider(hass):
+    select, coordinator = _set_up_select(hass, [FORECAST_PROVIDER_SOLCAST, FORECAST_PROVIDER_HELIOS])
+    await coordinator.async_load_state()
+
+    await select.async_select_option("Weighted")
+    await coordinator.async_shutdown()
+
+    assert coordinator.active_forecast_source() == FORECAST_PROVIDER_WEIGHTED
 
 
 async def test_async_select_option_stores_the_forecast_solar_provider(hass):

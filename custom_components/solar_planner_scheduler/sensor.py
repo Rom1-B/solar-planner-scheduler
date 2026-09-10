@@ -42,6 +42,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             CurrentPriceSensor(coordinator, entry),
             AverageForecastPowerNowSensor(coordinator, entry),
             MinForecastPowerNowSensor(coordinator, entry),
+            WeightedForecastPowerNowSensor(coordinator, entry),
         ]
     )
 
@@ -170,3 +171,16 @@ class MinForecastPowerNowSensor(_CombinedForecastPowerNowSensor):
     @property
     def native_value(self) -> float | None:
         return self.coordinator.min_forecast_power_now()
+
+
+class WeightedForecastPowerNowSensor(_CombinedForecastPowerNowSensor):
+    """Helios+Solcast only, weighted by Helios's own live reliability score: None unless both are
+    configured, unlike Average/Min which only need 2+ of any provider.
+    """
+
+    _unique_id_suffix = "forecast_weighted_power_now"
+    _name_suffix = "forecast weighted power now"
+
+    @property
+    def native_value(self) -> float | None:
+        return self.coordinator.weighted_forecast_power_now()

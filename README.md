@@ -15,8 +15,9 @@ Forecast](https://github.com/ReikanYsora/Helios-Forecast), or the built-in
 [Forecast.Solar](https://www.home-assistant.io/integrations/forecast_solar/) integration. All
 three are picked by their config entry (not by hand-selecting an entity): the actual forecast data
 is discovered automatically from there. In the integration's base settings, fill in the field(s)
-matching whichever you have — several, if you want to switch between them from the card without
-reopening the config, or blend them ("Average"/"Min").
+matching whichever you have: several, if you want to switch between them from the card without
+reopening the config, or blend them ("Average"/"Min", and "Weighted" once both Solcast and Helios
+Forecast are configured).
 
 ## Installation
 
@@ -68,18 +69,22 @@ Per (device, program) pair: `datetime.<device>_<program>_start`,
 
 `select.solar_planner_scheduler_forecast_source` picks which configured provider drives
 scheduling; if two are configured it also offers "Average" (mean of both) and "Min" (the more
-pessimistic of the two).
+pessimistic of the two). With both Solcast and Helios Forecast configured, it also offers
+"Weighted": Helios and Solcast blended by Helios's own live `forecast_reliability` score (0-100%,
+one hour update cadence, coming from Helios itself), so the blend leans on Solcast until Helios has
+learned enough of the site to trust its own correction.
 
 `sensor.solar_planner_scheduler_current_price` exposes the live €/kWh price (when tariff tracking
 is enabled), usable as the Energy dashboard's "current price" source for grid-consumption cost.
 
-`sensor.solar_planner_scheduler_forecast_average_power_now`/`..._forecast_min_power_now` expose the
-instantaneous Average/Min across every *configured* provider (regardless of which one is currently
-selected in `select.solar_planner_scheduler_forecast_source`), `None` with fewer than 2 providers
-configured. Unlike the card's own forecast curve, these are plain recorded sensors, so their
-history can be compared against a raw provider's own "power now" sensor (e.g. in an
-apexcharts-card `series` entry) or against real production, the same way any other sensor's history
-would be.
+`sensor.solar_planner_scheduler_forecast_average_power_now`/`..._forecast_min_power_now`/
+`..._forecast_weighted_power_now` expose the instantaneous Average/Min/Weighted across every
+*configured* provider (regardless of which one is currently selected in
+`select.solar_planner_scheduler_forecast_source`); `None` with fewer than 2 providers configured
+(Weighted additionally needs Solcast and Helios specifically). Unlike the card's own forecast
+curve, these are plain recorded sensors, so their history can be compared against a raw provider's
+own "power now" sensor (e.g. in an apexcharts-card `series` entry) or against real production, the
+same way any other sensor's history would be.
 
 The integration never turns a device on/off itself. Two examples:
 

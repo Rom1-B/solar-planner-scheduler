@@ -27,6 +27,7 @@ from custom_components.solar_planner_scheduler.sensor import (
     BaseConfigSensor,
     CurrentPriceSensor,
     MinForecastPowerNowSensor,
+    WeightedForecastPowerNowSensor,
 )
 from tests.conftest import register_provider_entities
 
@@ -152,3 +153,19 @@ async def test_min_forecast_power_now_sensor_reads_the_coordinators_computed_val
 
     assert sensor.native_value == 456.0
     assert sensor.unique_id == f"{entry.entry_id}_forecast_min_power_now"
+
+
+async def test_weighted_forecast_power_now_sensor_reads_the_coordinators_computed_value(hass):
+    coordinator, entry = _set_up_forecast_power_now_entry(hass)
+    coordinator._weighted_power_now = 789.0
+    sensor = WeightedForecastPowerNowSensor(coordinator, entry)
+
+    assert sensor.native_value == 789.0
+    assert sensor.unique_id == f"{entry.entry_id}_forecast_weighted_power_now"
+
+
+async def test_weighted_forecast_power_now_sensor_is_none_without_both_solcast_and_helios(hass):
+    coordinator, entry = _set_up_forecast_power_now_entry(hass)
+    sensor = WeightedForecastPowerNowSensor(coordinator, entry)
+
+    assert sensor.native_value is None
