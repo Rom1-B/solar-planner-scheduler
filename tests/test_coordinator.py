@@ -490,6 +490,22 @@ def test_reusable_committed_keeps_showing_an_elapsed_slot_on_the_same_day(hass):
     assert dormant is False
 
 
+def test_reusable_committed_keeps_showing_an_elapsed_slot_even_if_duration_was_recalibrated(hass):
+    """A post-run phase calibration commonly rewrites duration_min right after a run finishes —
+    that must not itself trigger a same-day reschedule of a program that already ran."""
+    coordinator = _coordinator(hass)
+    now = datetime(2026, 8, 30, 9, 13, tzinfo=UTC)
+    start = now - timedelta(minutes=40)
+    end = start + timedelta(minutes=30)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
+
+    slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", {}, 45, now, [])
+
+    assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False, "cost": None, "savings": None, "seen_running": False}
+    assert should_search is False
+    assert dormant is False
+
+
 def test_reusable_committed_stays_in_progress_for_a_slot_crossing_midnight(hass):
     """A slot started yesterday (e.g. 23:30) and still running past midnight must not be treated
     as a day rollover mid-run — the in-progress check must win over the date comparison.

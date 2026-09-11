@@ -772,30 +772,37 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         failed_to_start=True only for the "power sensor never showed it running" unlock, to track
         a repair-worthy streak.
 
-        A changed duration always forces should_search. A rolled-over day re-searches only if
-        today is an auto_day, else goes dormant — but only once the slot has actually elapsed, so
-        an overnight slot crossing midnight (see NIGHT_EXTENSION_HOURS) isn't cut off mid-run.
-        Reusing an imminent/in-progress slot instead of re-searching every cycle avoids the "best
-        start" sliding forward and never arriving.
+        A changed duration forces should_search for a slot that hasn't fully elapsed yet — but
+        never for one that already has (same-day or a dormant non-auto-day after rollover): a
+        post-run phase calibration (_apply_phase_calibration) commonly rewrites duration_min right
+        after a run finishes, and the run already happened, so there's nothing left to redo. A
+        rolled-over day re-searches only if today is an auto_day, else goes dormant — but only
+        once the slot has actually elapsed, so an overnight slot crossing midnight (see
+        NIGHT_EXTENSION_HOURS) isn't cut off mid-run. Reusing an imminent/in-progress slot instead
+        of re-searching every cycle avoids the "best start" sliding forward and never arriving.
         """
         committed = self._get_committed(device_name, program_name)
         if committed is None:
             return None, False, True, False, False
         locked_duration = (committed["end"] - committed["start"]).total_seconds() / 60
-        if abs(locked_duration - duration_min) > 0.01:
-            return None, False, True, False, False  # the program's own definition changed — fresh choice
+        duration_changed = abs(locked_duration - duration_min) > 0.01
         if now >= committed["start"]:
             if now < committed["end"]:
                 # In progress — even overnight, this is never a day rollover.
                 if not committed["forced"] and self._failed_to_start(device, committed, now, idle_threshold):
                     return None, False, True, False, True  # unlock: recompute instead of waiting forever
+                if duration_changed:
+                    return None, False, True, False, False  # the program's own definition changed — fresh choice
                 return committed, committed["forced"], False, False, False
             if committed["start"].date() != now.date():
                 if WEEKDAYS[now.weekday()] in auto_days:
                     return None, False, True, False, False  # an auto-day: keep the recurring schedule going
                 return None, False, False, True, False  # not an auto-day: dormant until the selection changes
-            # Elapsed but still the day it started: keep showing it until the calendar day rolls over.
+            # Elapsed but still the day it started: keep showing it until the calendar day rolls
+            # over, even if a post-run calibration changed duration_min in the meantime.
             return committed, committed["forced"], False, False, False
+        if duration_changed:
+            return None, False, True, False, False  # the program's own definition changed — fresh choice
         if committed["forced"] or committed["start"] - now <= timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES):
             return committed, committed["forced"], False, False, False
         return None, False, True, False, False
