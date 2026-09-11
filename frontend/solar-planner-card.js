@@ -194,6 +194,10 @@ class SolarPlannerCard extends HTMLElement {
     this._consumptionCurve = [];
     this._forecastHistoryPoints = [];
     this._forecastSourcePending = false;
+    // Slugs currently waiting on a service call that awaits a full coordinator refresh
+    // (toggle active, force a start time, reset to auto): same "looks frozen" risk as the
+    // forecast-source switch above, one flag per row instead of one global flag.
+    this._pendingSlugs = new Set();
     this._lastRefresh = 0;
     this._lastSignature = null;
     // Drag state, not re-rendered per pointermove (see _bindGanttDrag).
@@ -561,13 +565,31 @@ class SolarPlannerCard extends HTMLElement {
     };
   }
 
+  // Shared wrapper: every action below writes to the coordinator's store then awaits a full
+  // async_request_refresh() server-side before its service call resolves (same shape as the
+  // forecast-source switch), so the row looks frozen for that whole round trip without this.
+  async _withRowPending(slug, action) {
+    this._pendingSlugs.add(slug);
+    this._render();
+    try {
+      await action();
+    } finally {
+      this._pendingSlugs.delete(slug);
+      this._render();
+    }
+  }
+
   async _onToggleActive(slug, nextActive) {
-    await this._hass.callService("switch", nextActive ? "turn_on" : "turn_off", { entity_id: `switch.${slug}_active` });
+    await this._withRowPending(slug, () =>
+      this._hass.callService("switch", nextActive ? "turn_on" : "turn_off", { entity_id: `switch.${slug}_active` }),
+    );
   }
 
   // Shared write path for the manual time input and gantt-bar drag.
   async _setForcedStart(slug, date) {
-    await this._hass.callService("datetime", "set_value", { entity_id: `datetime.${slug}_start`, datetime: date.toISOString() });
+    await this._withRowPending(slug, () =>
+      this._hass.callService("datetime", "set_value", { entity_id: `datetime.${slug}_start`, datetime: date.toISOString() }),
+    );
   }
 
   async _onManualTime(slug, timeValue) {
@@ -581,7 +603,9 @@ class SolarPlannerCard extends HTMLElement {
   }
 
   async _onAutoMode(slug) {
-    await this._hass.callService("solar_planner_scheduler", "reset_to_auto", { entity_id: `datetime.${slug}_start` });
+    await this._withRowPending(slug, () =>
+      this._hass.callService("solar_planner_scheduler", "reset_to_auto", { entity_id: `datetime.${slug}_start` }),
+    );
   }
 
   async _onForecastSourceChange(option) {
@@ -881,9 +905,10 @@ class SolarPlannerCard extends HTMLElement {
       .map((group) => {
         const rows = group.rows
           .map(({ ds, i }) => {
+            const rowPending = this._pendingSlugs.has(ds.slug);
             const slot = ds.active
-              ? `<input type="time" class="slot-time" data-device="${ds.slug}" value="${ds.start ? fmtTime(ds.start) : ""}">
-                ${ds.locked ? `<button class="auto-btn" data-device="${ds.slug}">Auto</button>` : ""}
+              ? `<input type="time" class="slot-time" data-device="${ds.slug}" value="${ds.start ? fmtTime(ds.start) : ""}" ${rowPending ? "disabled" : ""}>
+                ${ds.locked ? `<button class="auto-btn" data-device="${ds.slug}" ${rowPending ? "disabled" : ""}>Auto</button>` : ""}
                 ${
                   ds.coveragePct != null
                     ? `<span class="coverage-pct ${ds.coveragePct >= 100 ? "coverage-good" : "coverage-low"}">${ds.coveragePct}% solar</span>`
@@ -905,9 +930,10 @@ class SolarPlannerCard extends HTMLElement {
                     : ""
                 }`
               : "";
-            return `<div class="program-row">
+            return `<div class="program-row${rowPending ? " pending" : ""}">
               <span class="swatch" style="background:${deviceColor(i)}"></span>
-              <button class="program-toggle ${ds.active ? "active" : ""}" data-row="${ds.slug}" data-active="${ds.active}">${ds.programName}</button>
+              <button class="program-toggle ${ds.active ? "active" : ""}" data-row="${ds.slug}" data-active="${ds.active}" ${rowPending ? "disabled" : ""}>${ds.programName}</button>
+              ${rowPending ? `<ha-icon class="row-spinner" icon="mdi:loading"></ha-icon>` : ""}
               ${ds.shouldRun ? `<ha-icon class="running-icon" icon="mdi:play-circle" title="Currently running"></ha-icon>` : ""}
               ${slot}
             </div>`;
@@ -1069,6 +1095,8 @@ class SolarPlannerCard extends HTMLElement {
         table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 0.85em; }
         th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--divider-color); }
         .row-started { opacity: 0.5; }
+        .program-row.pending { opacity: 0.5; transition: opacity 0.15s; }
+        .row-spinner { --mdc-icon-size: 16px; color: var(--primary-color); animation: chart-spinner-spin 1s linear infinite; }
         .chart-scroll.pending { opacity: 0.4; pointer-events: none; transition: opacity 0.15s; }
         .chart-wrap { position: relative; }
         .chart-spinner { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 1; --mdc-icon-size: 32px; color: var(--primary-color); animation: chart-spinner-spin 1s linear infinite; }

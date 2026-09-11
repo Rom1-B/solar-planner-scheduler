@@ -1396,6 +1396,31 @@ test("the pending dim clears once a forecast-source switch actually completes", 
   assert.doesNotMatch(card.shadowRoot.innerHTML, /class="chart-spinner"/, "expected the spinner cleared too");
 });
 
+test("toggling a program dims that row and shows a spinner before the switch resolves", async () => {
+  // async_set_program_active awaits a full coordinator refresh server-side before the switch
+  // service call resolves (same shape as the forecast-source switch above): without immediate
+  // feedback the row looks frozen for that whole round trip, easily mistaken for the click not
+  // having registered at all.
+  const card = buildCard({ withActiveSelections: false });
+  let resolveCall;
+  card._hass.callService = () => new Promise((resolve) => (resolveCall = resolve));
+
+  const togglePromise = card._onToggleActive("lave_linge", true);
+  await new Promise((r) => setTimeout(r, 0)); // let the synchronous _render() before the await land
+
+  let html = card.shadowRoot.innerHTML;
+  assert.match(html, /class="program-row pending"/, "expected the toggled row dimmed while the switch is in flight");
+  assert.match(html, /data-row="lave_linge"[^>]*disabled/, "expected the toggle button disabled while in flight");
+  assert.match(html, /class="row-spinner"/, "expected a spinner next to the pending row");
+
+  resolveCall();
+  await togglePromise;
+
+  html = card.shadowRoot.innerHTML;
+  assert.doesNotMatch(html, /class="program-row pending"/, "expected the dim cleared once the switch resolved");
+  assert.doesNotMatch(html, /class="row-spinner"/, "expected the spinner cleared too");
+});
+
 test("activating a program calls switch.turn_on with the right entity", async () => {
   const card = buildCard({ withActiveSelections: false });
   const calls = [];

@@ -240,6 +240,17 @@ def _coordinator(hass) -> SolarPlannerSchedulerCoordinator:
     return SolarPlannerSchedulerCoordinator(hass, entry)
 
 
+def test_request_refresh_debouncer_uses_a_short_cooldown_not_the_ten_second_default(hass):
+    """DataUpdateCoordinator's own async_request_refresh() defaults to a 10s cooldown, tuned for a
+    coordinator guarding an expensive/rate-limited external call. Ours only reads hass.states and
+    runs a fast in-memory search, so a user action landing inside that window would otherwise wait
+    for the trailing debounced call instead of getting a fresh result — see REQUEST_REFRESH_COOLDOWN_SECONDS.
+    """
+    coordinator = _coordinator(hass)
+    assert coordinator._debounced_refresh.cooldown < 10
+    assert coordinator._debounced_refresh.immediate is True
+
+
 # --- _tariff_bands() ----------------------------------------------------------------------------
 
 

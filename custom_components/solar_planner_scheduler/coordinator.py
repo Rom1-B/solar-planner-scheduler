@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
@@ -86,6 +87,12 @@ _LOGGER = logging.getLogger(__name__)
 # (HA restart, options change), which would drop the lock and selection. Writing here never
 # reloads the entry, so picking a program or forcing a start doesn't flicker every entity.
 STORAGE_VERSION = 1
+
+# DataUpdateCoordinator's own async_request_refresh() default (10s, immediate=True) is tuned for
+# coordinators guarding an expensive/rate-limited external call: ours only ever reads hass.states
+# and a fast in-memory search (no network I/O), so a user action landing just inside that 10s
+# window would otherwise wait for the trailing debounced call instead of getting a fresh result.
+REQUEST_REFRESH_COOLDOWN_SECONDS = 1
 
 # One failed_to_start unlock is normal (startup lag); this many in a row means it never started.
 # At DEFAULT_UPDATE_INTERVAL_MINUTES (5 min) this is ~15 min of grace before raising a Repair.
@@ -276,7 +283,15 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
     """Polls the configured entities and recomputes each active program's best slot for today."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
-        super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES))
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=DOMAIN,
+            update_interval=timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES),
+            request_refresh_debouncer=Debouncer(
+                hass, _LOGGER, cooldown=REQUEST_REFRESH_COOLDOWN_SECONDS, immediate=True
+            ),
+        )
         self.entry = entry
         self._store = Store(hass, STORAGE_VERSION, f"{DOMAIN}_{entry.entry_id}")
         self._state: dict[str, dict] = {}
