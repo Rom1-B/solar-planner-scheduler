@@ -19,6 +19,7 @@ from custom_components.solar_planner_scheduler.scheduling import (
     instant_deficit_cost,
     instant_deficit_savings,
     instant_deficit_wh,
+    interpolate,
     min_forecast_points,
     phase_segments,
     price_at,
@@ -741,3 +742,49 @@ def test_weighted_average_forecast_points_half_weight_averages_both_curves():
 def test_weighted_average_forecast_points_returns_the_only_non_empty_curve_unweighted():
     secondary = [{"time": t(8, 0), "w": 300, "w10": 260, "w90": 340}]
     assert weighted_average_forecast_points([], 0.5, secondary) == secondary
+
+
+def _interpolate_linear_reference(points, query_t):
+    """The pre-2026-09-11 implementation: a plain O(n) linear scan. Kept only here, as the
+    reference interpolate() is now checked against to prove the bisect rewrite (real production
+    bottleneck: ~10s per cycle on a 672-point curve, see CLAUDE.local.md) changed nothing observable.
+    """
+    if not points:
+        return 0.0
+    if query_t <= points[0]["time"]:
+        return points[0]["w"]
+    last = points[-1]
+    if query_t >= last["time"]:
+        return last["w"]
+    for a, b in zip(points, points[1:]):
+        if a["time"] <= query_t <= b["time"]:
+            span = (b["time"] - a["time"]).total_seconds()
+            ratio = (query_t - a["time"]).total_seconds() / span if span else 0.0
+            return a["w"] + (b["w"] - a["w"]) * ratio
+    return 0.0
+
+
+def test_interpolate_bisect_matches_the_old_linear_scan_on_random_curves():
+    """interpolate() switched from a linear scan to bisect_left for performance (a curve with
+    hundreds of points, combined via _combine_curves() across several union timestamps and
+    fields, made this the dominant cost of a whole coordinator cycle on a real instance). Compares
+    against the original O(n) implementation across randomized curves and query times, including
+    duplicate timestamps and exact matches, not just a hand-picked happy path.
+    """
+    import random
+
+    rng = random.Random(42)
+    for _ in range(200):
+        n = rng.randint(1, 50)
+        start = DAY + timedelta(minutes=rng.randint(-60, 60))
+        times = sorted(start + timedelta(minutes=rng.randint(0, 500)) for _ in range(n))
+        # Occasionally duplicate a timestamp, since a real curve's union can carry ties.
+        if n > 2 and rng.random() < 0.3:
+            dup_idx = rng.randint(1, n - 1)
+            times[dup_idx] = times[dup_idx - 1]
+        points = [{"time": ts, "w": rng.uniform(-100, 5000)} for ts in times]
+        for _ in range(10):
+            query_t = start + timedelta(minutes=rng.randint(-100, 600))
+            expected = _interpolate_linear_reference(points, query_t)
+            actual = interpolate(points, query_t)
+            assert actual == pytest.approx(expected), (n, query_t, points)

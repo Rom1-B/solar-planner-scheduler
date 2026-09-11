@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 import statistics
+from bisect import bisect_left
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -46,6 +47,11 @@ def snap_to_grid(dt: datetime, step_ms: int = DRAG_SNAP_MS) -> datetime:
 
 
 def interpolate(points: Sequence[dict], t: datetime) -> float:
+    """points must be sorted by "time" ascending (every caller already reads/builds them that
+    way): bisect_left finds the same bracketing pair a linear scan would have stopped at first,
+    in O(log n) instead of O(n) — load-bearing once a curve reaches a few hundred points (e.g.
+    _combine_curves() calling this once per union timestamp per field per curve).
+    """
     if not points:
         return 0.0
     if t <= points[0]["time"]:
@@ -53,12 +59,12 @@ def interpolate(points: Sequence[dict], t: datetime) -> float:
     last = points[-1]
     if t >= last["time"]:
         return last["w"]
-    for a, b in zip(points, points[1:]):
-        if a["time"] <= t <= b["time"]:
-            span = (b["time"] - a["time"]).total_seconds()
-            ratio = (t - a["time"]).total_seconds() / span if span else 0.0
-            return a["w"] + (b["w"] - a["w"]) * ratio
-    return 0.0
+    i = bisect_left(points, t, key=lambda p: p["time"])
+    b = points[i]
+    a = points[i - 1]
+    span = (b["time"] - a["time"]).total_seconds()
+    ratio = (t - a["time"]).total_seconds() / span if span else 0.0
+    return a["w"] + (b["w"] - a["w"]) * ratio
 
 
 def _combine_curves(curves: Sequence[Sequence[dict]], reduce_fn) -> list[dict]:
