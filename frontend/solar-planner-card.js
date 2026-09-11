@@ -638,6 +638,10 @@ class SolarPlannerCard extends HTMLElement {
     const colors = dark ? COLORS.dark : COLORS.light;
     const deviceColorList = dark ? DEVICE_COLORS.dark : DEVICE_COLORS.light;
     const deviceColor = (index) => deviceColorList[index % deviceColorList.length];
+    // Any in-flight row action dims the chart too, not just its own row: the gantt bars are what
+    // the user is actually watching for the result of the click, and were otherwise showing no
+    // feedback at all while _pendingSlugs was non-empty.
+    const chartPending = this._forecastSourcePending || this._pendingSlugs.size > 0;
 
     if (!points) {
       this.shadowRoot.innerHTML = `<ha-card><div style="padding:16px;color:var(--error-color)">
@@ -1136,8 +1140,8 @@ class SolarPlannerCard extends HTMLElement {
         ${
           this._showChart
             ? `<div class="chart-wrap">
-          ${this._forecastSourcePending ? `<ha-icon class="chart-spinner" icon="mdi:loading"></ha-icon>` : ""}
-          <div class="chart-scroll${this._forecastSourcePending ? " pending" : ""}">
+          ${chartPending ? `<ha-icon class="chart-spinner" icon="mdi:loading"></ha-icon>` : ""}
+          <div class="chart-scroll${chartPending ? " pending" : ""}">
           <svg class="chart" viewBox="0 0 ${width} ${height}" style="width: ${chartWidthPercent}%">
             ${wTicks.join("")}
             ${hourTicks.join("")}

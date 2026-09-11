@@ -295,6 +295,16 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         self.entry = entry
         self._store = Store(hass, STORAGE_VERSION, f"{DOMAIN}_{entry.entry_id}")
         self._state: dict[str, dict] = {}
+        # Set by any per-program mutation made *inside* a _async_update_data() cycle
+        # (_set_committed/_record_standby_sample/_note_failed_to_start/the dormant-deactivation
+        # branch), flushed to the Store exactly once at the end of that cycle instead of once per
+        # call: Store.async_save() always serializes the *entire* state dict regardless of how much
+        # changed, and _schedule_devices() recomputes every active program on every cycle, so
+        # without batching a single user action could trigger several redundant full-state disk
+        # writes in a row. Actions outside a cycle (async_set_program_active and friends, called
+        # directly by services before requesting a refresh) still save immediately: each is already
+        # a single write on its own.
+        self._store_dirty = False
         # Recomputed every _async_update_data() cycle, never persisted — same "always derived,
         # never stale-cached across restarts" choice as `results` itself.
         self._fixed_load_costs: dict[str, float] = {}
@@ -476,7 +486,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         state["run_trace"] = []
         state["phases_calibrated"] = False
         self._state.setdefault(device_name, {})[program_name] = state
-        await self._store.async_save(self._state)
+        self._store_dirty = True
 
     def _current_power(self, power_sensor: str | None) -> float | None:
         if not power_sensor:
@@ -501,7 +511,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         """
         samples = [*self._standby_samples(device_name), power][-STANDBY_SAMPLE_COUNT:]
         self._state.setdefault("standby", {})[device_name] = samples
-        await self._store.async_save(self._state)
+        self._store_dirty = True
 
     def _learned_standby(self, device_name: str) -> float | None:
         """Median of the last STANDBY_SAMPLE_COUNT known-idle readings, or None until
@@ -754,7 +764,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         if failed:
             streak += 1
             self._state.setdefault(device_name, {})[program_name] = {**existing, "failed_start_streak": streak}
-            await self._store.async_save(self._state)
+            self._store_dirty = True
             if streak >= FAILED_TO_START_REPAIR_THRESHOLD:
                 ir.async_create_issue(
                     self.hass,
@@ -767,7 +777,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                 )
         elif streak:
             self._state.setdefault(device_name, {})[program_name] = {**existing, "failed_start_streak": 0}
-            await self._store.async_save(self._state)
+            self._store_dirty = True
             ir.async_delete_issue(self.hass, DOMAIN, issue_id)
 
     def _reusable_committed(
@@ -1053,7 +1063,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                             "active": False,
                             "active_set_on": now.date().isoformat(),
                         }
-                        await self._store.async_save(self._state)
+                        self._store_dirty = True
                     continue
                 if should_search:
                     if points:
@@ -1134,4 +1144,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
 
         results, committed = await self._schedule_devices(options, now, points, base_load, max_power, fixed_loads)
         self._compute_fixed_load_costs(data, fixed_loads, committed, points, base_load)
+        if self._store_dirty:
+            await self._store.async_save(self._state)
+            self._store_dirty = False
         return results

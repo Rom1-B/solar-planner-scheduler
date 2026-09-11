@@ -1412,6 +1412,10 @@ test("toggling a program dims that row and shows a spinner before the switch res
   assert.match(html, /class="program-row pending"/, "expected the toggled row dimmed while the switch is in flight");
   assert.match(html, /data-row="lave_linge"[^>]*disabled/, "expected the toggle button disabled while in flight");
   assert.match(html, /class="row-spinner"/, "expected a spinner next to the pending row");
+  // The gantt bars are what the user is actually watching for the result of the click: a row-only
+  // spinner left the chart itself looking exactly as frozen as before this fix.
+  assert.match(html, /class="chart-scroll pending"/, "expected the chart dimmed too while a row action is in flight");
+  assert.match(html, /class="chart-spinner"/, "expected a spinner over the dimmed chart");
 
   resolveCall();
   await togglePromise;
@@ -1419,6 +1423,7 @@ test("toggling a program dims that row and shows a spinner before the switch res
   html = card.shadowRoot.innerHTML;
   assert.doesNotMatch(html, /class="program-row pending"/, "expected the dim cleared once the switch resolved");
   assert.doesNotMatch(html, /class="row-spinner"/, "expected the spinner cleared too");
+  assert.doesNotMatch(html, /class="chart-scroll pending"/, "expected the chart dim cleared too");
 });
 
 test("activating a program calls switch.turn_on with the right entity", async () => {

@@ -1981,6 +1981,75 @@ async def test_two_active_programs_of_the_same_device_never_get_overlapping_slot
     assert eco.end <= chemises.start or chemises.end <= eco.start
 
 
+async def test_a_single_update_cycle_batches_multiple_program_commits_into_one_store_save(hass):
+    """_schedule_devices() calls _set_committed() once per freshly-searched active program in the
+    same cycle, and Store.async_save() always serializes the *whole* state dict regardless of how
+    much changed: without batching, one refresh with several active programs would trigger several
+    redundant full-state disk writes for a single user action. Reuses the same two-active-programs
+    setup as the same-device exclusion test above, since both programs get a fresh search (and
+    their own _set_committed()) in this one cycle.
+    """
+    now = dt_util.now()
+    solcast_entry_id = register_provider_entities(
+        hass,
+        "solcast_solar",
+        {
+            "sensor.forecast": {
+                "detailedForecast": [
+                    {"period_start": now + timedelta(minutes=i * 5), "pv_estimate": 1.0} for i in range(24 * 12)
+                ]
+            }
+        },
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_CONFIG_ENTRY_SOLCAST: solcast_entry_id, CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options={
+            CONF_DEVICES: [
+                {
+                    CONF_NAME: "lave_linge",
+                    CONF_PROGRAMS: [
+                        {
+                            CONF_NAME: "Eco coton",
+                            CONF_POWER_PROFILE: [{"minutes": 30, "power_w": 100}],
+                            CONF_DURATION_MIN: 30,
+                            CONF_AUTO_DAYS: [],
+                        },
+                        {
+                            CONF_NAME: "5 chemises",
+                            CONF_POWER_PROFILE: [{"minutes": 30, "power_w": 100}],
+                            CONF_DURATION_MIN: 30,
+                            CONF_AUTO_DAYS: [],
+                        },
+                    ],
+                }
+            ]
+        },
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_linge", "Eco coton", True)
+    await coordinator.async_set_program_active("lave_linge", "5 chemises", True)
+    await _flush(coordinator)
+
+    save_calls = 0
+    real_save = coordinator._store.async_save
+
+    async def counting_save(data):
+        nonlocal save_calls
+        save_calls += 1
+        await real_save(data)
+
+    coordinator._store.async_save = counting_save
+
+    results = await coordinator._async_update_data()
+
+    assert results[("lave_linge", "Eco coton")].start is not None
+    assert results[("lave_linge", "5 chemises")].start is not None
+    assert save_calls == 1
+
+
 async def test_activating_a_program_avoids_a_sibling_committed_in_an_earlier_cycle(hass):
     """Regression: hit live on 2026-09-01. Activating "5 chemises" alone first (its own
     `_async_update_data()` cycle, "Eco coton" still inactive) commits it to a slot. Activating
