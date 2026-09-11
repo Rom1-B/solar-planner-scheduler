@@ -1305,6 +1305,7 @@ test("selecting a new forecast source dims the chart and disables the select bef
   let html = card.shadowRoot.innerHTML;
   assert.match(html, /class="chart-scroll pending"/, "expected the chart dimmed while the switch is in flight");
   assert.match(html, /id="forecast-source-select" disabled/, "expected the select disabled while the switch is in flight");
+  assert.match(html, /class="chart-spinner"/, "expected a loading spinner over the dimmed chart");
 
   resolveCall();
   await changePromise;
@@ -1340,12 +1341,14 @@ test("the pending dim clears once a forecast-source switch actually completes", 
   card._showChart = true;
   card._render();
   assert.match(card.shadowRoot.innerHTML, /class="chart-scroll pending"/);
+  assert.match(card.shadowRoot.innerHTML, /class="chart-spinner"/, "expected the spinner while pending");
 
   card.hass = { themes: { darkMode: false }, callWS, states: statesWithSource("Helios Forecast", "helios_forecast") };
   await new Promise((r) => setTimeout(r, 10));
 
   assert.equal(card._forecastSourcePending, false, "expected the switch's own refresh to clear the pending flag");
   assert.doesNotMatch(card.shadowRoot.innerHTML, /class="chart-scroll pending"/);
+  assert.doesNotMatch(card.shadowRoot.innerHTML, /class="chart-spinner"/, "expected the spinner cleared too");
 });
 
 test("activating a program calls switch.turn_on with the right entity", async () => {

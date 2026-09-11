@@ -1066,6 +1066,9 @@ class SolarPlannerCard extends HTMLElement {
         th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--divider-color); }
         .row-started { opacity: 0.5; }
         .chart-scroll.pending { opacity: 0.4; pointer-events: none; transition: opacity 0.15s; }
+        .chart-wrap { position: relative; }
+        .chart-spinner { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 1; --mdc-icon-size: 32px; color: var(--primary-color); animation: chart-spinner-spin 1s linear infinite; }
+        @keyframes chart-spinner-spin { from { transform: translate(-50%, -50%) rotate(0deg); } to { transform: translate(-50%, -50%) rotate(360deg); } }
       </style>
       <ha-card>
         <div class="header">
@@ -1100,7 +1103,9 @@ class SolarPlannerCard extends HTMLElement {
         </div>
         ${
           this._showChart
-            ? `<div class="chart-scroll${this._forecastSourcePending ? " pending" : ""}">
+            ? `<div class="chart-wrap">
+          ${this._forecastSourcePending ? `<ha-icon class="chart-spinner" icon="mdi:loading"></ha-icon>` : ""}
+          <div class="chart-scroll${this._forecastSourcePending ? " pending" : ""}">
           <svg class="chart" viewBox="0 0 ${width} ${height}" style="width: ${chartWidthPercent}%">
             ${wTicks.join("")}
             ${hourTicks.join("")}
@@ -1124,6 +1129,7 @@ class SolarPlannerCard extends HTMLElement {
           <svg class="gantt" viewBox="0 0 ${width} ${ganttHeight}" style="width: ${chartWidthPercent}%">${laneBars.join(
                 ""
               )}<line x1="${nowX}" y1="0" x2="${nowX}" y2="${ganttHeight}" class="now-line"/><g class="drag-pct-group" style="opacity:0" pointer-events="none"><rect class="drag-pct-bg" width="60" height="14" rx="2"/><text class="drag-pct" x="30" y="10.5" text-anchor="middle"></text></g></svg>
+        </div>
         </div>
         ${deviceRows}
         ${fixedLoadsLegend}
