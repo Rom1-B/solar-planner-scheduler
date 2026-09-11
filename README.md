@@ -1,4 +1,4 @@
-# Solar Planner Scheduler
+# 🔆 Solar Planner Scheduler
 
 Home Assistant integration that schedules devices around your solar forecast and shows them on a
 bundled Lovelace card. Example: tell it your washing machine takes 2h, and it picks the best
@@ -7,19 +7,18 @@ cheapest, solar or off-peak grid).
 
 ![Solar Planner card](docs/card.png)
 
-## Requirements
+## 📋 Requirements
 
-A solar forecast already set up in Home Assistant, from a supported provider:
-[Solcast](https://github.com/BJReplay/ha-solcast-solar), [Helios
-Forecast](https://github.com/ReikanYsora/Helios-Forecast), or the built-in
-[Forecast.Solar](https://www.home-assistant.io/integrations/forecast_solar/) integration. All
-three are picked by their config entry (not by hand-selecting an entity): the actual forecast data
-is discovered automatically from there. In the integration's base settings, fill in the field(s)
-matching whichever you have: several, if you want to switch between them from the card without
-reopening the config, or blend them ("Average"/"Min", and "Weighted" once both Solcast and Helios
-Forecast are configured).
+A solar forecast already set up in Home Assistant, from one of these:
 
-## Installation
+- [Solcast](https://github.com/BJReplay/ha-solcast-solar)
+- [Helios Forecast](https://github.com/ReikanYsora/Helios-Forecast)
+- the built-in [Forecast.Solar](https://www.home-assistant.io/integrations/forecast_solar/)
+
+You can set up several: the card then lets you switch between them, or blend them ("Average",
+"Min", and "Weighted" if you have both Solcast and Helios Forecast).
+
+## 📦 Installation
 
 Via HACS (custom repository, not yet in the default store):
 
@@ -31,62 +30,43 @@ Via HACS (custom repository, not yet in the default store):
 Or manually: copy `custom_components/solar_planner_scheduler/` into your HA
 `config/custom_components/`, restart, then add the integration the same way.
 
-## Configuration
+## ⚙️ Configuration
 
 Initial setup asks for the shared entities (forecast, forecast tomorrow, max simultaneous power).
 Devices, programs and fixed loads are managed via "Configure":
 
-- **Device**: name + optional power sensor, used to detect when a program actually starts and to
-  learn its real phases over time. "Manage a device" then opens a menu scoped to that one device
-  (edit its power sensor, add/edit/remove its programs).
-- **Program**: from a device's own menu, name it, then list its phases, i.e. its power draw over
-  time, one line per step (e.g. a washing machine: `20min@150W` to heat, then `1.5h@800W` to spin),
-  and optionally check which days it should auto-repeat on. Rough values are fine: with a power
-  sensor set, the integration corrects a program's phases automatically from its real power draw
-  after each run, averaged over the last N runs (7 by default, tunable per program; `0` disables
-  it). A device can have several programs active at once;
-  `switch.<device>_<program>_active` turns each one on or off.
-- **Fixed load**: something that also draws power but that this integration can't move or
-  control (a pool pump, a fridge cycle), so it's just subtracted from available solar capacity
-  when scheduling everything else.
-- **Tariffs** (optional): enable tariff tracking, set price bands (`HH:MM@price`, one per line, e.g.
-  `22:00@0.1589`). Slot selection always minimizes estimated
-  cost, falling back to solar coverage when tracking is off; the real price only shows once enabled.
+- **Device**: name plus an optional power sensor, used to detect when a program starts and to
+  fine-tune its phases automatically over time. "Manage a device" opens a menu to edit it or
+  add/edit/remove its programs.
+- **Program**: list its phases (power draw over time), one per line, e.g. `20min@150W` then
+  `1.5h@800W` for a washing machine's heat-then-spin cycle. Rough values are fine: with a power
+  sensor set, the integration corrects them automatically from real runs. Pick which days it
+  should auto-run on. A device can have several programs active at once, each with its own
+  `switch.<device>_<program>_active`.
+- **Fixed load**: something that draws power but that you don't control (a pool pump, a fridge).
+  It's just subtracted from available solar when scheduling everything else.
+- **Tariffs** (optional): enable tracking and set price bands (`HH:MM@price`, one per line). Once
+  enabled, scheduling always picks the cheapest window instead of just the sunniest one.
 
-Turning a program on searches for today's best slot immediately, extending up to 6h past midnight
-to reach an overnight tariff band. Once it has run, it repeats on a later day only if that day is
-checked in its auto-schedule days; a program with no auto-schedule days turns itself back off once
-that run is over, since nothing would ever turn it on again on its own. Programs with auto-schedule
-days turn on by default and stay on to keep coming back on their next scheduled day.
+Turning a program on searches for today's best slot right away. It repeats on later days only if
+you checked those days in its auto-schedule; without any, it turns itself off after that one run.
 
 `datetime.<device>_<program>_start` shows the next start time. Drag its bar on the card, or edit
-the entity directly, to force a time. Click "Auto" to cancel a forced time and search again.
+the entity, to force a time. Click "Auto" to cancel a forced time and search again.
 
-## Entities
+## 🔌 Entities
 
 Per (device, program) pair: `datetime.<device>_<program>_start`,
 `binary_sensor.<device>_<program>_should_run`, `switch.<device>_<program>_active`.
 
-`select.solar_planner_scheduler_forecast_source` picks which configured provider drives
-scheduling; if two are configured it also offers "Average" (mean of both) and "Min" (the more
-pessimistic of the two). With both Solcast and Helios Forecast configured, it also offers
-"Weighted": Helios and Solcast blended by Helios's own live `forecast_reliability` score (0-100%,
-one hour update cadence, coming from Helios itself), so the blend leans on Solcast until Helios has
-learned enough of the site to trust its own correction.
+`select.solar_planner_scheduler_forecast_source` picks which forecast drives scheduling. With two
+or more providers configured, it also offers blended options ("Average", "Min", and "Weighted" for
+Solcast + Helios Forecast).
 
-`sensor.solar_planner_scheduler_current_price` exposes the live €/kWh price (when tariff tracking
-is enabled), usable as the Energy dashboard's "current price" source for grid-consumption cost.
+`sensor.solar_planner_scheduler_current_price` exposes the live €/kWh price (with tariff tracking
+on), usable as the Energy dashboard's cost source for grid consumption.
 
-`sensor.solar_planner_scheduler_forecast_average_power_now`/`..._forecast_min_power_now`/
-`..._forecast_weighted_power_now` expose the instantaneous Average/Min/Weighted across every
-*configured* provider (regardless of which one is currently selected in
-`select.solar_planner_scheduler_forecast_source`); `None` with fewer than 2 providers configured
-(Weighted additionally needs Solcast and Helios specifically). Unlike the card's own forecast
-curve, these are plain recorded sensors, so their history can be compared against a raw provider's
-own "power now" sensor (e.g. in an apexcharts-card `series` entry) or against real production, the
-same way any other sensor's history would be.
-
-The integration never turns a device on/off itself. Two examples:
+The integration never turns a device on or off itself. Pair it with an automation:
 
 1. A device HA controls directly: start it when `should_run` turns on.
 
@@ -125,7 +105,7 @@ automation:
 
 Change `900` (15 minutes, in seconds) to whatever lead time you want.
 
-## The bundled card
+## 📊 The bundled card
 
 Served and registered automatically, no separate install.
 
@@ -146,39 +126,9 @@ chart_hours_future: 24  # optional, default 24 (hours shown after now)
 chart_visible_hours: 30 # optional, default chart_hours_past + chart_hours_future (no scroll)
 ```
 
-`production_entity`/`consumption_entity` are card config, not integration config: display only
-(the actual/consumption lines on the chart), never read for scheduling. Repeat them in every card
-instance that should show those curves.
+`production_entity`/`consumption_entity` only affect what's drawn on the chart, not scheduling:
+set them per card instance if you want those curves.
 
-Each section has its own toggle icon in the card itself; `chart_expanded`/`table_expanded`
-only set which state it starts in. The table's Window column shows a countdown to a future start
-(e.g. `08:30 - 10:00 (in 2h15m)`). `chart_hours_past`/`chart_hours_future` control the chart/gantt's
-fixed display window around the current time; they're display-only and don't affect scheduling.
-`chart_visible_hours` sets how many of those hours fit on screen before the chart scrolls
-horizontally: leave it unset (or equal to `chart_hours_past + chart_hours_future`) to always fit
-the whole window without scrolling, or set it smaller (e.g. to widen `chart_hours_future` to cover
-several days while still seeing only one day at a time by default).
-
-Note: the theoretical forecast is never archived server-side, but the chart extends the forecast
-line before "now" using the provider's own "power now" sensor history (found automatically, no
-config needed) when Home Assistant's recorder has it; otherwise the line starts at "now".
-
-## Development
-
-```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/ruff check .        # Python lint
-.venv/bin/pytest tests/       # Python tests
-cd frontend && npm ci
-npm run lint                  # JS lint
-npm test                      # JS tests
-```
-
-CI runs both suites, both linters, plus `hassfest` and HACS validation. `./scripts/check-ci.sh`
-reproduces them locally.
-
-## Releasing
-
-Bump `version` in `custom_components/solar_planner_scheduler/manifest.json` and push to `main`.
-CI tags that version and creates a matching GitHub release.
-
+Each section (chart, table) has its own toggle in the card; `chart_expanded`/`table_expanded` just
+set the starting state. `chart_hours_past`/`chart_hours_future` control the visible time window;
+`chart_visible_hours` limits how much of it fits on screen before scrolling.
