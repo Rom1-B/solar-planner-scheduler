@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import statistics
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -916,10 +917,19 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         # since a provider's points come from hass.states (already cached) or a config_entry-keyed
         # energy-platform hook, never a network call: and needed unconditionally for
         # average_forecast_power_now()/min_forecast_power_now() below, not just the combiner branch.
-        provider_points = {p: await _read_provider_points(self.hass, resolved_sources, p) for p in resolved_sources}
+        # TEMP TIMING (2026-09-11, round 2): bracket each provider's own read individually, plus the
+        # rest of the function, to isolate exactly which sub-step accounts for resolve_points' ~10s.
+        provider_points = {}
+        for p in resolved_sources:
+            t_provider_start = time.perf_counter()
+            provider_points[p] = await _read_provider_points(self.hass, resolved_sources, p)
+            _LOGGER.warning("TEMP TIMING _read_provider_points[%s]: %.3fs", p, time.perf_counter() - t_provider_start)
+        t_weight_start = time.perf_counter()
         helios_weight = (
             _helios_reliability_weight(self.hass, resolved_sources[FORECAST_PROVIDER_HELIOS][0]) if weighted_available else 0.0
         )
+        _LOGGER.warning("TEMP TIMING _helios_reliability_weight: %.3fs", time.perf_counter() - t_weight_start)
+        t_combine_start = time.perf_counter()
         combiner = FORECAST_COMBINERS.get(active_source)
         if active_source == FORECAST_PROVIDER_WEIGHTED and weighted_available:
             points = weighted_average_forecast_points(
@@ -931,6 +941,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             points = provider_points.get(active_source, [])
         else:
             points = []
+        _LOGGER.warning("TEMP TIMING combine_points: %.3fs", time.perf_counter() - t_combine_start)
         if points:
             # A transient empty result (e.g. a provider not up yet right after an HA restart, or a
             # momentary state hiccup) must not blank a chart that already had a real curve: keep
@@ -939,6 +950,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             # is configured at all, both already correctly represented by an untouched [].
             self._theoretical_points = points
 
+        t_powernow_start = time.perf_counter()
         if average_available:
             curves = list(provider_points.values())
             self._average_power_now = interpolate(average_forecast_points(curves), now)
@@ -957,6 +969,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             self._average_power_now = None
             self._weighted_power_now = None
             self._min_power_now = None
+        _LOGGER.warning("TEMP TIMING power_now_sensors: %.3fs", time.perf_counter() - t_powernow_start)
         return points
 
     async def _schedule_devices(
