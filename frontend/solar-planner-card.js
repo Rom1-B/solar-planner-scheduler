@@ -434,6 +434,10 @@ class SolarPlannerCard extends HTMLElement {
   async _refresh() {
     if (!this._hass || !this._config) return;
     this._lastRefresh = Date.now();
+    // Render once immediately with whatever's already cached (schedule/theoretical forecast come
+    // straight from hass.states, no fetch needed) instead of leaving the card blank/stale until
+    // the 3 history-recorder round trips below resolve; _render() below refreshes it once they do.
+    this._requestRender();
 
     const { now, historyStart } = this._historyWindow();
     const jobs = [];

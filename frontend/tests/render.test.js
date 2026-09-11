@@ -835,6 +835,51 @@ test("_refresh fetches and stores the active provider's forecast history", async
   );
 });
 
+test("_refresh renders the schedule immediately, before the history fetches resolve", async () => {
+  // Regression: _refresh() used to await Promise.all(jobs) before ever calling _render(), so the
+  // card stayed blank (first load) or stale (periodic refresh) for however long the 3 history
+  // round trips take, even though the schedule/theoretical forecast come straight from hass.states
+  // and need no fetch at all.
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const card = new Card();
+  card.setConfig(baseConfig());
+  let resolveWS;
+  card._hass = {
+    themes: { darkMode: false },
+    callWS: () => new Promise((resolve) => (resolveWS = resolve)),
+    states: {
+      ...BASE_CONFIG_ENTITY,
+      ...configEntityWithForecast(buildForecast(dayStart)),
+      ...deviceEntities("lave_linge", {
+        name: "Lave-linge",
+        start: new Date(Date.now() + 10 * 60000),
+        end: new Date(Date.now() + 130 * 60000),
+        powerW: 1800,
+        coveragePct: 67,
+      }),
+    },
+  };
+  setDevicesAttr(card, singleProgramDevices(["lave_linge"], { names: { lave_linge: "Lave-linge" } }));
+  setForecastHistoryEntities(card, { solcast: "sensor.solcast_power_now" });
+  card._hass.states["select.solar_planner_scheduler_forecast_source"] = {
+    state: "Solcast",
+    attributes: { options: ["Solcast"], provider: "solcast" },
+  };
+
+  const refreshPromise = card._refresh();
+  await new Promise((r) => setTimeout(r, 0)); // let the synchronous render before the awaited fetches land
+
+  assert.match(
+    card.shadowRoot.innerHTML,
+    /67% solar/,
+    "expected the schedule rendered immediately, without waiting on the history fetches"
+  );
+
+  resolveWS({});
+  await refreshPromise;
+});
+
 test("switching the forecast source re-fetches history even within the 5-minute refresh throttle", async () => {
   // Regression for a live bug: set hass() only calls the throttled _refresh() (the sole place that
   // fetches forecast history) when REFRESH_INTERVAL_MS has elapsed; a source switch shortly after
