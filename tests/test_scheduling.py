@@ -17,6 +17,7 @@ from custom_components.solar_planner_scheduler.scheduling import (
     find_best_placement,
     find_peak_conflicts,
     instant_deficit_cost,
+    instant_deficit_savings,
     instant_deficit_wh,
     min_forecast_points,
     phase_segments,
@@ -390,6 +391,32 @@ def test_instant_deficit_cost_converts_wh_deficit_to_euros_at_the_active_price()
     cost = instant_deficit_cost(item_segments, [], points, 0, start, end, tariff_bands)
     # 1000 W deficit for 1h = 1 kWh, at 0.25 EUR/kWh.
     assert cost == pytest.approx(0.25)
+
+
+def test_instant_deficit_savings_prices_the_solar_covered_share_of_the_run():
+    start = t(10, 0)
+    end = t(11, 0)
+    points = [{"time": start, "w": 500}, {"time": end, "w": 500}]
+    item_segments = phase_segments({"power_w": 1500, "start": start, "end": end})
+    tariff_bands = [{"start": "00:00", "price": 0.25}]
+    savings = instant_deficit_savings(item_segments, [], points, 0, start, end, tariff_bands)
+    # 500 W covered by solar for 1h = 0.5 kWh, at 0.25 EUR/kWh.
+    assert savings == pytest.approx(0.125)
+
+
+def test_deficit_cost_and_savings_add_up_to_the_full_grid_only_cost():
+    """cost (deficit share) + savings (solar-covered share) must equal what the run would have
+    cost had it drawn 100% from the grid — the two are a strict partition of the same total.
+    """
+    start = t(10, 0)
+    end = t(11, 0)
+    points = [{"time": start, "w": 500}, {"time": end, "w": 500}]
+    item_segments = phase_segments({"power_w": 1500, "start": start, "end": end})
+    tariff_bands = [{"start": "00:00", "price": 0.25}]
+    cost = instant_deficit_cost(item_segments, [], points, 0, start, end, tariff_bands)
+    savings = instant_deficit_savings(item_segments, [], points, 0, start, end, tariff_bands)
+    # 1500 W for 1h = 1.5 kWh, at 0.25 EUR/kWh.
+    assert cost + savings == pytest.approx(1.5 * 0.25)
 
 
 def test_find_best_placement_prefers_lower_tariff_cost_over_higher_solar_coverage():

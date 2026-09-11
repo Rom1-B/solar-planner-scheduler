@@ -523,6 +523,7 @@ class SolarPlannerCard extends HTMLElement {
           start,
           end,
           estimatedCost: load.estimated_cost ?? null,
+          estimatedSavings: load.estimated_savings ?? null,
           currency: load.currency ?? null,
         });
       }
@@ -551,6 +552,7 @@ class SolarPlannerCard extends HTMLElement {
       profile: attrs.profile ?? null,
       active: active?.state === "on",
       estimatedCost: attrs.estimated_cost ?? null,
+      estimatedSavings: attrs.estimated_savings ?? null,
       currency: attrs.currency ?? null,
     };
   }
@@ -862,6 +864,7 @@ class SolarPlannerCard extends HTMLElement {
     });
 
     const unplaced = deviceStates.filter((ds) => ds.active && !ds.start);
+    const costDisplay = this._config.cost_display ?? "cost";
 
     // Groups consecutive rows sharing a device so the name shows once, not per program.
     const deviceGroups = [];
@@ -883,8 +886,13 @@ class SolarPlannerCard extends HTMLElement {
                     : ""
                 }
                 ${
-                  ds.estimatedCost != null
+                  ds.estimatedCost != null && costDisplay !== "savings"
                     ? `<span class="estimated-cost">~${ds.estimatedCost.toFixed(2)} ${ds.currency ?? ""}</span>`
+                    : ""
+                }
+                ${
+                  ds.estimatedSavings != null && costDisplay !== "cost"
+                    ? `<span class="estimated-savings">~${ds.estimatedSavings.toFixed(2)} ${ds.currency ?? ""} saved</span>`
                     : ""
                 }
                 ${
@@ -928,6 +936,7 @@ class SolarPlannerCard extends HTMLElement {
           // A profile has no single flat powerW, so sum each phase's own minutes*power_w instead.
           energyWh: ds.profile ? ds.profile.reduce((s, p) => s + (p.minutes * p.power_w) / 60, 0) : (ds.powerW * durationMin) / 60,
           estimatedCost: ds.estimatedCost,
+          estimatedSavings: ds.estimatedSavings,
           currency: ds.currency,
         };
       });
@@ -951,7 +960,8 @@ class SolarPlannerCard extends HTMLElement {
       return true;
     });
     const showEnergyColumn = this._config.table_show_energy !== false;
-    const showCostColumn = this._config.table_show_cost !== false;
+    const showCostColumn = this._config.table_show_cost !== false && costDisplay !== "savings";
+    const showSavingsColumn = this._config.table_show_cost !== false && costDisplay !== "cost";
     const tableRows = dedupedTableRows
       .map((p) => {
         // Same "Tomorrow" then weekday-name convention as the chart's day-boundary ticks, not a
@@ -974,6 +984,7 @@ class SolarPlannerCard extends HTMLElement {
           }</td>
           ${showEnergyColumn ? `<td>${fmtWh(p.energyWh)}</td>` : ""}
           ${showCostColumn ? `<td>${p.estimatedCost != null ? `~${p.estimatedCost.toFixed(2)} ${p.currency ?? ""}` : "-"}</td>` : ""}
+          ${showSavingsColumn ? `<td>${p.estimatedSavings != null ? `~${p.estimatedSavings.toFixed(2)} ${p.currency ?? ""}` : "-"}</td>` : ""}
         </tr>`;
       })
       .join("");
@@ -1042,6 +1053,7 @@ class SolarPlannerCard extends HTMLElement {
         .coverage-pct.coverage-good { color: var(--success-color, #4caf50); }
         .coverage-pct.coverage-low { color: var(--warning-color, #fab219); }
         .estimated-cost { font-size: 0.8em; font-weight: 500; color: var(--secondary-text-color); }
+        .estimated-savings { font-size: 0.8em; font-weight: 500; color: var(--success-color, #4caf50); }
         .countdown { font-size: 0.8em; color: var(--secondary-text-color); }
         .warnings { margin-top: 10px; font-size: 0.85em; color: var(--warning-color, #fab219); }
         .warnings div { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
@@ -1132,7 +1144,7 @@ class SolarPlannerCard extends HTMLElement {
         </div>
         ${
           this._showTable
-            ? `<table><thead><tr><th>Device</th><th>Window</th>${showEnergyColumn ? "<th>Energy</th>" : ""}${showCostColumn ? "<th>Cost</th>" : ""}</tr></thead><tbody>${tableRows}</tbody></table>`
+            ? `<table><thead><tr><th>Device</th><th>Window</th>${showEnergyColumn ? "<th>Energy</th>" : ""}${showCostColumn ? "<th>Cost</th>" : ""}${showSavingsColumn ? "<th>Savings</th>" : ""}</tr></thead><tbody>${tableRows}</tbody></table>`
             : ""
         }
       </ha-card>`;

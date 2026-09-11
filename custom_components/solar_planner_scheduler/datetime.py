@@ -21,6 +21,7 @@ from .const import (
     ATTR_CURRENCY,
     ATTR_END,
     ATTR_ESTIMATED_COST,
+    ATTR_ESTIMATED_SAVINGS,
     ATTR_LOCKED,
     ATTR_POWER_W,
     ATTR_PROFILE,
@@ -74,6 +75,7 @@ class StartTimeDateTime(CoordinatorEntity[SolarPlannerSchedulerCoordinator], Dat
         }
         if schedule.estimated_cost is not None:
             attributes[ATTR_ESTIMATED_COST] = schedule.estimated_cost
+            attributes[ATTR_ESTIMATED_SAVINGS] = schedule.estimated_savings
             attributes[ATTR_CURRENCY] = self.hass.config.currency
         return attributes
 

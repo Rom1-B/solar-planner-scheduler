@@ -432,7 +432,7 @@ def test_reusable_committed_reuses_an_imminent_slot(hass):
 
     slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
 
-    assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False, "cost": None, "seen_running": False}
+    assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False, "cost": None, "savings": None, "seen_running": False}
     assert forced is False
     assert should_search is False
     assert dormant is False
@@ -485,7 +485,7 @@ def test_reusable_committed_keeps_showing_an_elapsed_slot_on_the_same_day(hass):
 
     slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", {}, 30, now, [])
 
-    assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False, "cost": None, "seen_running": False}
+    assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False, "cost": None, "savings": None, "seen_running": False}
     assert should_search is False
     assert dormant is False
 
@@ -502,7 +502,7 @@ def test_reusable_committed_stays_in_progress_for_a_slot_crossing_midnight(hass)
 
     slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("lave_linge", "Eco", {}, 90, now, [])
 
-    assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False, "cost": None, "seen_running": False}
+    assert slot == {"start": start, "end": end, "coverage_pct": 95, "forced": False, "cost": None, "savings": None, "seen_running": False}
     assert should_search is False
     assert dormant is False
 
@@ -2047,6 +2047,7 @@ async def test_fixed_load_cost_is_computed_when_tariff_tracking_is_enabled(hass)
     await coordinator._async_update_data()
 
     assert coordinator.fixed_load_cost("PAC") == pytest.approx(0.40)
+    assert coordinator.fixed_load_savings("PAC") == pytest.approx(0.0), "no solar data -> nothing covered, no savings"
 
 
 async def test_fixed_load_cost_is_none_when_tariff_tracking_is_disabled(hass):
@@ -2062,6 +2063,7 @@ async def test_fixed_load_cost_is_none_when_tariff_tracking_is_disabled(hass):
     await coordinator._async_update_data()
 
     assert coordinator.fixed_load_cost("PAC") is None
+    assert coordinator.fixed_load_savings("PAC") is None
 
 
 async def test_fixed_load_cost_accounts_for_other_concurrent_loads(hass):
@@ -2091,6 +2093,66 @@ async def test_fixed_load_cost_accounts_for_other_concurrent_loads(hass):
 
     assert coordinator.fixed_load_cost("PAC") == pytest.approx(0.40)
     assert coordinator.fixed_load_cost("Ballon") == pytest.approx(0.20)
+
+
+# --- DeviceSchedule.estimated_savings ------------------------------------------------------------
+
+
+async def test_device_schedule_estimated_savings_and_cost_add_up_to_the_full_grid_only_cost(hass):
+    """estimated_savings prices the solar-covered share of the run, the complement of
+    estimated_cost (the deficit share): together they must equal what the run would have cost had
+    it drawn 100% from the grid.
+    """
+    now = dt_util.now()
+    solcast_entry_id = register_provider_entities(
+        hass,
+        "solcast_solar",
+        {
+            "sensor.forecast": {
+                # 0.05 kW = 50W constant solar, half of the program's 100W draw.
+                "detailedForecast": [
+                    {"period_start": now + timedelta(minutes=i * 5), "pv_estimate": 0.05} for i in range(24 * 12)
+                ]
+            }
+        },
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_FORECAST_CONFIG_ENTRY_SOLCAST: solcast_entry_id,
+            CONF_MAX_SIMULTANEOUS_POWER: 4000,
+            CONF_PRICE_TRACKING_ENABLED: True,
+            CONF_TARIFF_BANDS: [{"start": "00:00", "price": 0.20}],
+        },
+        options={
+            CONF_DEVICES: [
+                {
+                    CONF_NAME: "lave_linge",
+                    CONF_PROGRAMS: [
+                        {
+                            CONF_NAME: "Eco",
+                            CONF_POWER_PROFILE: [{"minutes": 30, "power_w": 100}],
+                            CONF_DURATION_MIN: 30,
+                            CONF_AUTO_DAYS: [],
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_linge", "Eco", True)
+    await _flush(coordinator)
+
+    results = await coordinator._async_update_data()
+    schedule = results[("lave_linge", "Eco")]
+
+    # 100W for 0.5h = 0.05 kWh, at 0.20 EUR/kWh, half covered by the 50W constant solar.
+    assert schedule.estimated_cost == pytest.approx(0.005)
+    assert schedule.estimated_savings == pytest.approx(0.005)
+    assert schedule.estimated_cost + schedule.estimated_savings == pytest.approx(0.01)
 
 
 # --- _phases_differ_significantly() -------------------------------------------------------------

@@ -58,6 +58,7 @@ from .scheduling import (
     discover_power_levels,
     find_best_placement,
     instant_deficit_cost,
+    instant_deficit_savings,
     interpolate,
     min_forecast_points,
     phase_segments,
@@ -187,6 +188,7 @@ class DeviceSchedule:
     power_w: float | None = None
     profile: list | None = None
     estimated_cost: float | None = None
+    estimated_savings: float | None = None
 
 
 def compute_locked(schedule: DeviceSchedule, now: datetime) -> bool:
@@ -281,6 +283,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         # Recomputed every _async_update_data() cycle, never persisted — same "always derived,
         # never stale-cached across restarts" choice as `results` itself.
         self._fixed_load_costs: dict[str, float] = {}
+        self._fixed_load_savings: dict[str, float] = {}
         # Today+tomorrow forecast curve, normalized regardless of provider, for the card's
         # confidence band. Initialized empty so theoretical_forecast_points() is safe to call
         # before the first successful _async_update_data().
@@ -298,6 +301,10 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
     def fixed_load_cost(self, name: str) -> float | None:
         """€ cost of a fixed load's daily window, or None if tariff tracking is off."""
         return self._fixed_load_costs.get(name)
+
+    def fixed_load_savings(self, name: str) -> float | None:
+        """€ saved by solar coverage of a fixed load's daily window, or None if tariff tracking is off."""
+        return self._fixed_load_savings.get(name)
 
     def theoretical_forecast_points(self) -> list[dict]:
         """Today+tomorrow forecast curve (time/w/w10/w90), normalized regardless of provider."""
@@ -423,6 +430,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             "coverage_pct": raw["coverage_pct"],
             "forced": raw.get("forced", False),
             "cost": raw.get("cost"),
+            "savings": raw.get("savings"),
             "seen_running": raw.get("seen_running", False),
         }
 
@@ -435,6 +443,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         coverage_pct: int | None,
         forced: bool,
         cost: float | None = None,
+        savings: float | None = None,
         seen_running: bool = False,
     ) -> None:
         state = {**self._program_state(device_name, program_name)}
@@ -444,6 +453,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             "coverage_pct": coverage_pct,
             "forced": forced,
             "cost": cost,
+            "savings": savings,
             "seen_running": seen_running,
         }
         state.pop("pending_forced_start", None)
@@ -588,6 +598,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             slot["coverage_pct"],
             forced,
             slot["cost"],
+            slot["savings"],
             seen_running=True,
         )
 
@@ -816,7 +827,16 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             return None
         start = buckets[placement.index]["start"]
         end = start + timedelta(minutes=duration_min)
-        return {"start": start, "end": end, "coverage_pct": placement.coverage_pct, "cost": placement.cost}
+        item_segments = phase_segments({**item, "start": start, "end": end})
+        other_segments = [seg for o in committed if o.get("start") and o.get("end") for seg in phase_segments(o)]
+        savings = instant_deficit_savings(item_segments, other_segments, points, base_load, start, end, self._tariff_bands())
+        return {
+            "start": start,
+            "end": end,
+            "coverage_pct": placement.coverage_pct,
+            "cost": placement.cost,
+            "savings": savings,
+        }
 
     def _compute_slot_from_start(
         self, item: dict, duration_min: float, start: datetime, points: list[dict], base_load: float, committed: list[dict]
@@ -826,7 +846,8 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         other_segments = [seg for o in committed if o.get("start") and o.get("end") for seg in phase_segments(o)]
         coverage_pct = coverage_percent(item_segments, other_segments, points, base_load, start, end)
         cost = instant_deficit_cost(item_segments, other_segments, points, base_load, start, end, self._tariff_bands())
-        return {"start": start, "end": end, "coverage_pct": coverage_pct, "cost": cost}
+        savings = instant_deficit_savings(item_segments, other_segments, points, base_load, start, end, self._tariff_bands())
+        return {"start": start, "end": end, "coverage_pct": coverage_pct, "cost": cost, "savings": savings}
 
     def _schedule_from_slot(self, name: str, slot: dict | None, item: dict | None, forced: bool) -> DeviceSchedule:
         if slot is None:
@@ -841,6 +862,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             power_w=item.get("power_w") if item else None,
             profile=item.get("profile") if item else None,
             estimated_cost=slot.get("cost") if price_tracking_enabled else None,
+            estimated_savings=slot.get("savings") if price_tracking_enabled else None,
         )
 
     async def _resolve_active_points(self, data: dict, now: datetime) -> list[dict]:
@@ -980,6 +1002,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                         slot["coverage_pct"],
                         True,
                         slot["cost"],
+                        slot["savings"],
                         seen_running=already_running,
                     )
                     await self._note_failed_to_start(device_name, program_name, False)
@@ -1034,6 +1057,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                                 slot["coverage_pct"],
                                 False,
                                 slot["cost"],
+                                slot["savings"],
                             )
                     else:
                         # No forecast data yet (e.g. the forecast integration isn't up yet right
@@ -1059,6 +1083,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         every other device/fixed-load's final window here, so "others" reflects the whole picture.
         """
         self._fixed_load_costs = {}
+        self._fixed_load_savings = {}
         if not data.get(CONF_PRICE_TRACKING_ENABLED, False):
             return
         tariff_bands = self._tariff_bands()
@@ -1068,6 +1093,9 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                 seg for o in committed if o is not load and o.get("start") and o.get("end") for seg in phase_segments(o)
             ]
             self._fixed_load_costs[load["name"]] = instant_deficit_cost(
+                item_segments, other_segments, points, base_load, load["start"], load["end"], tariff_bands
+            )
+            self._fixed_load_savings[load["name"]] = instant_deficit_savings(
                 item_segments, other_segments, points, base_load, load["start"], load["end"], tariff_bands
             )
 

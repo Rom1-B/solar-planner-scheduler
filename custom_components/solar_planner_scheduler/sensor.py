@@ -74,6 +74,7 @@ class BaseConfigSensor(CoordinatorEntity[SolarPlannerSchedulerCoordinator], Sens
                 CONF_START_TIME: load[CONF_START_TIME],
                 "power_profile": load[CONF_POWER_PROFILE],
                 "estimated_cost": self.coordinator.fixed_load_cost(load[CONF_NAME]) if price_tracking_enabled else None,
+                "estimated_savings": self.coordinator.fixed_load_savings(load[CONF_NAME]) if price_tracking_enabled else None,
                 "currency": self.coordinator.hass.config.currency if price_tracking_enabled else None,
             }
             for load in self._entry.options.get(CONF_FIXED_LOADS, [])

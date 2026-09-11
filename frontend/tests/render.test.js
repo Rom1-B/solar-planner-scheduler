@@ -152,6 +152,7 @@ function deviceEntities(
     shouldRun = false,
     locked = false,
     estimatedCost = null,
+    estimatedSavings = null,
     currency = null,
   } = {}
 ) {
@@ -166,6 +167,7 @@ function deviceEntities(
         profile,
         locked,
         estimated_cost: estimatedCost,
+        estimated_savings: estimatedSavings,
         currency,
       },
     },
@@ -1018,6 +1020,52 @@ test("estimated cost shows next to the coverage badge when present, hidden when 
   assert.equal(costBadges[0][1], "~0.42 EUR");
 });
 
+test("cost_display: both shows both a cost and a savings badge", () => {
+  const card = new Card();
+  card.setConfig({ ...baseConfig(), cost_display: "both" });
+  card._hass = buildCard()._hass;
+  card._hass.states = {
+    ...card._hass.states,
+    ...deviceEntities("lave_linge", {
+      name: "Lave-linge",
+      start: new Date(Date.now() + 10 * 60000),
+      end: new Date(Date.now() + 130 * 60000),
+      powerW: 1800,
+      coveragePct: 67,
+      estimatedCost: 0.42,
+      estimatedSavings: 1.1,
+      currency: "EUR",
+    }),
+  };
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  assert.ok(html.includes('<span class="estimated-cost">~0.42 EUR</span>'), "expected the cost badge");
+  assert.ok(html.includes('<span class="estimated-savings">~1.10 EUR saved</span>'), "expected the savings badge");
+});
+
+test("cost_display: savings hides the cost badge and shows only the savings badge", () => {
+  const card = new Card();
+  card.setConfig({ ...baseConfig(), cost_display: "savings" });
+  card._hass = buildCard()._hass;
+  card._hass.states = {
+    ...card._hass.states,
+    ...deviceEntities("lave_linge", {
+      name: "Lave-linge",
+      start: new Date(Date.now() + 10 * 60000),
+      end: new Date(Date.now() + 130 * 60000),
+      powerW: 1800,
+      coveragePct: 67,
+      estimatedCost: 0.42,
+      estimatedSavings: 1.1,
+      currency: "EUR",
+    }),
+  };
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  assert.ok(!html.includes('class="estimated-cost"'), "expected the cost badge hidden");
+  assert.ok(html.includes('<span class="estimated-savings">~1.10 EUR saved</span>'), "expected the savings badge");
+});
+
 test("stacked consumption has no implicit base-load layer", () => {
   const card = buildCard();
   card._render();
@@ -1561,4 +1609,28 @@ test("table_show_energy/table_show_cost default to shown when unset", () => {
   card._render();
   const html = card.shadowRoot.innerHTML;
   assert.ok(html.includes("<th>Energy</th>") && html.includes("<th>Cost</th>"), "expected both columns shown by default");
+  assert.ok(!html.includes("<th>Savings</th>"), "expected no Savings column with cost_display defaulting to cost");
+});
+
+test("cost_display: both adds a Savings column alongside Cost in the table", () => {
+  const card = new Card();
+  card.setConfig({ ...baseConfig(), cost_display: "both", table_expanded: true });
+  card._hass = buildCard()._hass;
+  card._hass.states = {
+    ...card._hass.states,
+    ...deviceEntities("lave_linge", {
+      name: "Lave-linge",
+      start: new Date(Date.now() + 10 * 60000),
+      end: new Date(Date.now() + 130 * 60000),
+      powerW: 1800,
+      coveragePct: 67,
+      estimatedCost: 0.42,
+      estimatedSavings: 1.1,
+      currency: "EUR",
+    }),
+  };
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  assert.ok(html.includes("<th>Cost</th>") && html.includes("<th>Savings</th>"), "expected both table columns");
+  assert.ok(html.includes("~1.10 EUR"), "expected the savings value in a table cell");
 });

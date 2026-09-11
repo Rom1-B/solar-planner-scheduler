@@ -294,6 +294,29 @@ def instant_deficit_cost(
     return cost
 
 
+def instant_deficit_savings(
+    item_segments: Sequence[dict],
+    other_segments: Sequence[dict],
+    points: Sequence[dict],
+    base_load: float,
+    start: datetime,
+    end: datetime,
+    tariff_bands: Sequence[dict],
+) -> float:
+    """Cost avoided by solar coverage (€): same walk as instant_deficit_cost(), pricing the
+    solar-covered share of item_power instead of the deficit share.
+    """
+    savings = 0.0
+    for t, step_end, mid in _instant_steps(item_segments, other_segments, start, end):
+        item_power = _power_at(item_segments, mid)
+        others_power = _power_at(other_segments, mid)
+        solar_available = max(0.0, interpolate(points, mid) - base_load - others_power)
+        deficit = max(0.0, item_power - solar_available)
+        covered_kwh = (item_power - deficit) * (step_end - t).total_seconds() / 3600 / 1000
+        savings += covered_kwh * price_at(mid, tariff_bands)
+    return savings
+
+
 def _coverage_ratio(
     item_segments: Sequence[dict],
     other_segments: Sequence[dict],
