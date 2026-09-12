@@ -1726,6 +1726,46 @@ test("table_show_energy/table_show_cost default to shown when unset", () => {
   assert.ok(!html.includes("<th>Savings</th>"), "expected no Savings column with cost_display defaulting to cost");
 });
 
+test("table_show_total adds a totals row summing Cost/Savings, hidden unless enabled", () => {
+  const card = buildCard();
+  card._hass.states = {
+    ...card._hass.states,
+    ...deviceEntities("lave_linge", {
+      name: "Lave-linge",
+      start: new Date(Date.now() + 10 * 60000),
+      end: new Date(Date.now() + 130 * 60000),
+      powerW: 1800,
+      estimatedCost: 0.44,
+      estimatedSavings: 1.1,
+      currency: "EUR",
+    }),
+    ...deviceEntities("lave_vaisselle", {
+      name: "Lave-vaisselle",
+      start: new Date(Date.now() + 10 * 60000),
+      end: new Date(Date.now() + 100 * 60000),
+      powerW: 1200,
+      estimatedCost: 0.3,
+      estimatedSavings: 0.5,
+      currency: "EUR",
+    }),
+  };
+  card._showTable = true;
+  card._render();
+  assert.ok(!card.shadowRoot.innerHTML.includes('<tr class="table-total">'), "expected no totals row by default");
+
+  card.setConfig({ ...baseConfig(), cost_display: "both", table_show_total: true });
+  card._showTable = true;
+  card._render();
+  const html = card.shadowRoot.innerHTML;
+  // PAC's estimated_cost/estimated_savings are unset in the default fixture: the total must still
+  // sum the two devices' real values, not turn into "-" because one contributor is null.
+  assert.match(
+    html,
+    /<tr class="table-total"><td colspan="3">Total<\/td><td>~0\.74 EUR<\/td><td>~1\.60 EUR<\/td><\/tr>/,
+    "expected a totals row summing Cost and Savings across all rows"
+  );
+});
+
 test("cost_display: both adds a Savings column alongside Cost in the table", () => {
   const card = new Card();
   card.setConfig({ ...baseConfig(), cost_display: "both", table_expanded: true });

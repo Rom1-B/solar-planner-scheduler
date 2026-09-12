@@ -120,6 +120,7 @@ chart_expanded: true    # optional, default true (the forecast chart/gantt/devic
 table_expanded: false   # optional, default false (the summary table)
 table_show_energy: true # optional, default true (the table's Energy column)
 table_show_cost: true   # optional, default true (the table's Cost and/or Savings column, see cost_display)
+table_show_total: false # optional, default false (a totals row summing Cost/Savings across all rows)
 cost_display: cost      # optional, default "cost": "cost", "savings", or "both" (badge + table column)
 chart_hours_past: 6     # optional, default 6 (hours shown before now)
 chart_hours_future: 24  # optional, default 24 (hours shown after now)

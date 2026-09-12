@@ -997,6 +997,12 @@ class SolarPlannerCard extends HTMLElement {
     const showEnergyColumn = this._config.table_show_energy !== false;
     const showCostColumn = this._config.table_show_cost !== false && costDisplay !== "savings";
     const showSavingsColumn = this._config.table_show_cost !== false && costDisplay !== "cost";
+    const showTotalRow = this._config.table_show_total === true && (showCostColumn || showSavingsColumn);
+    const totalCurrency = dedupedTableRows.find((p) => p.currency)?.currency ?? "";
+    const hasCostData = dedupedTableRows.some((p) => p.estimatedCost != null);
+    const hasSavingsData = dedupedTableRows.some((p) => p.estimatedSavings != null);
+    const totalCost = dedupedTableRows.reduce((s, p) => s + (p.estimatedCost ?? 0), 0);
+    const totalSavings = dedupedTableRows.reduce((s, p) => s + (p.estimatedSavings ?? 0), 0);
     const tableRows = dedupedTableRows
       .map((p) => {
         // Same "Tomorrow" then weekday-name convention as the chart's day-boundary ticks, not a
@@ -1099,6 +1105,7 @@ class SolarPlannerCard extends HTMLElement {
         .table-toggle-row { margin-top: 10px; }
         table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 0.85em; }
         th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--divider-color); }
+        .table-total td { font-weight: 500; border-bottom: none; border-top: 2px solid var(--divider-color); }
         .row-started { opacity: 0.5; }
         .program-row.pending { opacity: 0.5; transition: opacity 0.15s; }
         .row-spinner { --mdc-icon-size: 16px; color: var(--primary-color); animation: chart-spinner-spin 1s linear infinite; }
@@ -1187,7 +1194,11 @@ class SolarPlannerCard extends HTMLElement {
         </div>
         ${
           this._showTable
-            ? `<table><thead><tr><th>Device</th><th>Window</th>${showEnergyColumn ? "<th>Energy</th>" : ""}${showCostColumn ? "<th>Cost</th>" : ""}${showSavingsColumn ? "<th>Savings</th>" : ""}</tr></thead><tbody>${tableRows}</tbody></table>`
+            ? `<table><thead><tr><th>Device</th><th>Window</th>${showEnergyColumn ? "<th>Energy</th>" : ""}${showCostColumn ? "<th>Cost</th>" : ""}${showSavingsColumn ? "<th>Savings</th>" : ""}</tr></thead><tbody>${tableRows}</tbody>${
+                showTotalRow
+                  ? `<tfoot><tr class="table-total"><td colspan="${2 + (showEnergyColumn ? 1 : 0)}">Total</td>${showCostColumn ? `<td>${hasCostData ? `~${totalCost.toFixed(2)} ${totalCurrency}` : "-"}</td>` : ""}${showSavingsColumn ? `<td>${hasSavingsData ? `~${totalSavings.toFixed(2)} ${totalCurrency}` : "-"}</td>` : ""}</tr></tfoot>`
+                  : ""
+              }</table>`
             : ""
         }
       </ha-card>`;
