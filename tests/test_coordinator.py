@@ -2115,6 +2115,83 @@ async def test_activating_a_program_avoids_a_sibling_committed_in_an_earlier_cyc
     assert eco.end <= chemises.start or chemises.end <= eco.start
 
 
+async def test_a_forced_slots_coverage_refreshes_once_a_competing_sibling_moves_away(hass):
+    """Regression: reported live 2026-09-12. Forcing "cuisine" onto a slot a sibling device
+    ("lave_linge", earlier in CONF_DEVICES order, so already in `committed` by the time cuisine
+    is processed the same pass) happened to also occupy tanked its coverage_pct, since production
+    was shared between both. Moving the sibling away in a later cycle never recomputed it:
+    `_reusable_committed()` deliberately never re-searches a forced slot (the time itself must
+    stay authoritative) — but its displayed coverage/cost/savings must still refresh.
+    """
+    now = dt_util.now()
+    solcast_entry_id = register_provider_entities(
+        hass,
+        "solcast_solar",
+        {
+            "sensor.forecast": {
+                "detailedForecast": [
+                    {"period_start": now + timedelta(minutes=i * 5), "pv_estimate": 0.15} for i in range(24 * 12)
+                ]
+            }
+        },
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_CONFIG_ENTRY_SOLCAST: solcast_entry_id, CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options={
+            CONF_DEVICES: [
+                {
+                    CONF_NAME: "lave_linge",
+                    CONF_PROGRAMS: [
+                        {
+                            CONF_NAME: "5 chemises",
+                            CONF_POWER_PROFILE: [{"minutes": 30, "power_w": 100}],
+                            CONF_DURATION_MIN: 30,
+                            CONF_AUTO_DAYS: [],
+                        }
+                    ],
+                },
+                {
+                    CONF_NAME: "cuisine",
+                    CONF_PROGRAMS: [
+                        {
+                            CONF_NAME: "30min",
+                            CONF_POWER_PROFILE: [{"minutes": 30, "power_w": 100}],
+                            CONF_DURATION_MIN: 30,
+                            CONF_AUTO_DAYS: [],
+                        }
+                    ],
+                },
+            ]
+        },
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_linge", "5 chemises", True)
+    await coordinator.async_set_program_active("cuisine", "30min", True)
+    await _flush(coordinator)
+
+    start = now + timedelta(hours=1)
+    await coordinator.async_set_forced_start("lave_linge", "5 chemises", start)
+    await coordinator.async_set_forced_start("cuisine", "30min", start)
+    await _flush(coordinator)
+
+    # 150 W forecast shared with the 100 W sibling leaves only 50 W for cuisine's own 100 W draw.
+    results = await coordinator._async_update_data()
+    assert results[("cuisine", "30min")].coverage_pct == 50
+
+    # The sibling moves out of the way — cuisine's forced time must stay untouched, only its
+    # displayed metrics should catch up to the now-uncontested 150 W forecast.
+    await coordinator.async_set_forced_start("lave_linge", "5 chemises", now + timedelta(hours=3))
+    await _flush(coordinator)
+    results = await coordinator._async_update_data()
+
+    cuisine = results[("cuisine", "30min")]
+    assert cuisine.start == start
+    assert cuisine.coverage_pct == 150
+
+
 # --- fixed load cost --------------------------------------------------------------------------
 
 

@@ -488,6 +488,19 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         self._state.setdefault(device_name, {})[program_name] = state
         self._store_dirty = True
 
+    async def _update_committed_metrics(
+        self, device_name: str, program_name: str, coverage_pct: int | None, cost: float | None, savings: float | None
+    ) -> None:
+        """Refresh a reused/forced slot's displayed coverage/cost/savings in place, without
+        touching start/end or any run-tracking state: the committed time stays authoritative
+        (see `_reusable_committed()`), but a sibling device moving out of the way, or a forecast
+        update, should still update what this slot's numbers show.
+        """
+        state = {**self._program_state(device_name, program_name)}
+        state["committed"] = {**state["committed"], "coverage_pct": coverage_pct, "cost": cost, "savings": savings}
+        self._state.setdefault(device_name, {})[program_name] = state
+        self._store_dirty = True
+
     def _current_power(self, power_sensor: str | None) -> float | None:
         if not power_sensor:
             return None
@@ -1101,6 +1114,21 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                         slot = self._get_committed(device_name, program_name)
                         if slot is not None:
                             forced = slot["forced"]
+                elif slot is not None and points:
+                    # Reused (forced or imminent) slot: start/end stay authoritative, but its
+                    # displayed metrics were frozen at commit time — refresh them so a sibling
+                    # moving out of the way, or an updated forecast, is reflected without needing
+                    # a manual re-force.
+                    refreshed = self._compute_slot_from_start(item, duration_min, slot["start"], points, base_load, committed)
+                    if (
+                        refreshed["coverage_pct"] != slot["coverage_pct"]
+                        or refreshed["cost"] != slot["cost"]
+                        or refreshed["savings"] != slot["savings"]
+                    ):
+                        await self._update_committed_metrics(
+                            device_name, program_name, refreshed["coverage_pct"], refreshed["cost"], refreshed["savings"]
+                        )
+                        slot = {**slot, "coverage_pct": refreshed["coverage_pct"], "cost": refreshed["cost"], "savings": refreshed["savings"]}
 
                 _finalize(slot)
                 results[key] = self._schedule_from_slot(device_name, slot, item, forced)
