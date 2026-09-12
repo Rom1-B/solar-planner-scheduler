@@ -993,6 +993,7 @@ class SolarPlannerCard extends HTMLElement {
       seenRowKeys.add(key);
       return true;
     });
+    dedupedTableRows.sort((a, b) => a.start - b.start);
     const showEnergyColumn = this._config.table_show_energy !== false;
     const showCostColumn = this._config.table_show_cost !== false && costDisplay !== "savings";
     const showSavingsColumn = this._config.table_show_cost !== false && costDisplay !== "cost";

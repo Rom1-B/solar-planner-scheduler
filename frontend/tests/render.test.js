@@ -298,6 +298,42 @@ test("a table row is italicized once its window's start has passed", () => {
   assert.match(html, /<tr class="">\s*<td>Lave-vaisselle - Eco<\/td>/, "expected the not-yet-started row to stay unmarked");
 });
 
+test("the table sorts rows by start time, not by device config order", () => {
+  withFixedNow(8, 0, () => {
+    const card = buildCard();
+    const now = Date.now();
+    card._hass.states = {
+      ...card._hass.states,
+      ...deviceEntities("lave_linge", {
+        name: "Lave-linge",
+        start: new Date(now + 90 * 60000),
+        end: new Date(now + 210 * 60000),
+        powerW: 1800,
+      }),
+      ...deviceEntities("lave_vaisselle", {
+        name: "Lave-vaisselle",
+        start: new Date(now + 5 * 60000),
+        end: new Date(now + 95 * 60000),
+        powerW: 1200,
+      }),
+    };
+    card._showTable = true;
+    card._render();
+    const html = card.shadowRoot.innerHTML;
+    const order = [...html.matchAll(/<td>([^<]*)<\/td>/g)]
+      .map((m) => m[1])
+      .filter((cell) => cell.includes("Lave-") || cell.includes("PAC"));
+    // The default fixture's PAC fixed load recurs today (~now+20min) and tomorrow (~now+20min+24h):
+    // both occurrences are visible within the default 24h chart_hours_future window, so they bracket
+    // "Lave-linge" (now+90min) rather than being adjacent to each other.
+    assert.deepEqual(
+      order,
+      ["Lave-vaisselle - Eco", "PAC (external)", "Lave-linge - Eco", "PAC (external)"],
+      "expected rows ordered by start time"
+    );
+  });
+});
+
 test("the table's Cost column shows estimated_cost when present, \"-\" otherwise", () => {
   const card = buildCard();
   card._hass.states = {
