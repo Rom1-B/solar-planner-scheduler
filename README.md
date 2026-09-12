@@ -16,7 +16,7 @@ A solar forecast already set up in Home Assistant, from one of these:
 - the built-in [Forecast.Solar](https://www.home-assistant.io/integrations/forecast_solar/)
 
 You can set up several: the card then lets you switch between them, or blend them ("Average",
-"Min", and "Weighted" if you have both Solcast and Helios Forecast).
+"Min").
 
 ## 📦 Installation
 
@@ -60,8 +60,7 @@ Per (device, program) pair: `datetime.<device>_<program>_start`,
 `binary_sensor.<device>_<program>_should_run`, `switch.<device>_<program>_active`.
 
 `select.solar_planner_scheduler_forecast_source` picks which forecast drives scheduling. With two
-or more providers configured, it also offers blended options ("Average", "Min", and "Weighted" for
-Solcast + Helios Forecast).
+or more providers configured, it also offers blended options ("Average", "Min").
 
 `sensor.solar_planner_scheduler_current_price` exposes the live €/kWh price (with tariff tracking
 on), usable as the Energy dashboard's cost source for grid consumption.

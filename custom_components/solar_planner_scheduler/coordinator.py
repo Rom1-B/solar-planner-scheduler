@@ -38,15 +38,11 @@ from .const import (
     DEFAULT_PHASE_CALIBRATION_RUNS,
     DEFAULT_UPDATE_INTERVAL_MINUTES,
     DOMAIN,
-    FORECAST_PROVIDER_HELIOS,
-    FORECAST_PROVIDER_SOLCAST,
-    FORECAST_PROVIDER_WEIGHTED,
     NONE_PROGRAM,
     WEEKDAYS,
 )
 from .forecast_providers import (
     FORECAST_COMBINERS,
-    _helios_reliability_weight,
     _read_provider_points,
     resolve_forecast_sources,
 )
@@ -64,7 +60,6 @@ from .scheduling import (
     min_forecast_points,
     phase_segments,
     resegment_power_trace,
-    weighted_average_forecast_points,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -321,7 +316,6 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         # "power now" sensor. None until 2+ providers are configured (see FORECAST_COMBINERS).
         self._average_power_now: float | None = None
         self._min_power_now: float | None = None
-        self._weighted_power_now: float | None = None
 
     def fixed_load_cost(self, name: str) -> float | None:
         """€ cost of a fixed load's daily window, or None if tariff tracking is off."""
@@ -343,9 +337,6 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
 
     def min_forecast_power_now(self) -> float | None:
         return self._min_power_now
-
-    def weighted_forecast_power_now(self) -> float | None:
-        return self._weighted_power_now
 
     def active_forecast_source(self) -> str | None:
         """Provider chosen via select.<entry>_forecast_source, or None if never chosen — the
@@ -912,17 +903,12 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
 
     async def _resolve_active_points(self, data: dict, now: datetime) -> list[dict]:
         """Resolve the active forecast curve for this cycle, and refresh the always-on
-        Average/Min/Weighted comparison sensors regardless of which source is actually active.
+        Average/Min comparison sensors regardless of which source is actually active.
         """
         resolved_sources = resolve_forecast_sources(data)
         active_source = self.active_forecast_source()
         average_available = len(resolved_sources) >= 2
-        weighted_available = FORECAST_PROVIDER_SOLCAST in resolved_sources and FORECAST_PROVIDER_HELIOS in resolved_sources
-        valid_sources = (
-            set(resolved_sources)
-            | (set(FORECAST_COMBINERS) if average_available else set())
-            | ({FORECAST_PROVIDER_WEIGHTED} if weighted_available else set())
-        )
+        valid_sources = set(resolved_sources) | (set(FORECAST_COMBINERS) if average_available else set())
         if active_source not in valid_sources:
             active_source = next(iter(resolved_sources), None)
         # Fetched for every resolved provider regardless of which one is actually selected: cheap,
@@ -930,15 +916,8 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         # energy-platform hook, never a network call: and needed unconditionally for
         # average_forecast_power_now()/min_forecast_power_now() below, not just the combiner branch.
         provider_points = {p: await _read_provider_points(self.hass, resolved_sources, p) for p in resolved_sources}
-        helios_weight = (
-            _helios_reliability_weight(self.hass, resolved_sources[FORECAST_PROVIDER_HELIOS][0]) if weighted_available else 0.0
-        )
         combiner = FORECAST_COMBINERS.get(active_source)
-        if active_source == FORECAST_PROVIDER_WEIGHTED and weighted_available:
-            points = weighted_average_forecast_points(
-                provider_points[FORECAST_PROVIDER_HELIOS], helios_weight, provider_points[FORECAST_PROVIDER_SOLCAST]
-            )
-        elif combiner:
+        if combiner:
             points = combiner(list(provider_points.values()))
         elif active_source:
             points = provider_points.get(active_source, [])
@@ -956,19 +935,8 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             curves = list(provider_points.values())
             self._average_power_now = interpolate(average_forecast_points(curves), now)
             self._min_power_now = interpolate(min_forecast_points(curves), now)
-            self._weighted_power_now = (
-                interpolate(
-                    weighted_average_forecast_points(
-                        provider_points[FORECAST_PROVIDER_HELIOS], helios_weight, provider_points[FORECAST_PROVIDER_SOLCAST]
-                    ),
-                    now,
-                )
-                if weighted_available
-                else None
-            )
         else:
             self._average_power_now = None
-            self._weighted_power_now = None
             self._min_power_now = None
         return points
 

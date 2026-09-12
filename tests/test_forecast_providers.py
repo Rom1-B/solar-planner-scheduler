@@ -19,11 +19,9 @@ from custom_components.solar_planner_scheduler.const import (
     FORECAST_PROVIDER_HELIOS,
     FORECAST_PROVIDER_MIN,
     FORECAST_PROVIDER_SOLCAST,
-    FORECAST_PROVIDER_WEIGHTED,
 )
 from custom_components.solar_planner_scheduler.forecast_providers import (
     _discover_provider_entities,
-    _helios_reliability_weight,
     _read_forecast_points,
     _read_forecast_solar_points,
     _read_helios_points,
@@ -240,28 +238,6 @@ async def test_read_helios_points_ignores_other_sensors_sharing_the_forecast_att
     assert await _read_helios_points(hass, entry_id) == [{"time": point_time, "w": 900.0, "w10": 900.0, "w90": 900.0}]
 
 
-def test_helios_reliability_weight_reads_the_discovered_entity(hass):
-    entry_id = register_provider_entities(hass, "helios_forecast", {"sensor.helios_reliability": {"per_day": [9.2]}})
-    hass.states.async_set("sensor.helios_reliability", "42", {"per_day": [9.2]})
-
-    assert _helios_reliability_weight(hass, entry_id) == 0.42
-
-
-def test_helios_reliability_weight_is_zero_when_no_reliability_entity_exists(hass):
-    entry_id = register_provider_entities(
-        hass, "helios_forecast", {"sensor.helios_power_now": {"forecast": [{"datetime": "x", "watts": 1.0}]}}
-    )
-
-    assert _helios_reliability_weight(hass, entry_id) == 0.0
-
-
-def test_helios_reliability_weight_is_zero_when_the_state_is_not_numeric(hass):
-    entry_id = register_provider_entities(hass, "helios_forecast", {"sensor.helios_reliability": {"per_day": [9.2]}})
-    hass.states.async_set("sensor.helios_reliability", "unknown", {"per_day": [9.2]})
-
-    assert _helios_reliability_weight(hass, entry_id) == 0.0
-
-
 def test_resolve_forecast_sources_reads_the_dedicated_config_entry_fields():
     data = {CONF_FORECAST_CONFIG_ENTRY_SOLCAST: "entry_solcast", CONF_FORECAST_CONFIG_ENTRY_HELIOS: "entry_helios"}
     assert resolve_forecast_sources(data) == {
@@ -345,30 +321,3 @@ async def test_resolve_forecast_history_entities_omits_average_and_min_with_only
     assert FORECAST_PROVIDER_MIN not in result
 
 
-async def test_resolve_forecast_history_entities_includes_weighted_when_solcast_and_helios_are_both_configured(hass):
-    solcast_entry_id = register_provider_entities(hass, "solcast_solar", {"sensor.solcast_pv_forecast_power_now": {"unit": "W"}})
-    helios_entry_id = register_provider_entities(
-        hass, "helios_forecast", {"sensor.helios_power_now": {"forecast": [{"datetime": "x", "watts": 1}]}}
-    )
-    own_entry_id = "own_entry"
-    registry = er.async_get(hass)
-    registry.async_get_or_create("sensor", DOMAIN, f"{own_entry_id}_forecast_weighted_power_now", suggested_object_id="spf_weighted")
-    data = {CONF_FORECAST_CONFIG_ENTRY_SOLCAST: solcast_entry_id, CONF_FORECAST_CONFIG_ENTRY_HELIOS: helios_entry_id}
-
-    result = resolve_forecast_history_entities(hass, own_entry_id, data)
-
-    assert result[FORECAST_PROVIDER_WEIGHTED] == "sensor.spf_weighted"
-
-
-async def test_resolve_forecast_history_entities_omits_weighted_without_both_solcast_and_helios(hass):
-    helios_entry_id = register_provider_entities(
-        hass, "helios_forecast", {"sensor.helios_power_now": {"forecast": [{"datetime": "x", "watts": 1}]}}
-    )
-    own_entry_id = "own_entry"
-    registry = er.async_get(hass)
-    registry.async_get_or_create("sensor", DOMAIN, f"{own_entry_id}_forecast_weighted_power_now", suggested_object_id="spf_weighted")
-    data = {CONF_FORECAST_CONFIG_ENTRY_HELIOS: helios_entry_id}
-
-    result = resolve_forecast_history_entities(hass, own_entry_id, data)
-
-    assert FORECAST_PROVIDER_WEIGHTED not in result

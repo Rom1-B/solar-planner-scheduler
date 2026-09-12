@@ -1,5 +1,5 @@
 """Forecast-provider layer: parsing, entity discovery and source resolution for Solcast/Helios
-Forecast/Forecast.Solar, plus the virtual Average/Min/Weighted combiner modes. Kept separate from
+Forecast/Forecast.Solar, plus the virtual Average/Min combiner modes. Kept separate from
 coordinator.py (which owns scheduling/Store/standby-learning) since this half of the module is a
 self-contained concern: "given a config entry, get this provider's forecast curve", with no
 dependency on the coordinator's own state.
@@ -24,7 +24,6 @@ from .const import (
     FORECAST_PROVIDER_HELIOS,
     FORECAST_PROVIDER_MIN,
     FORECAST_PROVIDER_SOLCAST,
-    FORECAST_PROVIDER_WEIGHTED,
 )
 from .scheduling import average_forecast_points, min_forecast_points
 
@@ -116,9 +115,7 @@ def _discover_provider_entities(
     several unrelated sensors too (cloud_cover, temperature, wind_speed, snow_depth, irradiance),
     none of which carry a "watts" key, so without this filter they'd get parsed as a flood of
     0-valued points at their own (hourly) timestamps, interleaved with power_now's real (15-min)
-    ones: the exact "drops to 0 every hour" artifact reported live 2026-09-10. device_class is
-    optional since Helios's forecast_reliability sensor (see _helios_reliability_weight()) carries
-    none at all, unlike every other entity this function discovers.
+    ones: the exact "drops to 0 every hour" artifact reported live 2026-09-10.
     """
     registry = er.async_get(hass)
     entity_ids = []
@@ -153,24 +150,6 @@ async def _read_helios_points(hass: HomeAssistant, config_entry_id: str) -> list
     for entity_id in _discover_provider_entities(hass, config_entry_id, "forecast", "power"):
         points += _read_forecast_points(hass, entity_id, FORECAST_PROVIDER_HELIOS)
     return sorted(points, key=lambda pt: pt["time"])
-
-
-def _helios_reliability_weight(hass: HomeAssistant, config_entry_id: str) -> float:
-    """Helios's own forecast_reliability sensor (0..100%), normalized to a 0..1 weight for the
-    "Weighted" Helios+Solcast blend. Discovered via its "per_day" list attribute: unlike every
-    other entity _discover_provider_entities() finds, this sensor carries no device_class at all.
-    Falls back to 0.0 (trust Solcast entirely) if the sensor doesn't exist yet or its state isn't a
-    usable number: the safe default when Helios hasn't published a confidence figure.
-    """
-    for entity_id in _discover_provider_entities(hass, config_entry_id, "per_day"):
-        state = hass.states.get(entity_id)
-        if state is None:
-            continue
-        try:
-            return max(0.0, min(1.0, float(state.state) / 100))
-        except ValueError:
-            continue
-    return 0.0
 
 
 async def _read_forecast_solar_points(hass: HomeAssistant, config_entry_id: str) -> list[dict]:
@@ -296,8 +275,4 @@ def resolve_forecast_history_entities(hass: HomeAssistant, entry_id: str, data: 
             entity_id = registry.async_get_entity_id("sensor", DOMAIN, f"{entry_id}_{unique_suffix}")
             if entity_id:
                 result[provider] = entity_id
-    if FORECAST_PROVIDER_SOLCAST in resolved and FORECAST_PROVIDER_HELIOS in resolved:
-        entity_id = registry.async_get_entity_id("sensor", DOMAIN, f"{entry_id}_forecast_weighted_power_now")
-        if entity_id:
-            result[FORECAST_PROVIDER_WEIGHTED] = entity_id
     return result

@@ -46,10 +46,6 @@ FORECAST_PROVIDER_LABELS = {
 # Virtual providers: combine every currently resolved real provider (see FORECAST_COMBINERS).
 FORECAST_PROVIDER_AVERAGE = "average"
 FORECAST_PROVIDER_MIN = "min"
-# Virtual provider: Helios+Solcast only, weighted by Helios's own live reliability score (see
-# _helios_reliability_weight() in coordinator.py). Never offered for forecast_solar (no learning,
-# no confidence signal, judged too far from reality to blend in).
-FORECAST_PROVIDER_WEIGHTED = "weighted"
 CONF_MAX_SIMULTANEOUS_POWER = "max_simultaneous_power"
 
 CONF_DEVICES = "devices"

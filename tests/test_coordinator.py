@@ -42,7 +42,6 @@ from custom_components.solar_planner_scheduler.const import (
     FORECAST_PROVIDER_HELIOS,
     FORECAST_PROVIDER_MIN,
     FORECAST_PROVIDER_SOLCAST,
-    FORECAST_PROVIDER_WEIGHTED,
     NONE_PROGRAM,
     WEEKDAYS,
 )
@@ -1684,104 +1683,6 @@ async def test_average_and_min_power_now_are_none_with_only_one_provider_configu
 
     assert coordinator.average_forecast_power_now() is None
     assert coordinator.min_forecast_power_now() is None
-
-
-async def test_async_update_data_weights_helios_and_solcast_by_helios_reliability_when_selected(hass):
-    now = dt_util.now()
-    solcast_entry_id = register_provider_entities(
-        hass, "solcast_solar", {"sensor.forecast_today": {"detailedForecast": [{"period_start": now, "pv_estimate": 1.0}]}}
-    )
-    helios_entry_id = _helios_entry(hass, watts=3000.0, at=now)
-    helios_entry = hass.config_entries.async_get_entry(helios_entry_id)
-    register_provider_entities(hass, "helios_forecast", {"sensor.helios_reliability": {"per_day": [9.2]}}, entry=helios_entry)
-    hass.states.async_set("sensor.helios_reliability", "25", {"per_day": [9.2]})
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={
-            CONF_FORECAST_CONFIG_ENTRY_SOLCAST: solcast_entry_id,
-            CONF_FORECAST_CONFIG_ENTRY_HELIOS: helios_entry_id,
-            CONF_MAX_SIMULTANEOUS_POWER: 4000,
-        },
-        options={},
-    )
-    entry.add_to_hass(hass)
-    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
-    await coordinator.async_load_state()
-    await coordinator.async_set_forecast_source(FORECAST_PROVIDER_WEIGHTED)
-    await _flush(coordinator)
-
-    await coordinator._async_update_data()
-
-    # solcast: pv_estimate 1.0 kW -> 1000 W ; helios: 3000 W ; weight 25% helios -> 0.25*3000 + 0.75*1000 = 1500 W.
-    assert coordinator._theoretical_points == [{"time": now, "w": 1500.0, "w10": 1500.0, "w90": 1500.0}]
-    assert coordinator.weighted_forecast_power_now() == 1500.0
-
-
-async def test_weighted_power_now_equals_helios_exactly_at_full_reliability(hass):
-    now = dt_util.now()
-    solcast_entry_id = register_provider_entities(
-        hass, "solcast_solar", {"sensor.forecast_today": {"detailedForecast": [{"period_start": now, "pv_estimate": 1.0}]}}
-    )
-    helios_entry_id = _helios_entry(hass, watts=3000.0, at=now)
-    helios_entry = hass.config_entries.async_get_entry(helios_entry_id)
-    register_provider_entities(hass, "helios_forecast", {"sensor.helios_reliability": {"per_day": [9.2]}}, entry=helios_entry)
-    hass.states.async_set("sensor.helios_reliability", "100", {"per_day": [9.2]})
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={
-            CONF_FORECAST_CONFIG_ENTRY_SOLCAST: solcast_entry_id,
-            CONF_FORECAST_CONFIG_ENTRY_HELIOS: helios_entry_id,
-            CONF_MAX_SIMULTANEOUS_POWER: 4000,
-        },
-        options={},
-    )
-    entry.add_to_hass(hass)
-    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
-    await coordinator.async_load_state()
-    await _flush(coordinator)
-
-    await coordinator._async_update_data()
-
-    assert coordinator.weighted_forecast_power_now() == 3000.0
-
-
-async def test_weighted_power_now_is_none_when_helios_or_solcast_is_missing(hass):
-    helios_entry_id = _helios_entry(hass)
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={CONF_FORECAST_CONFIG_ENTRY_HELIOS: helios_entry_id, CONF_MAX_SIMULTANEOUS_POWER: 4000},
-        options={},
-    )
-    entry.add_to_hass(hass)
-    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
-    await coordinator.async_load_state()
-    await _flush(coordinator)
-
-    await coordinator._async_update_data()
-
-    assert coordinator.weighted_forecast_power_now() is None
-
-
-async def test_weighted_not_offered_as_active_source_with_only_one_provider(hass):
-    """"weighted" stored as the active choice but Solcast+Helios aren't both configured: falls back
-    to the resolved provider, same repli mechanism as a stale "average"/"min" choice.
-    """
-    helios_entry_id = _helios_entry(hass)
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={CONF_FORECAST_CONFIG_ENTRY_HELIOS: helios_entry_id, CONF_MAX_SIMULTANEOUS_POWER: 4000},
-        options=_device_options(auto_days=[]),
-    )
-    entry.add_to_hass(hass)
-    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
-    await coordinator.async_load_state()
-    await coordinator.async_set_forecast_source(FORECAST_PROVIDER_WEIGHTED)
-    await coordinator.async_set_program_active("lave_vaisselle", "Eco", True)
-    await _flush(coordinator)
-
-    results = await coordinator._async_update_data()
-
-    assert results[("lave_vaisselle", "Eco")].start is not None
 
 
 async def test_async_update_data_merges_points_from_every_discovered_solcast_entity(hass):
