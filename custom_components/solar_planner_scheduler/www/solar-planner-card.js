@@ -935,8 +935,7 @@ class SolarPlannerCard extends HTMLElement {
                 }`
               : "";
             return `<div class="program-row${rowPending ? " pending" : ""}">
-              <span class="swatch" style="background:${deviceColor(i)}"></span>
-              <button class="program-toggle ${ds.active ? "active" : ""}" data-row="${ds.slug}" data-active="${ds.active}" ${rowPending ? "disabled" : ""}>${ds.programName}</button>
+              <button class="program-toggle ${ds.active ? "active" : ""}" data-row="${ds.slug}" data-active="${ds.active}" ${ds.active ? `style="background:${deviceColor(i)};border-color:${deviceColor(i)}"` : ""} ${rowPending ? "disabled" : ""}>${ds.programName}</button>
               ${rowPending ? `<ha-icon class="row-spinner" icon="mdi:loading"></ha-icon>` : ""}
               ${ds.shouldRun ? `<ha-icon class="running-icon" icon="mdi:play-circle" title="Currently running"></ha-icon>` : ""}
               ${slot}
@@ -1080,11 +1079,10 @@ class SolarPlannerCard extends HTMLElement {
         .bar-draggable:active { cursor: grabbing; }
         .drag-pct-bg { fill: var(--card-background-color, #1c1c1c); opacity: 0.92; }
         .drag-pct { font-size: 9px; fill: var(--primary-text-color); }
-        .device-select { margin-top: 12px; }
-        .device-select-header { font-size: 0.95em; font-weight: 500; color: var(--primary-text-color); margin-bottom: 4px; }
+        .device-select { margin-top: 12px; display: flex; flex-wrap: wrap; align-items: center; column-gap: 12px; }
+        .device-select-header { flex-basis: 100%; font-size: 0.95em; font-weight: 500; color: var(--primary-text-color); margin-bottom: 4px; }
         .device-select-header .swatch { margin-right: 5px; vertical-align: middle; }
         .program-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 0.85em; flex-wrap: wrap; }
-        .program-row .swatch { flex-shrink: 0; }
         .running-icon { --mdc-icon-size: 14px; color: var(--success-color, #4caf50); vertical-align: middle; }
         .program-toggle { border: 1px solid var(--divider-color); background: none; border-radius: 12px; padding: 3px 10px; font-size: 0.95em; cursor: pointer; color: var(--primary-text-color); font-family: inherit; }
         .program-toggle.active { background: var(--primary-color); color: var(--text-primary-color, #fff); border-color: var(--primary-color); }

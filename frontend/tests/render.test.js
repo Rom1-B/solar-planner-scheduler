@@ -1516,6 +1516,23 @@ test("an unlocked slot renders no Auto button", () => {
   assert.ok(!html.includes('class="auto-btn"'), "expected no Auto button when the slot isn't locked");
 });
 
+test("program rows show no color swatch; the toggle button itself carries the color once active", () => {
+  const inactiveCard = buildCard({ withActiveSelections: false });
+  inactiveCard._render();
+  const inactiveRow = inactiveCard.shadowRoot.innerHTML.match(/<div class="program-row[^>]*>[\s\S]*?<\/div>/)?.[0];
+  assert.ok(inactiveRow, "expected a program row to render");
+  assert.ok(!inactiveRow.includes("swatch"), "expected no color swatch inside a program row");
+  assert.ok(!inactiveRow.includes('style="background:'), "expected an inactive toggle to carry no inline color");
+
+  const activeCard = buildCard();
+  activeCard._render();
+  assert.match(
+    activeCard.shadowRoot.innerHTML,
+    /<button class="program-toggle active"[^>]*style="background:#[0-9a-fA-F]{6};border-color:#[0-9a-fA-F]{6}"/,
+    "expected an active toggle to carry its row color inline"
+  );
+});
+
 test("gantt markup includes a hidden live-percentage label for drag feedback", () => {
   // _bindGanttDrag can't be exercised here (dom-shim's querySelector/querySelectorAll are stubs, no
   // real pointer events). This only guards the static markup _bindGanttDrag depends on: a single
