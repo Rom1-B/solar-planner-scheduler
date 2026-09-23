@@ -1460,6 +1460,45 @@ async def test_a_dormant_on_demand_program_deactivates_itself(hass):
     assert coordinator.is_program_active("lave_vaisselle", "Eco", {CONF_AUTO_DAYS: []}) is False
 
 
+async def test_reactivating_a_dormant_on_demand_program_searches_fresh_not_dormant_again(hass):
+    """Regression for a live incident (2026-09-23): the dormant-deactivation branch above used to
+    leave the elapsed `committed` sitting in the Store, so turning the switch back on just fed
+    _reusable_committed() the same stale slot next cycle, judged dormant again, and got its
+    `active` forced straight back to False before a fresh search ever ran — the switch looked like
+    it "wouldn't stay on" no matter how it was toggled (UI, direct service call, didn't matter).
+    """
+    solcast_entry_id = register_provider_entities(
+        hass, "solcast_solar", {"sensor.forecast": {"detailedForecast": [{"period_start": dt_util.now(), "pv_estimate": 3.0}]}}
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_CONFIG_ENTRY_SOLCAST: solcast_entry_id, CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options=_device_options(auto_days=[]),
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("lave_vaisselle", "Eco", True)
+    yesterday_start = dt_util.now().replace(hour=12, minute=0, second=0, microsecond=0) - timedelta(days=1)
+    _seed_committed(
+        coordinator,
+        "lave_vaisselle",
+        "Eco",
+        DeviceSchedule("lave_vaisselle", yesterday_start, yesterday_start + timedelta(minutes=30), 80),
+    )
+    await _flush(coordinator)
+
+    await coordinator._async_update_data()  # goes dormant, deactivates itself
+    assert coordinator.is_program_active("lave_vaisselle", "Eco", {CONF_AUTO_DAYS: []}) is False
+    assert coordinator._get_committed("lave_vaisselle", "Eco") is None
+
+    await coordinator.async_set_program_active("lave_vaisselle", "Eco", True)  # user turns it back on
+    await _flush(coordinator)
+    results = await coordinator._async_update_data()
+
+    assert results[("lave_vaisselle", "Eco")].start is not None
+
+
 async def test_a_dormant_auto_days_program_stays_active_for_its_next_occurrence(hass):
     """The opposite case: a recurring program going dormant on a non-auto-day (not just any empty
     auto_days) must stay active, so it can reactivate itself on its own on its next real auto_day.

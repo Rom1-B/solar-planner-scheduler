@@ -1038,12 +1038,16 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                         # An on-demand program's one-off run is over: nothing will ever reactivate
                         # it on its own (no auto_days to wait for), so leaving the switch "on"
                         # would just be a stale display, unlike a recurring auto_days program which
-                        # must stay active to come back on its next auto_day.
-                        self._state.setdefault(device_name, {})[program_name] = {
-                            **self._program_state(device_name, program_name),
-                            "active": False,
-                            "active_set_on": now.date().isoformat(),
-                        }
+                        # must stay active to come back on its next auto_day. Also drop the elapsed
+                        # `committed`/`pending_forced_start`: otherwise the next manual reactivation
+                        # still sees this same stale slot, is judged dormant again next cycle, and
+                        # gets its `active` forced back to False before a fresh search ever runs.
+                        state = {**self._program_state(device_name, program_name)}
+                        state.pop("committed", None)
+                        state.pop("pending_forced_start", None)
+                        state["active"] = False
+                        state["active_set_on"] = now.date().isoformat()
+                        self._state.setdefault(device_name, {})[program_name] = state
                         self._store_dirty = True
                     continue
                 if should_search:
