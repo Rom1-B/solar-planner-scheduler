@@ -1,7 +1,6 @@
 {
   "domain": "solar_planner_scheduler",
   "name": "Solar Planner Scheduler",
-  "categories": ["energy"],
   "codeowners": ["@Rom1-B"],
   "config_flow": true,
   "dependencies": ["frontend", "http"],
