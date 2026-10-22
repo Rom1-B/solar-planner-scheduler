@@ -44,13 +44,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: home-assistant/actions/hassfest@master
+      - uses: home-assistant/actions/hassfest@4b258cf2bf1668d8e0adcb6b2be96b6cda36f42f # 1.0.0
 
   hacs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: hacs/action@main
+      - uses: hacs/action@d556e736723344f83838d08488c983a15381059a # 22.5.0
         with:
           category: integration
 
