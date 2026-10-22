@@ -20,12 +20,11 @@ You can set up several: the card then lets you switch between them, or blend the
 
 ## 📦 Installation
 
-Via HACS (custom repository, not yet in the default store):
+Via HACS:
 
-1. HACS -> the three-dot menu (top right) -> Custom repositories.
-2. URL: `https://github.com/Rom1-B/solar-planner-scheduler`, category: Integration.
-3. Install "Solar Planner Scheduler", restart Home Assistant.
-4. Settings -> Devices & services -> Add integration -> Solar Planner Scheduler.
+1. HACS -> search for "Solar Planner Scheduler" -> Install.
+2. Restart Home Assistant.
+3. Settings -> Devices & services -> Add integration -> Solar Planner Scheduler.
 
 Or manually: copy `custom_components/solar_planner_scheduler/` into your HA
 `config/custom_components/`, restart, then add the integration the same way.
