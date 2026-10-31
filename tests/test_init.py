@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from unittest.mock import patch
 
 from homeassistant.core import is_callback
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.solar_planner_scheduler import PLATFORMS, _card_version, async_setup_entry
@@ -222,3 +223,45 @@ async def test_async_setup_entry_strips_legacy_production_and_consumption_entity
         await async_setup_entry(hass, entry)
 
     assert entry.data == {CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000}
+
+
+async def test_async_setup_entry_removes_entities_of_removed_devices_and_programs(hass):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_ENTITY: "sensor.forecast", CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options={CONF_DEVICES: [{CONF_NAME: "lave_linge", CONF_PROGRAMS: [{CONF_NAME: "eco"}]}]},
+    )
+    entry.add_to_hass(hass)
+    registry = er.async_get(hass)
+
+    def register(domain: str, unique_suffix: str) -> str:
+        return registry.async_get_or_create(
+            domain, DOMAIN, f"{entry.entry_id}_{unique_suffix}", config_entry=entry
+        ).entity_id
+
+    kept = [
+        register("datetime", "lave_linge_eco_start"),
+        register("binary_sensor", "lave_linge_eco_should_run"),
+        register("switch", "lave_linge_eco_active"),
+        register("select", "forecast_source"),
+        register("sensor", "savings"),
+    ]
+    removed = [
+        register("datetime", "dryfix_on_start"),
+        register("binary_sensor", "dryfix_on_should_run"),
+        register("switch", "dryfix_on_active"),
+        register("switch", "lave_linge_couette_active"),
+    ]
+
+    with (
+        patch(
+            "custom_components.solar_planner_scheduler.coordinator."
+            "SolarPlannerSchedulerCoordinator.async_config_entry_first_refresh"
+        ),
+        patch("homeassistant.config_entries.ConfigEntries.async_forward_entry_setups"),
+        patch("homeassistant.helpers.event.async_track_time_interval"),
+    ):
+        await async_setup_entry(hass, entry)
+
+    assert all(registry.async_get(entity_id) for entity_id in kept)
+    assert not any(registry.async_get(entity_id) for entity_id in removed)

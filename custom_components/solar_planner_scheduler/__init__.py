@@ -96,6 +96,27 @@ def _async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, "reset_to_auto", _reset_to_auto, schema=schema)
 
 
+PROGRAM_ENTITY_SUFFIXES = {"datetime": "start", "binary_sensor": "should_run", "switch": "active"}
+
+
+def _remove_stale_program_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Drop registry entries of removed devices/programs, otherwise left `unavailable` forever."""
+    from homeassistant.helpers import entity_registry as er
+
+    from .const import CONF_DEVICES, CONF_NAME, CONF_PROGRAMS
+
+    expected = {
+        f"{entry.entry_id}_{device[CONF_NAME]}_{program[CONF_NAME]}_{suffix}"
+        for device in entry.options.get(CONF_DEVICES, [])
+        for program in device.get(CONF_PROGRAMS, [])
+        for suffix in PROGRAM_ENTITY_SUFFIXES.values()
+    }
+    registry = er.async_get(hass)
+    for registry_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if registry_entry.domain in PROGRAM_ENTITY_SUFFIXES and registry_entry.unique_id not in expected:
+            registry.async_remove(registry_entry.entity_id)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     from datetime import datetime, timedelta
 
@@ -112,6 +133,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     cleaned_data, data_changed = strip_legacy_entry_data_keys(entry.data)
     if data_changed:
         hass.config_entries.async_update_entry(entry, data=cleaned_data)
+
+    _remove_stale_program_entities(hass, entry)
 
     coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
     await coordinator.async_load_state()
