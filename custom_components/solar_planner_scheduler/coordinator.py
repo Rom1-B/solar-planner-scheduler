@@ -120,6 +120,25 @@ PHASE_CALIBRATION_WATTS_TOLERANCE_RATIO = 0.1
 PHASE_CALIBRATION_WATTS_TOLERANCE_FLOOR_W = 20
 
 
+STORE_GLOBAL_KEYS = ("forecast_source", "standby")
+
+
+def _prune_removed_state(state: dict, devices: list[dict]) -> dict:
+    """Drop stored state of devices/programs no longer configured, so re-adding one under the same
+    name starts fresh instead of inheriting an old commitment or phase history."""
+    programs = {d[CONF_NAME]: {p[CONF_NAME] for p in d.get(CONF_PROGRAMS, [])} for d in devices}
+    pruned = {
+        device_name: {name: s for name, s in device_state.items() if name in programs[device_name]}
+        for device_name, device_state in state.items()
+        if device_name not in STORE_GLOBAL_KEYS and device_name in programs
+    }
+    if "forecast_source" in state:
+        pruned["forecast_source"] = state["forecast_source"]
+    if "standby" in state:
+        pruned["standby"] = {name: s for name, s in state["standby"].items() if name in programs}
+    return pruned
+
+
 def _migrate_legacy_state(raw: dict) -> dict:
     """Convert the legacy schema ({device: {selected, ...}}) to the current one
     ({device: {program: {active, ...}}}). A "selected" key marks a legacy entry; idempotent.
@@ -370,7 +389,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
     async def async_load_state(self) -> None:
         """Load persisted per-device-per-program state. Call once before the first refresh."""
         raw = await self._store.async_load() or {}
-        self._state = _migrate_legacy_state(raw)
+        self._state = _prune_removed_state(_migrate_legacy_state(raw), self.entry.options.get(CONF_DEVICES, []))
         if self._state != raw:
             await self._store.async_save(self._state)
 

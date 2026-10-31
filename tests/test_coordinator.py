@@ -61,6 +61,7 @@ from custom_components.solar_planner_scheduler.coordinator import (
     _is_relevant_today,
     _migrate_legacy_state,
     _phases_differ_significantly,
+    _prune_removed_state,
     compute_locked,
     strip_legacy_device_options,
     strip_legacy_entry_data_keys,
@@ -2592,3 +2593,39 @@ async def test_the_per_minute_passes_degrade_gracefully_without_a_power_sensor(h
     state = coordinator._program_state("lave_vaisselle", "Eco")
     assert state.get("phases_calibrated") is True
     assert state.get("run_trace", []) == []
+
+
+def test_prune_removed_state_drops_removed_devices_programs_and_their_standby():
+    state = {
+        "Lave-linge": {"Eco": {"active": True}, "Couette": {"active": False}},
+        "Dryfix": {"ON": {"active": True, "committed": {"start": "2026-10-31T07:45:00+00:00"}}},
+        "Ballon": {},
+        "forecast_source": "solcast",
+        "standby": {"Lave-linge": [2.0], "Dryfix": [1.0]},
+    }
+    devices = [{CONF_NAME: "Lave-linge", CONF_PROGRAMS: [{CONF_NAME: "Eco"}]}]
+
+    assert _prune_removed_state(state, devices) == {
+        "Lave-linge": {"Eco": {"active": True}},
+        "forecast_source": "solcast",
+        "standby": {"Lave-linge": [2.0]},
+    }
+
+
+async def test_load_state_forgets_a_removed_device_so_re_adding_it_starts_fresh(hass):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options={CONF_DEVICES: [{CONF_NAME: "Four", CONF_PROGRAMS: [{CONF_NAME: "180°C"}]}]},
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("Four", "180°C", True)
+    await _flush(coordinator)
+
+    hass.config_entries.async_update_entry(entry, options={CONF_DEVICES: []})
+    reloaded = SolarPlannerSchedulerCoordinator(hass, entry)
+    await reloaded.async_load_state()
+
+    assert reloaded._program_state("Four", "180°C") == {}
