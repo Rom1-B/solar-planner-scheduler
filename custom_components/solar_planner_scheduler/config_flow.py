@@ -29,10 +29,9 @@ from .const import (
     CONF_POWER_W,
     CONF_PRICE_TRACKING_ENABLED,
     CONF_PROGRAMS,
-    CONF_SAVINGS_CONSUMPTION_ENTITY,
     CONF_SAVINGS_ENABLED,
-    CONF_SAVINGS_IMPORT_ENTITY,
     CONF_SAVINGS_INVESTMENT,
+    CONF_SAVINGS_RESALE_START_DATE,
     CONF_SAVINGS_START_DATE,
     CONF_START_TIME,
     CONF_TARIFF_BANDS,
@@ -216,7 +215,6 @@ def _tariff_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
 
 def _savings_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     defaults = defaults or {}
-    energy_sensor = selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="energy"))
 
     # suggested_value, not default: an omitted optional field must stay absent, not become "".
     def _suggested(key: str) -> dict[str, Any]:
@@ -224,13 +222,18 @@ def _savings_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
 
     return vol.Schema(
         {
-            vol.Required(CONF_SAVINGS_ENABLED, default=defaults.get(CONF_SAVINGS_ENABLED, False)): selector.BooleanSelector(),
-            vol.Optional(CONF_SAVINGS_CONSUMPTION_ENTITY, description=_suggested(CONF_SAVINGS_CONSUMPTION_ENTITY)): energy_sensor,
-            vol.Optional(CONF_SAVINGS_IMPORT_ENTITY, description=_suggested(CONF_SAVINGS_IMPORT_ENTITY)): energy_sensor,
-            vol.Optional(CONF_SAVINGS_START_DATE, description=_suggested(CONF_SAVINGS_START_DATE)): selector.DateSelector(),
+            vol.Required(
+                CONF_SAVINGS_ENABLED, default=defaults.get(CONF_SAVINGS_ENABLED, False)
+            ): selector.BooleanSelector(),
+            vol.Optional(
+                CONF_SAVINGS_START_DATE, description=_suggested(CONF_SAVINGS_START_DATE)
+            ): selector.DateSelector(),
             vol.Optional(CONF_SAVINGS_INVESTMENT, description=_suggested(CONF_SAVINGS_INVESTMENT)): selector.NumberSelector(
                 selector.NumberSelectorConfig(min=0, step=0.01, mode=selector.NumberSelectorMode.BOX)
             ),
+            vol.Optional(
+                CONF_SAVINGS_RESALE_START_DATE, description=_suggested(CONF_SAVINGS_RESALE_START_DATE)
+            ): selector.DateSelector(),
         }
     )
 
@@ -392,14 +395,14 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_edit_savings(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
-            required = (CONF_SAVINGS_CONSUMPTION_ENTITY, CONF_SAVINGS_IMPORT_ENTITY, CONF_SAVINGS_START_DATE, CONF_SAVINGS_INVESTMENT)
+            required = (CONF_SAVINGS_START_DATE, CONF_SAVINGS_INVESTMENT)
             if user_input[CONF_SAVINGS_ENABLED]:
                 missing = {key: "required_for_savings" for key in required if user_input.get(key) in (None, "")}
                 if missing:
                     return self.async_show_form(step_id="edit_savings", data_schema=_savings_schema(user_input), errors=missing)
-            # Every savings key is rewritten, so a field cleared while disabled really goes away.
+            # Every savings key is rewritten, so a cleared optional field really goes away.
             new_data = {**self.config_entry.data}
-            for key in (CONF_SAVINGS_ENABLED, *required):
+            for key in (CONF_SAVINGS_ENABLED, *required, CONF_SAVINGS_RESALE_START_DATE):
                 new_data.pop(key, None)
             new_data.update({key: value for key, value in user_input.items() if value not in (None, "")})
             self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)

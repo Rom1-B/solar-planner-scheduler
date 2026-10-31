@@ -82,13 +82,15 @@
       },
       "edit_savings": {
         "title": "Suivre les économies solaires",
-        "description": "Valorise l'énergie solaire consommée sur place (consommation de la maison moins achats au réseau, par heure) au tarif configuré, depuis la date d'installation, pour suivre l'amortissement. Nécessite le suivi tarifaire.",
+        "description": "Valorise l'énergie solaire d'après la configuration du tableau Énergie depuis la date d'installation : la part consommée sur place (solaire moins injection, par heure) au prix d'achat, plus l'injection au prix de revente. Sert à suivre l'amortissement de l'installation.",
         "data": {
           "savings_enabled": "Activer le suivi des économies",
-          "savings_consumption_entity": "Énergie consommée par la maison (kWh)",
-          "savings_import_entity": "Énergie achetée au réseau (kWh)",
           "savings_start_date": "Date d'installation",
-          "savings_investment": "Coût net de l'installation"
+          "savings_investment": "Coût net de l'installation",
+          "savings_resale_start_date": "Date de début de revente"
+        },
+        "data_description": {
+          "savings_resale_start_date": "Facultatif : l'injection ne rapporte rien avant cette date (par exemple un contrat de rachat signé après l'installation). Vide : depuis la date d'installation."
         }
       },
       "add_device": {

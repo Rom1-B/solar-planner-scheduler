@@ -82,13 +82,15 @@
       },
       "edit_savings": {
         "title": "Track solar savings",
-        "description": "Values the solar energy used at home (house consumption minus grid import, per hour) at the configured tariff, since the installation date, to track the installation's payback. Requires tariff tracking.",
+        "description": "Values solar energy from the Energy dashboard's configuration since the installation date: the share used at home (solar minus export, per hour) at the import price, plus export at the export price. Used to track the installation's payback.",
         "data": {
           "savings_enabled": "Enable savings tracking",
-          "savings_consumption_entity": "House consumption energy (kWh)",
-          "savings_import_entity": "Grid import energy (kWh)",
           "savings_start_date": "Installation date",
-          "savings_investment": "Net installation cost"
+          "savings_investment": "Net installation cost",
+          "savings_resale_start_date": "Resale start date"
+        },
+        "data_description": {
+          "savings_resale_start_date": "Optional: export earns nothing before this date (e.g. a resale contract signed after installation). Empty: from the installation date."
         }
       },
       "add_device": {

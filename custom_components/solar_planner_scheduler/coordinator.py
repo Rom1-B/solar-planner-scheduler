@@ -169,7 +169,14 @@ def strip_legacy_device_options(devices: list[dict]) -> tuple[list[dict], bool]:
 # subscription_price_monthly (2026-09-10): collected since the tariff feature shipped, never read
 # by any code (scheduling ranks by €/kWh deficit cost, never touches a flat monthly fee); dropped
 # outright, no replacement field anywhere, nothing in this project computes a real monthly bill.
-LEGACY_ENTRY_DATA_KEYS = ("production_entity", "consumption_entity", "subscription_price_monthly")
+# savings_*_entity: 0.7.0's savings meters, superseded by the Energy dashboard's configuration.
+LEGACY_ENTRY_DATA_KEYS = (
+    "production_entity",
+    "consumption_entity",
+    "subscription_price_monthly",
+    "savings_consumption_entity",
+    "savings_import_entity",
+)
 
 
 def strip_legacy_entry_data_keys(data: dict) -> tuple[dict, bool]:

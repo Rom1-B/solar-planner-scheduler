@@ -46,9 +46,9 @@ Devices, programs and fixed loads are managed via "Configure":
   It's just subtracted from available solar when scheduling everything else.
 - **Tariffs** (optional): enable tracking and set price bands (`HH:MM@price`, one per line). Once
   enabled, scheduling always picks the cheapest window instead of just the sunniest one.
-- **Solar savings** (optional, needs tariffs): pick your house consumption and grid import energy
-  sensors, the installation date and its net cost, to track how much the panels saved and when
-  they'll be paid off.
+- **Solar savings** (optional): set the installation date and its net cost (and optionally when
+  resale started) to track how much the panels earned and when they'll be paid off. Meters and prices come from your Energy dashboard,
+  which needs a solar source and a grid import price.
 
 Turning a program on searches for today's best slot right away. It repeats on later days only if
 you checked those days in its auto-schedule; without any, it turns itself off after that one run.
@@ -67,12 +67,14 @@ or more providers configured, it also offers blended options ("Average", "Min").
 `sensor.solar_planner_scheduler_current_price` exposes the live €/kWh price (with tariff tracking
 on), usable as the Energy dashboard's cost source for grid consumption.
 
-`sensor.solar_planner_scheduler_savings` is the money saved by solar energy used at home since the
-installation date: for each hour, (consumed minus imported from the grid) times that hour's tariff, recomputed
-every hour from Home Assistant's long-term statistics. Its attributes track the payback:
-`investment`, `remaining`, `progress` (%), `payback_date` (projected from the average daily
-savings so far) and `estimate_reliable`, false until a full year of data, since a projection made
-from summer months alone is optimistic.
+`sensor.solar_planner_scheduler_savings` is the money solar earned since the installation date,
+recomputed every hour from Home Assistant's long-term statistics and the Energy dashboard's
+configuration: for each hour, (solar minus grid export) at the import price
+(`self_consumption_savings`), plus grid export at the export price (`resale_revenue`, 0 without an
+export price, counted only from the optional resale start date, e.g. a resale contract signed
+after installation). Its other attributes track the payback: `investment`, `remaining`, `progress` (%),
+`payback_date` (projected from the average daily gains so far) and `estimate_reliable`, false until
+a full year of data, since a projection made from summer months alone is optimistic.
 
 The integration never turns a device on or off itself. Pair it with an automation:
 

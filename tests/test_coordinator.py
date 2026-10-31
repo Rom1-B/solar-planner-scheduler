@@ -1282,12 +1282,15 @@ def test_strip_legacy_entry_data_keys_drops_production_and_consumption_entity():
         "production_entity": "sensor.elec_solar_power",
         "consumption_entity": "sensor.elec_0_power",
         "subscription_price_monthly": 12.5,
+        "savings_consumption_entity": "sensor.elec_0_energy",
+        "savings_import_entity": "sensor.elec_1_energy",
+        "savings_start_date": "2026-07-29",
     }
 
     cleaned, changed = strip_legacy_entry_data_keys(data)
 
     assert changed is True
-    assert cleaned == {CONF_MAX_SIMULTANEOUS_POWER: 4000}
+    assert cleaned == {CONF_MAX_SIMULTANEOUS_POWER: 4000, "savings_start_date": "2026-07-29"}
 
 
 def test_strip_legacy_entry_data_keys_is_a_no_op_on_already_clean_data():

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
+from homeassistant.components.energy.data import async_get_manager as async_get_energy_manager
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
@@ -29,10 +30,9 @@ from .const import (
     CONF_POWER_PROFILE,
     CONF_PRICE_TRACKING_ENABLED,
     CONF_PROGRAMS,
-    CONF_SAVINGS_CONSUMPTION_ENTITY,
     CONF_SAVINGS_ENABLED,
-    CONF_SAVINGS_IMPORT_ENTITY,
     CONF_SAVINGS_INVESTMENT,
+    CONF_SAVINGS_RESALE_START_DATE,
     CONF_SAVINGS_START_DATE,
     CONF_START_TIME,
     CONF_TARIFF_BANDS,
@@ -40,7 +40,7 @@ from .const import (
 )
 from .coordinator import SolarPlannerSchedulerCoordinator
 from .forecast_providers import resolve_forecast_history_entities
-from .savings import hourly_savings, payback
+from .savings import energy_sources, hourly_sum, payback, price_lookup, solar_gains
 from .scheduling import price_at
 
 # Hourly statistics are compiled a few seconds past the hour; this leaves a wide margin.
@@ -186,13 +186,12 @@ class MinForecastPowerNowSensor(_CombinedForecastPowerNowSensor):
 
 
 class SolarSavingsSensor(SensorEntity):
-    """Money saved by self-consumed solar since the installation date, with payback attributes.
-
-    Self-consumption is house consumption minus grid import, which doesn't depend on a solar
-    production meter at all.
+    """Money gained from solar since the installation date (self-consumption savings plus resale),
+    with payback attributes, all derived from the Energy dashboard's configuration.
 
     Recomputed in full every hour from the recorder's long-term statistics (see savings.py), so
-    nothing is persisted here. None when savings or tariff tracking is disabled.
+    nothing is persisted here. None when disabled, or when the Energy dashboard has no solar source
+    or no import price.
     """
 
     _attr_device_class = SensorDeviceClass.MONETARY
@@ -219,37 +218,54 @@ class SolarSavingsSensor(SensorEntity):
     def _scheduled_refresh(self, _now: datetime) -> None:
         self.hass.async_create_task(self.async_refresh_savings())
 
+    def _clear(self) -> None:
+        self._attr_native_value = None
+        self._attr_extra_state_attributes = {}
+        self.async_write_ha_state()
+
+    async def _statistics(self, start: datetime, ids: set[str], units: dict | None, types: set[str]) -> dict:
+        if not ids:
+            return {}
+        stats = await get_instance(self.hass).async_add_executor_job(
+            statistics_during_period, self.hass, start, None, ids, "hour", units, types
+        )
+        return {
+            statistic_id: [
+                {**row, "start": dt_util.as_local(dt_util.utc_from_timestamp(row["start"]))} for row in rows
+            ]
+            for statistic_id, rows in stats.items()
+        }
+
     async def async_refresh_savings(self) -> None:
         data = self._entry.data
-        if not (data.get(CONF_SAVINGS_ENABLED) and data.get(CONF_PRICE_TRACKING_ENABLED)):
-            self._attr_native_value = None
-            self._attr_extra_state_attributes = {}
-            self.async_write_ha_state()
+        if not data.get(CONF_SAVINGS_ENABLED):
+            self._clear()
             return
-        consumption = data[CONF_SAVINGS_CONSUMPTION_ENTITY]
-        grid_import = data[CONF_SAVINGS_IMPORT_ENTITY]
+        sources = energy_sources((await async_get_energy_manager(self.hass)).data)
+        if not sources.solar or sources.import_price is None:
+            self._clear()
+            return
         start_date = date.fromisoformat(data[CONF_SAVINGS_START_DATE])
-        stats = await get_instance(self.hass).async_add_executor_job(
-            statistics_during_period,
-            self.hass,
-            dt_util.start_of_local_day(start_date),
-            None,
-            {consumption, grid_import},
-            "hour",
-            {"energy": "kWh"},
-            {"change"},
-        )
+        start = dt_util.start_of_local_day(start_date)
+        resale_start = data.get(CONF_SAVINGS_RESALE_START_DATE)
+        energy = await self._statistics(start, sources.energy_ids(), {"energy": "kWh"}, {"change"})
+        prices = await self._statistics(start, sources.price_entities(), None, {"mean"})
 
-        def rows(statistic_id: str) -> list[dict]:
-            return [
-                {"start": dt_util.as_local(dt_util.utc_from_timestamp(row["start"])), "change": row.get("change")}
-                for row in stats.get(statistic_id, [])
-            ]
+        def lookup(price):
+            return price_lookup(price, prices.get(price.entity, []) if price and price.entity else [])
 
-        tariff_bands = data.get(CONF_TARIFF_BANDS, [])
-        savings = hourly_savings(rows(consumption), rows(grid_import), lambda t: price_at(t, tariff_bands))
-        self._attr_native_value = round(savings, 2)
-        self._attr_extra_state_attributes = payback(
-            savings, float(data[CONF_SAVINGS_INVESTMENT]), start_date, dt_util.now().date()
+        savings, resale = solar_gains(
+            hourly_sum(energy, sources.solar),
+            hourly_sum(energy, sources.export),
+            lookup(sources.import_price),
+            lookup(sources.export_price),
+            resale_from=dt_util.start_of_local_day(date.fromisoformat(resale_start)) if resale_start else None,
         )
+        gains = savings + resale
+        self._attr_native_value = round(gains, 2)
+        self._attr_extra_state_attributes = {
+            "self_consumption_savings": round(savings, 2),
+            "resale_revenue": round(resale, 2),
+            **payback(gains, float(data[CONF_SAVINGS_INVESTMENT]), start_date, dt_util.now().date()),
+        }
         self.async_write_ha_state()

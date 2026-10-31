@@ -37,10 +37,9 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_POWER_SENSOR,
     CONF_PRICE_TRACKING_ENABLED,
     CONF_PROGRAMS,
-    CONF_SAVINGS_CONSUMPTION_ENTITY,
     CONF_SAVINGS_ENABLED,
-    CONF_SAVINGS_IMPORT_ENTITY,
     CONF_SAVINGS_INVESTMENT,
+    CONF_SAVINGS_RESALE_START_DATE,
     CONF_SAVINGS_START_DATE,
     CONF_START_TIME,
     CONF_TARIFF_BANDS,
@@ -379,8 +378,6 @@ async def _submit_savings(hass, entry, user_input: dict):
 
 _SAVINGS_INPUT = {
     CONF_SAVINGS_ENABLED: True,
-    CONF_SAVINGS_CONSUMPTION_ENTITY: "sensor.house_energy",
-    CONF_SAVINGS_IMPORT_ENTITY: "sensor.grid_imported",
     CONF_SAVINGS_START_DATE: "2026-07-29",
     CONF_SAVINGS_INVESTMENT: 10900,
 }
@@ -397,15 +394,24 @@ async def test_edit_savings_writes_its_fields_to_entry_data_without_touching_oth
     assert entry.data[CONF_MAX_SIMULTANEOUS_POWER] == max_power
 
 
-async def test_edit_savings_enabled_requires_every_field(hass, enable_custom_integrations):
+async def test_edit_savings_stores_and_clears_the_optional_resale_start_date(hass, enable_custom_integrations):
+    entry = _entry(hass, [])
+    await _submit_savings(hass, entry, {**_SAVINGS_INPUT, CONF_SAVINGS_RESALE_START_DATE: "2026-12-01"})
+    assert entry.data[CONF_SAVINGS_RESALE_START_DATE] == "2026-12-01"
+
+    await _submit_savings(hass, entry, _SAVINGS_INPUT)
+
+    assert CONF_SAVINGS_RESALE_START_DATE not in entry.data
+    assert entry.data[CONF_SAVINGS_START_DATE] == "2026-07-29"
+
+
+async def test_edit_savings_enabled_requires_start_date_and_investment(hass, enable_custom_integrations):
     entry = _entry(hass, [])
 
     result = await _submit_savings(hass, entry, {CONF_SAVINGS_ENABLED: True})
 
     assert result["type"] == "form"
     assert result["errors"] == {
-        CONF_SAVINGS_CONSUMPTION_ENTITY: "required_for_savings",
-        CONF_SAVINGS_IMPORT_ENTITY: "required_for_savings",
         CONF_SAVINGS_START_DATE: "required_for_savings",
         CONF_SAVINGS_INVESTMENT: "required_for_savings",
     }
