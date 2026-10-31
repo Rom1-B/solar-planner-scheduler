@@ -95,12 +95,14 @@ jobs:
         if: steps.version.outputs.new == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          # Via env, never inlined in the script: commit messages could break or inject shell.
+          NOTES: ${{ steps.cliff.outputs.content }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           PREV_TAG=$(git tag --sort=-v:refname | sed -n '2p')
 
           {
-            echo "${{ steps.cliff.outputs.content }}"
+            printf '%s\n' "$NOTES"
             echo
             if [ -n "$PREV_TAG" ]; then
               echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/$PREV_TAG...$VERSION"

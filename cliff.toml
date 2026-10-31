@@ -2,17 +2,11 @@
 header = ""
 body = """
 {% for group, commits in commits | group_by(attribute="group") %}
-### {{ group }}
-{% for commit in commits -%}
-{%- if group == "Features" -%}
-- {{ commit.message | trim_start_matches(pat="Feat: ") | trim_start_matches(pat="feat: ") | upper_first }}
-{% elif group == "Fixes" -%}
-- {{ commit.message | trim_start_matches(pat="Fix: ") | trim_start_matches(pat="fix: ") | upper_first }}
-{% else -%}
-- {{ commit.message }}
-{% endif -%}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {{ commit.message | split(pat="\n") | first | trim_start_matches(pat="Feat: ") | trim_start_matches(pat="feat: ") | trim_start_matches(pat="Fix: ") | trim_start_matches(pat="fix: ") | upper_first }}
+{%- endfor %}
 {% endfor %}
-{% endfor %}\
 """
 footer = ""
 trim = true
@@ -24,8 +18,12 @@ filter_unconventional = false
 filter_commits = false
 tag_pattern = "[0-9]+\\.[0-9]+\\.[0-9]+"
 sort_commits = "oldest"
+# Only the first line of each message is rendered; merge commits would duplicate the PR's own commits.
+# The <!-- n --> prefixes fix the section order and are stripped by `striptags` in the body.
 commit_parsers = [
-  { message = "(?i)^feat:?\\s*", group = "Features" },
-  { message = "(?i)^fix:?\\s*", group = "Fixes" },
-  { message = ".*", group = "Other" },
+  { message = "^Merge ", skip = true },
+  { message = "(?i)^feat:?\\s*", group = "<!-- 0 -->Features" },
+  { message = "(?i)^fix:?\\s*", group = "<!-- 1 -->Fixes" },
+  { message = "^Build\\(deps", group = "<!-- 2 -->Dependencies" },
+  { message = ".*", group = "<!-- 3 -->Other" },
 ]
