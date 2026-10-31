@@ -1,89 +1,111 @@
 # 🔆 Solar Planner Scheduler
 
-Home Assistant integration that schedules devices around your solar forecast and shows them on a
-bundled Lovelace card. Example: tell it your washing machine takes 2h, and it picks the best
-2h window today to run it on solar surplus (or, with tariff tracking on, whichever window is
-cheapest, solar or off-peak grid).
+[![HACS Default](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://github.com/hacs/integration)
+[![Release](https://img.shields.io/github/v/release/Rom1-B/solar-planner-scheduler)](https://github.com/Rom1-B/solar-planner-scheduler/releases)
+[![CI](https://github.com/Rom1-B/solar-planner-scheduler/actions/workflows/ci.yml/badge.svg)](https://github.com/Rom1-B/solar-planner-scheduler/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/Rom1-B/solar-planner-scheduler)](LICENSE)
 
-![Solar Planner card](docs/card.png)
+**Run your appliances on sunshine, not on the grid.**
+Tell Home Assistant your washing machine takes 2 hours: Solar Planner Scheduler finds the best 2-hour window in today's solar forecast, shows it on a bundled card, and flips a sensor on when it's time to start.
+
+![Solar Planner card](https://raw.githubusercontent.com/Rom1-B/solar-planner-scheduler/main/docs/card.png)
+
+## ✨ Features
+
+- **Best slot from your solar forecast**: each program gets the window where the forecast covers the largest share of its consumption, recomputed as the forecast updates.
+- **Realistic power profiles**: describe a program as phases (`20min@150W`, then `1.5h@800W`), so a short heating peak is placed under the sun, not just the average draw.
+- **Self-learning**: with a power sensor, the integration detects real starts and refines each program's phases from actual runs.
+- **Shares the sunshine**: several devices never get scheduled beyond your maximum simultaneous power, and two programs of the same machine never overlap.
+- **Off-peak aware** (optional): with your tariff bands, it picks the cheapest window, solar or off-peak grid, and shows the estimated cost or savings.
+- **Payback tracking** (optional): a sensor reports what your panels earned since installation and projects the payback date, from your Energy dashboard's data.
+- **Bundled Lovelace card**: forecast curve with confidence band, a gantt of planned runs, drag a bar to force a time, summary table. Registered automatically.
 
 ## 📋 Requirements
 
-A solar forecast already set up in Home Assistant, from one of these:
+A solar forecast already set up in Home Assistant, from at least one of these:
 
 - [Solcast](https://github.com/BJReplay/ha-solcast-solar)
 - [Helios Forecast](https://github.com/ReikanYsora/Helios-Forecast)
 - the built-in [Forecast.Solar](https://www.home-assistant.io/integrations/forecast_solar/)
 
-You can set up several: the card then lets you switch between them, or blend them ("Average",
-"Min").
+With several providers, you can switch between them from the card, or blend them ("Average", "Min").
+
+Optional: a power sensor per device (start detection and phase learning), and an Energy dashboard with a solar source and a grid import price (payback tracking).
 
 ## 📦 Installation
 
-Via HACS:
+[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Rom1-B&repository=solar-planner-scheduler&category=integration)
 
-1. HACS -> search for "Solar Planner Scheduler" -> Install.
+1. In HACS, search for "Solar Planner Scheduler" and install it.
 2. Restart Home Assistant.
-3. Settings -> Devices & services -> Add integration -> Solar Planner Scheduler.
+3. Add the integration:
 
-Or manually: copy `custom_components/solar_planner_scheduler/` into your HA
-`config/custom_components/`, restart, then add the integration the same way.
+[![Add integration](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=solar_planner_scheduler)
 
 ## ⚙️ Configuration
 
-Initial setup asks for the shared entities (forecast, forecast tomorrow, max simultaneous power).
-Devices, programs and fixed loads are managed via "Configure":
+Initial setup asks for the forecast entities and the maximum simultaneous power.
+Everything else is managed from Settings > Devices & services > Solar Planner Scheduler > Configure, a menu that stays open so several changes can be made in one go.
 
-- **Device**: name plus an optional power sensor, used to detect when a program starts and to
-  fine-tune its phases automatically over time. "Manage a device" opens a menu to edit it or
-  add/edit/remove its programs.
-- **Program**: list its phases (power draw over time), one per line, e.g. `20min@150W` then
-  `1.5h@800W` for a washing machine's heat-then-spin cycle. Rough values are fine: with a power
-  sensor set, the integration corrects them automatically from real runs. Pick which days it
-  should auto-run on. A device can have several programs active at once, each with its own
-  `switch.<device>_<program>_active`.
-- **Fixed load**: something that draws power but that you don't control (a pool pump, a fridge).
-  It's just subtracted from available solar when scheduling everything else.
-- **Tariffs** (optional): enable tracking and set price bands (`HH:MM@price`, one per line). Once
-  enabled, scheduling always picks the cheapest window instead of just the sunniest one.
-- **Solar savings** (optional): set the installation date and its net cost (and optionally when
-  resale started) to track how much the panels earned and when they'll be paid off. Meters and prices come from your Energy dashboard,
-  which needs a solar source and a grid import price.
+| Item | What it is |
+|------|------------|
+| **Device** | A physical appliance: a name and an optional power sensor, used to detect when a program actually starts and to refine its phases over time. "Manage a device" edits it and its programs. |
+| **Program** | One cycle of a device, as phases, one per line: `<duration>min@<watts>W` or `<duration>h@<watts>W` (e.g. `20min@150W` then `1.5h@800W` for heat then spin). Rough values are fine: with a power sensor, real runs correct them. Optionally pick the days it should auto-run on. |
+| **Fixed load** | Something drawing power that you don't control (pool pump, heat pump on a timer), with the same phases format. It's subtracted from available solar when scheduling everything else. |
+| **Tariffs** (optional) | Price bands, `HH:MM@price`, one per line. Once enabled, scheduling picks the cheapest window instead of just the sunniest one. |
+| **Solar savings** (optional) | Installation date, net cost, and optionally the date resale started. Meters and prices come from your Energy dashboard, which needs a solar source and a grid import price. |
 
-Turning a program on searches for today's best slot right away. It repeats on later days only if
-you checked those days in its auto-schedule; without any, it turns itself off after that one run.
+### Scheduling behavior
 
-`datetime.<device>_<program>_start` shows the next start time. Drag its bar on the card, or edit
-the entity, to force a time. Click "Auto" to cancel a forced time and search again.
+- Turning a program on searches today's best slot immediately.
+- It repeats on later days only for the days checked in its auto-run schedule; without any, it turns itself off after that one run.
+- Until a slot is about to start, the search keeps chasing a better window as the forecast updates; once imminent or running, the slot is locked.
+- Drag a bar on the card, or edit the `datetime` entity, to force a start time. "Auto" cancels it and searches again.
+- A device can have several programs active the same day: they're placed one after the other, never in parallel.
 
 ## 🔌 Entities
 
-Per (device, program) pair: `datetime.<device>_<program>_start`,
-`binary_sensor.<device>_<program>_should_run`, `switch.<device>_<program>_active`.
+Per (device, program) pair:
 
-`select.solar_planner_scheduler_forecast_source` picks which forecast drives scheduling. With two
-or more providers configured, it also offers blended options ("Average", "Min").
+| Entity | Description |
+|--------|-------------|
+| `switch.<device>_<program>_active` | Whether this program is scheduled. |
+| `datetime.<device>_<program>_start` | Next start time, computed or forced. Attributes include `coverage_pct` (share covered by solar), `profile`, `locked`, and with tariffs, the estimated cost and savings. |
+| `binary_sensor.<device>_<program>_should_run` | On during the scheduled window: trigger your automations from it. |
 
-`sensor.solar_planner_scheduler_current_price` exposes the live €/kWh price (with tariff tracking
-on), usable as the Energy dashboard's cost source for grid consumption.
+Integration-wide:
 
-`sensor.solar_planner_scheduler_savings` is the money solar earned since the installation date,
-recomputed every hour from Home Assistant's long-term statistics and the Energy dashboard's
-configuration: for each hour, (solar minus grid export) at the import price
-(`self_consumption_savings`), plus grid export at the export price (`resale_revenue`, 0 without an
-export price, counted only from the optional resale start date, e.g. a resale contract signed
-after installation). Its other attributes track the payback: `investment`, `remaining`, `progress` (%),
-`payback_date` (projected from the average daily gains so far) and `estimate_reliable`, false until
-a full year of data, since a projection made from summer months alone is optimistic.
+| Entity | Description |
+|--------|-------------|
+| `select.solar_planner_scheduler_forecast_source` | Which forecast drives scheduling, including "Average"/"Min" blends with several providers. |
+| `sensor.solar_planner_scheduler_current_price` | Live €/kWh price (tariff tracking on), usable as the Energy dashboard's grid cost entity. |
+| `sensor.solar_planner_scheduler_savings` | Money earned by solar since installation (solar tracking on). See below. |
 
-The integration never turns a device on or off itself. Pair it with an automation:
+<details>
+<summary>How savings and payback are computed</summary>
 
-1. Run actions when the window starts and ends (turn a plug on/off, notify): use the bundled blueprint, pick the program's `should_run` sensor and the actions.
+Recomputed every hour from Home Assistant's long-term statistics and the Energy dashboard's configuration.
+For each hour: (solar minus grid export) at the import price (`self_consumption_savings`), plus grid export at the export price (`resale_revenue`, 0 without an export price, counted only from the optional resale start date, e.g. a resale contract signed after installation).
+Payback attributes: `investment`, `remaining`, `progress` (%), `payback_date` (projected from the average daily gains so far) and `estimate_reliable`, false until a full year of data, since a projection made from summer months alone is optimistic.
+
+</details>
+
+## 🤖 Automations
+
+The integration never turns a device on or off itself: pair each program with an automation.
+
+### Blueprint (recommended)
+
+Pick the program's `should_run` sensor, then what to do when the window starts and, optionally, when it ends: turn a plug on and off, send a notification, run a script.
 
 [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FRom1-B%2Fsolar-planner-scheduler%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fsolar_planner_scheduler%2Frun_on_schedule.yaml)
 
-2. A device you start by hand (not controlled by HA): notify 15 minutes before, so there's time to
-   load the washing machine and press its own start button.
+### Notify before a manual start
+
+For a device you start by hand (not controlled by Home Assistant), get notified ahead of time, so there's time to load the washing machine and press its own start button.
+
+<details>
+<summary>Example: notify 15 minutes before</summary>
 
 ```yaml
 automation:
@@ -105,31 +127,34 @@ automation:
 
 Change `900` (15 minutes, in seconds) to whatever lead time you want.
 
-## 📊 The bundled card
+</details>
 
-Served and registered automatically, no separate install.
+## 📊 The card
+
+Minimal example:
 
 ```yaml
 type: custom:solar-planner-card
-devices:                # optional, omit for a forecast-only card with no device rows
-  - lave_linge          # or use "*" (a plain string, not a list) to show every device the
-  - lave_vaisselle      # integration reports, in its own config order
-production_entity: sensor.solar_power     # optional, real production curve on the chart
-consumption_entity: sensor.house_power    # optional, real consumption curve on the chart
-chart_expanded: true    # optional, default true (the forecast chart/gantt/device rows)
-table_expanded: false   # optional, default false (the summary table)
-table_show_energy: true # optional, default true (the table's Energy column)
-table_show_cost: true   # optional, default true (the table's Cost and/or Savings column, see cost_display)
-table_show_total: false # optional, default false (a totals row summing Cost/Savings across all rows)
-cost_display: cost      # optional, default "cost": "cost", "savings", or "both" (badge + table column)
-chart_hours_past: 6     # optional, default 6 (hours shown before now)
-chart_hours_future: 24  # optional, default 24 (hours shown after now)
-chart_visible_hours: 30 # optional, default chart_hours_past + chart_hours_future (no scroll)
+devices: "*"
 ```
 
-`production_entity`/`consumption_entity` only affect what's drawn on the chart, not scheduling:
-set them per card instance if you want those curves.
+| Option | Default | Description |
+|--------|---------|-------------|
+| `devices` | none | Device slugs to show, in order (e.g. `[lave_linge, lave_vaisselle]`), or `"*"` (a plain string) for every device in config order. Omit for a forecast-only card. |
+| `production_entity` | none | Real production sensor, drawn on the chart. |
+| `consumption_entity` | none | Real consumption sensor, drawn on the chart. |
+| `chart_expanded` | `true` | Starting state of the chart section. |
+| `table_expanded` | `false` | Starting state of the summary table. |
+| `table_show_energy` | `true` | Energy column in the table. |
+| `table_show_cost` | `true` | Cost and/or Savings column in the table, per `cost_display`. |
+| `table_show_total` | `false` | Totals row summing Cost/Savings. |
+| `cost_display` | `cost` | `cost`, `savings`, or `both`, for the program badge and the table. |
+| `chart_hours_past` | `6` | Hours shown before now. |
+| `chart_hours_future` | `24` | Hours shown after now. |
+| `chart_visible_hours` | past + future | Hours that fit on screen before the chart scrolls. |
 
-Each section (chart, table) has its own toggle in the card; `chart_expanded`/`table_expanded` just
-set the starting state. `chart_hours_past`/`chart_hours_future` control the visible time window;
-`chart_visible_hours` limits how much of it fits on screen before scrolling.
+## 🛠️ Troubleshooting
+
+- **A device never seems to start**: if its power sensor never shows it running, the integration reschedules it and, after repeated misses, raises a warning in Settings > System > Repairs. Check the automation reacting to `should_run`.
+- **Diagnostics**: Settings > Devices & services > Solar Planner Scheduler > Download diagnostics, for the configuration and the scheduler's internal state.
+- Found a bug? [Open an issue](https://github.com/Rom1-B/solar-planner-scheduler/issues) with the diagnostics attached.
