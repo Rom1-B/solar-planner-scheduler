@@ -1,0 +1,51 @@
+blueprint:
+  name: Solar Planner Scheduler - run on schedule
+  description: >
+    Runs actions when a program's scheduled window starts and ends
+    (its `should_run` binary sensor turning on, then off).
+  domain: automation
+  source_url: https://github.com/Rom1-B/solar-planner-scheduler/blob/main/blueprints/automation/solar_planner_scheduler/run_on_schedule.yaml
+  input:
+    should_run:
+      name: Should run sensor
+      description: The program's `binary_sensor.<device>_<program>_should_run`.
+      selector:
+        entity:
+          filter:
+            - integration: solar_planner_scheduler
+              domain: binary_sensor
+    start_actions:
+      name: On start
+      description: e.g. turn on a smart plug, or send a notification.
+      selector:
+        action: {}
+    end_actions:
+      name: On end
+      description: Optional, e.g. turn the plug back off.
+      default: []
+      selector:
+        action: {}
+
+mode: queued
+
+triggers:
+  - trigger: state
+    entity_id: !input should_run
+    to: "on"
+    id: start
+  - trigger: state
+    entity_id: !input should_run
+    from: "on"
+    to: "off"
+    id: end
+
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: start
+        sequence: !input start_actions
+      - conditions:
+          - condition: trigger
+            id: end
+        sequence: !input end_actions

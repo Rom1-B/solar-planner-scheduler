@@ -78,19 +78,9 @@ a full year of data, since a projection made from summer months alone is optimis
 
 The integration never turns a device on or off itself. Pair it with an automation:
 
-1. A device HA controls directly: start it when `should_run` turns on.
+1. Run actions when the window starts and ends (turn a plug on/off, notify): use the bundled blueprint, pick the program's `should_run` sensor and the actions.
 
-```yaml
-automation:
-  - alias: "Water heater - force heat"
-    trigger:
-      - platform: state
-        entity_id: binary_sensor.water_heater_should_run
-        to: "on"
-    action:
-      - service: switch.turn_on
-        target: { entity_id: switch.water_heater_boost }
-```
+[![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FRom1-B%2Fsolar-planner-scheduler%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fsolar_planner_scheduler%2Frun_on_schedule.yaml)
 
 2. A device you start by hand (not controlled by HA): notify 15 minutes before, so there's time to
    load the washing machine and press its own start button.
