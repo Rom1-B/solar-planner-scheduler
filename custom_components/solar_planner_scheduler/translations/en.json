@@ -22,6 +22,7 @@
         "menu_options": {
           "edit_base": "Edit base settings",
           "edit_tariff": "Configure tariffs",
+          "edit_savings": "Track solar savings",
           "devices_menu": "Devices",
           "fixed_loads_menu": "Fixed loads"
         }
@@ -77,6 +78,17 @@
         },
         "data_description": {
           "tariff_bands_text": "One band per line: `HH:MM@price`, e.g. `22:00@0.1589`."
+        }
+      },
+      "edit_savings": {
+        "title": "Track solar savings",
+        "description": "Values the solar energy used at home (house consumption minus grid import, per hour) at the configured tariff, since the installation date, to track the installation's payback. Requires tariff tracking.",
+        "data": {
+          "savings_enabled": "Enable savings tracking",
+          "savings_consumption_entity": "House consumption energy (kWh)",
+          "savings_import_entity": "Grid import energy (kWh)",
+          "savings_start_date": "Installation date",
+          "savings_investment": "Net installation cost"
         }
       },
       "add_device": {
@@ -165,6 +177,7 @@
       "no_removable_programs": "This device has no program to remove."
     },
     "error": {
+      "required_for_savings": "Required to enable savings tracking.",
       "duplicate_program": "This device already has a program with that name.",
       "duplicate_device": "A device with that name already exists.",
       "invalid_phase_line": "Each line must look like `20min@150W` or `1.5h@150W`.",

@@ -71,6 +71,12 @@ CONF_IDLE_POWER_THRESHOLD = "idle_power_threshold"
 CONF_PRICE_TRACKING_ENABLED = "price_tracking_enabled"
 CONF_TARIFF_BANDS = "tariff_bands"
 
+CONF_SAVINGS_ENABLED = "savings_enabled"
+CONF_SAVINGS_CONSUMPTION_ENTITY = "savings_consumption_entity"
+CONF_SAVINGS_IMPORT_ENTITY = "savings_import_entity"
+CONF_SAVINGS_START_DATE = "savings_start_date"
+CONF_SAVINGS_INVESTMENT = "savings_investment"
+
 NONE_PROGRAM = "None"
 
 DEFAULT_MAX_SIMULTANEOUS_POWER = 4000

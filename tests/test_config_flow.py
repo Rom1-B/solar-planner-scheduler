@@ -37,6 +37,11 @@ from custom_components.solar_planner_scheduler.const import (
     CONF_POWER_SENSOR,
     CONF_PRICE_TRACKING_ENABLED,
     CONF_PROGRAMS,
+    CONF_SAVINGS_CONSUMPTION_ENTITY,
+    CONF_SAVINGS_ENABLED,
+    CONF_SAVINGS_IMPORT_ENTITY,
+    CONF_SAVINGS_INVESTMENT,
+    CONF_SAVINGS_START_DATE,
     CONF_START_TIME,
     CONF_TARIFF_BANDS,
     DEFAULT_PHASE_CALIBRATION_RUNS,
@@ -363,6 +368,57 @@ async def test_edit_tariff_rejects_an_invalid_band_line(hass, enable_custom_inte
     assert result["type"] == "form"
     assert result["errors"] == {"tariff_bands_text": "invalid_tariff_line"}
     assert CONF_TARIFF_BANDS not in entry.data
+
+
+async def _submit_savings(hass, entry, user_input: dict):
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "edit_savings"})
+    assert result["step_id"] == "edit_savings"
+    return await hass.config_entries.options.async_configure(result["flow_id"], user_input)
+
+
+_SAVINGS_INPUT = {
+    CONF_SAVINGS_ENABLED: True,
+    CONF_SAVINGS_CONSUMPTION_ENTITY: "sensor.house_energy",
+    CONF_SAVINGS_IMPORT_ENTITY: "sensor.grid_imported",
+    CONF_SAVINGS_START_DATE: "2026-07-29",
+    CONF_SAVINGS_INVESTMENT: 10900,
+}
+
+
+async def test_edit_savings_writes_its_fields_to_entry_data_without_touching_others(hass, enable_custom_integrations):
+    entry = _entry(hass, [])
+    max_power = entry.data[CONF_MAX_SIMULTANEOUS_POWER]
+
+    result = await _submit_savings(hass, entry, _SAVINGS_INPUT)
+
+    assert result["type"] == "menu"
+    assert {key: entry.data[key] for key in _SAVINGS_INPUT} == _SAVINGS_INPUT
+    assert entry.data[CONF_MAX_SIMULTANEOUS_POWER] == max_power
+
+
+async def test_edit_savings_enabled_requires_every_field(hass, enable_custom_integrations):
+    entry = _entry(hass, [])
+
+    result = await _submit_savings(hass, entry, {CONF_SAVINGS_ENABLED: True})
+
+    assert result["type"] == "form"
+    assert result["errors"] == {
+        CONF_SAVINGS_CONSUMPTION_ENTITY: "required_for_savings",
+        CONF_SAVINGS_IMPORT_ENTITY: "required_for_savings",
+        CONF_SAVINGS_START_DATE: "required_for_savings",
+        CONF_SAVINGS_INVESTMENT: "required_for_savings",
+    }
+    assert CONF_SAVINGS_ENABLED not in entry.data
+
+
+async def test_edit_savings_disabled_accepts_empty_fields(hass, enable_custom_integrations):
+    entry = _entry(hass, [])
+
+    result = await _submit_savings(hass, entry, {CONF_SAVINGS_ENABLED: False})
+
+    assert result["type"] == "menu"
+    assert entry.data[CONF_SAVINGS_ENABLED] is False
 
 
 async def test_editing_base_settings_does_not_wipe_previously_configured_tariff_data(hass, enable_custom_integrations):

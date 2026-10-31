@@ -6,10 +6,15 @@ what used to be a separate read-only sensor.
 
 from __future__ import annotations
 
+from datetime import date, datetime
+
+from homeassistant.components.recorder import get_instance
+from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
@@ -24,13 +29,22 @@ from .const import (
     CONF_POWER_PROFILE,
     CONF_PRICE_TRACKING_ENABLED,
     CONF_PROGRAMS,
+    CONF_SAVINGS_CONSUMPTION_ENTITY,
+    CONF_SAVINGS_ENABLED,
+    CONF_SAVINGS_IMPORT_ENTITY,
+    CONF_SAVINGS_INVESTMENT,
+    CONF_SAVINGS_START_DATE,
     CONF_START_TIME,
     CONF_TARIFF_BANDS,
     DOMAIN,
 )
 from .coordinator import SolarPlannerSchedulerCoordinator
 from .forecast_providers import resolve_forecast_history_entities
+from .savings import hourly_savings, payback
 from .scheduling import price_at
+
+# Hourly statistics are compiled a few seconds past the hour; this leaves a wide margin.
+SAVINGS_REFRESH_MINUTE = 10
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
@@ -41,6 +55,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             CurrentPriceSensor(coordinator, entry),
             AverageForecastPowerNowSensor(coordinator, entry),
             MinForecastPowerNowSensor(coordinator, entry),
+            SolarSavingsSensor(hass, entry),
         ]
     )
 
@@ -168,3 +183,73 @@ class MinForecastPowerNowSensor(_CombinedForecastPowerNowSensor):
     @property
     def native_value(self) -> float | None:
         return self.coordinator.min_forecast_power_now()
+
+
+class SolarSavingsSensor(SensorEntity):
+    """Money saved by self-consumed solar since the installation date, with payback attributes.
+
+    Self-consumption is house consumption minus grid import, which doesn't depend on a solar
+    production meter at all.
+
+    Recomputed in full every hour from the recorder's long-term statistics (see savings.py), so
+    nothing is persisted here. None when savings or tariff tracking is disabled.
+    """
+
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_suggested_display_precision = 2
+    _attr_icon = "mdi:piggy-bank-outline"
+    _attr_should_poll = False
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_savings"
+        self._attr_name = "Solar Planner Scheduler savings"
+        self._attr_native_unit_of_measurement = hass.config.currency
+        self._attr_native_value = None
+        self._attr_extra_state_attributes = {}
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_track_time_change(self.hass, self._scheduled_refresh, minute=SAVINGS_REFRESH_MINUTE, second=0)
+        )
+        self.hass.async_create_task(self.async_refresh_savings())
+
+    @callback
+    def _scheduled_refresh(self, _now: datetime) -> None:
+        self.hass.async_create_task(self.async_refresh_savings())
+
+    async def async_refresh_savings(self) -> None:
+        data = self._entry.data
+        if not (data.get(CONF_SAVINGS_ENABLED) and data.get(CONF_PRICE_TRACKING_ENABLED)):
+            self._attr_native_value = None
+            self._attr_extra_state_attributes = {}
+            self.async_write_ha_state()
+            return
+        consumption = data[CONF_SAVINGS_CONSUMPTION_ENTITY]
+        grid_import = data[CONF_SAVINGS_IMPORT_ENTITY]
+        start_date = date.fromisoformat(data[CONF_SAVINGS_START_DATE])
+        stats = await get_instance(self.hass).async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            dt_util.start_of_local_day(start_date),
+            None,
+            {consumption, grid_import},
+            "hour",
+            {"energy": "kWh"},
+            {"change"},
+        )
+
+        def rows(statistic_id: str) -> list[dict]:
+            return [
+                {"start": dt_util.as_local(dt_util.utc_from_timestamp(row["start"])), "change": row.get("change")}
+                for row in stats.get(statistic_id, [])
+            ]
+
+        tariff_bands = data.get(CONF_TARIFF_BANDS, [])
+        savings = hourly_savings(rows(consumption), rows(grid_import), lambda t: price_at(t, tariff_bands))
+        self._attr_native_value = round(savings, 2)
+        self._attr_extra_state_attributes = payback(
+            savings, float(data[CONF_SAVINGS_INVESTMENT]), start_date, dt_util.now().date()
+        )
+        self.async_write_ha_state()

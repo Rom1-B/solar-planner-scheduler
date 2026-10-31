@@ -22,6 +22,7 @@
         "menu_options": {
           "edit_base": "Modifier les paramètres de base",
           "edit_tariff": "Configurer les tarifs",
+          "edit_savings": "Suivre les économies solaires",
           "devices_menu": "Appareils",
           "fixed_loads_menu": "Charges fixes"
         }
@@ -77,6 +78,17 @@
         },
         "data_description": {
           "tariff_bands_text": "Une plage par ligne : `HH:MM@prix`, ex. `22:00@0.1589`."
+        }
+      },
+      "edit_savings": {
+        "title": "Suivre les économies solaires",
+        "description": "Valorise l'énergie solaire consommée sur place (consommation de la maison moins achats au réseau, par heure) au tarif configuré, depuis la date d'installation, pour suivre l'amortissement. Nécessite le suivi tarifaire.",
+        "data": {
+          "savings_enabled": "Activer le suivi des économies",
+          "savings_consumption_entity": "Énergie consommée par la maison (kWh)",
+          "savings_import_entity": "Énergie achetée au réseau (kWh)",
+          "savings_start_date": "Date d'installation",
+          "savings_investment": "Coût net de l'installation"
         }
       },
       "add_device": {
@@ -165,6 +177,7 @@
       "no_removable_programs": "Cet appareil n'a pas encore de programme à supprimer."
     },
     "error": {
+      "required_for_savings": "Obligatoire pour activer le suivi des économies.",
       "duplicate_program": "Cet appareil a déjà un programme avec ce nom.",
       "duplicate_device": "Un appareil avec ce nom existe déjà.",
       "invalid_phase_line": "Chaque ligne doit ressembler à `20min@150W` ou `1.5h@150W`.",
