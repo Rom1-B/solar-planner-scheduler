@@ -8,10 +8,14 @@ on:
   schedule:
     - cron: "0 0 * * 0"
 
+permissions: {}
+
 jobs:
   python:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
@@ -26,6 +30,8 @@ jobs:
   javascript:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -42,12 +48,16 @@ jobs:
 
   hassfest:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: home-assistant/actions/hassfest@86d4564712fa02543c808e3a693dd04f9d3f8361 # master
 
   hacs:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: hacs/action@d556e736723344f83838d08488c983a15381059a # 22.5.0
@@ -79,9 +89,11 @@ jobs:
 
       - name: Tag the release
         if: steps.version.outputs.new == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          git tag "${{ steps.version.outputs.version }}"
-          git push origin "${{ steps.version.outputs.version }}"
+          git tag "$VERSION"
+          git push origin "$VERSION"
 
       - name: Generate release notes with git-cliff
         if: steps.version.outputs.new == 'true'
@@ -97,20 +109,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # Via env, never inlined in the script: commit messages could break or inject shell.
           NOTES: ${{ steps.cliff.outputs.content }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
           PREV_TAG=$(git tag --sort=-v:refname | sed -n '2p')
 
           {
             printf '%s\n' "$NOTES"
             echo
             if [ -n "$PREV_TAG" ]; then
-              echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/$PREV_TAG...$VERSION"
+              echo "**Full Changelog**: https://github.com/$GITHUB_REPOSITORY/compare/$PREV_TAG...$VERSION"
             fi
           } > /tmp/release-notes.md
 
           gh release create "$VERSION" \
-            --repo "${{ github.repository }}" \
+            --repo "$GITHUB_REPOSITORY" \
             --title "$VERSION" \
             --notes-file /tmp/release-notes.md \
-            --target "${{ github.sha }}"
+            --target "$GITHUB_SHA"
