@@ -89,7 +89,8 @@ def test_hourly_sum_adds_meters_per_hour_and_treats_none_as_zero():
 def test_price_lookup_uses_the_hourly_mean_and_carries_it_over_gaps():
     means = [{"start": _hour(1), "mean": 0.2}, {"start": _hour(5), "mean": 0.3}, {"start": _hour(6), "mean": None}]
     at = price_lookup(Price(entity="sensor.import_price"), means)
-    assert at(_hour(0)) == 0.0
+    # A price entity created after the installation: its first mean backfills earlier hours.
+    assert at(_hour(0)) == 0.2
     assert at(_hour(1)) == 0.2
     assert at(_hour(3)) == 0.2
     assert at(_hour(6)) == 0.3
@@ -98,6 +99,7 @@ def test_price_lookup_uses_the_hourly_mean_and_carries_it_over_gaps():
 def test_price_lookup_fixed_number_and_missing_price():
     assert price_lookup(Price(number=0.15), [])(_hour(0)) == 0.15
     assert price_lookup(None, [])(_hour(0)) == 0.0
+    assert price_lookup(Price(entity="sensor.import_price"), [])(_hour(0)) == 0.0
 
 
 # --- solar_gains() ---

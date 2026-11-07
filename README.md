@@ -85,7 +85,7 @@ Integration-wide:
 <summary>How savings and payback are computed</summary>
 
 Recomputed every hour from Home Assistant's long-term statistics and the Energy dashboard's configuration.
-For each hour: (solar minus grid export) at the import price (`self_consumption_savings`), plus grid export at the export price (`resale_revenue`, 0 without an export price, counted only from the optional resale start date, e.g. a resale contract signed after installation).
+For each hour: (solar minus grid export) at the import price (`self_consumption_savings`), plus grid export at the export price (`resale_revenue`, 0 without an export price, counted only from the optional resale start date, e.g. a resale contract signed after installation). Hours before a price entity's first recorded value use that first value.
 Payback attributes: `investment`, `remaining`, `progress` (%), `payback_date` (projected from the average daily gains so far) and `estimate_reliable`, false until a full year of data, since a projection made from summer months alone is optimistic.
 
 </details>

@@ -80,7 +80,8 @@ def hourly_sum(rows_by_id: dict[str, list[dict]], ids: list[str]) -> dict[dateti
 
 def price_lookup(price: Price | None, means: list[dict]) -> Callable[[datetime], float]:
     """Price at an hour: a fixed number, or that hour's recorded mean, carrying the last known mean
-    over hours the price entity has no statistics for. 0 when no price is configured or known yet."""
+    over hours the price entity has no statistics for, and the first known mean back over hours
+    before its first statistic. 0 when no price is configured or recorded."""
     if price is None:
         return lambda _hour: 0.0
     if price.entity is None:
@@ -90,7 +91,7 @@ def price_lookup(price: Price | None, means: list[dict]) -> Callable[[datetime],
 
     def at(hour: datetime) -> float:
         index = bisect_right(starts, hour)
-        return known[index - 1][1] if index else 0.0
+        return known[max(index, 1) - 1][1] if known else 0.0
 
     return at
 
