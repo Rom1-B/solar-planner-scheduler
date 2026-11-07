@@ -3,3 +3,6 @@ __pycache__/
 .pytest_cache/
 .venv/
 frontend/node_modules/
+.coverage
+coverage.json
+frontend/lcov.info

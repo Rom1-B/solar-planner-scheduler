@@ -16,6 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      coverage: ${{ steps.coverage.outputs.pct }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
@@ -25,13 +27,20 @@ jobs:
           cache-dependency-path: requirements-dev.txt
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
-      - run: pytest tests/
+      - run: |
+          printf "## Python coverage\n\n" >> "$GITHUB_STEP_SUMMARY"
+          pytest tests/ --cov=custom_components/solar_planner_scheduler --cov-report=term \
+            --cov-report=markdown-append:"$GITHUB_STEP_SUMMARY" --cov-report=json:coverage.json
+      - id: coverage
+        run: echo "pct=$(jq -r .totals.percent_covered_display coverage.json)" >> "$GITHUB_OUTPUT"
 
   javascript:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      coverage: ${{ steps.coverage.outputs.pct }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -43,8 +52,58 @@ jobs:
         working-directory: frontend
       - run: npm run lint
         working-directory: frontend
-      - run: node --test
+      - run: >-
+          node --test --experimental-test-coverage --test-coverage-exclude='tests/**'
+          --test-reporter=spec --test-reporter-destination=stdout
+          --test-reporter=lcov --test-reporter-destination=lcov.info
         working-directory: frontend
+      - id: coverage
+        working-directory: frontend
+        run: |
+          awk -F: '/^LF:/{lf+=$2} /^LH:/{lh+=$2} /^BRF:/{bf+=$2} /^BRH:/{bh+=$2} /^FNF:/{ff+=$2} /^FNH:/{fh+=$2}
+            END{printf "%d %.1f %.1f %.1f\n", lh*100/lf+0.5, lh*100/lf, bh*100/bf, fh*100/ff}' lcov.info \
+            | { read -r pct lines branches funcs
+                echo "pct=$pct" >> "$GITHUB_OUTPUT"
+                printf '\n## JS coverage\n\n| Lines | Branches | Functions |\n|---|---|---|\n| %s%% | %s%% | %s%% |\n' \
+                  "$lines" "$branches" "$funcs" >> "$GITHUB_STEP_SUMMARY"; }
+
+  badges:
+    needs: [python, javascript]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: badges
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Publish coverage badges to the badges branch
+        env:
+          PYTHON_PCT: ${{ needs.python.outputs.coverage }}
+          JS_PCT: ${{ needs.javascript.outputs.coverage }}
+        run: |
+          if git fetch --depth=1 origin badges:refs/remotes/origin/badges; then
+            git switch -c badges origin/badges
+          else
+            git switch --orphan badges
+          fi
+          badge() {
+            local color=red
+            if [ "$3" -ge 90 ]; then color=brightgreen
+            elif [ "$3" -ge 80 ]; then color=green
+            elif [ "$3" -ge 70 ]; then color=yellowgreen
+            elif [ "$3" -ge 60 ]; then color=yellow
+            elif [ "$3" -ge 50 ]; then color=orange
+            fi
+            printf '{"schemaVersion":1,"label":"%s","message":"%s%%","color":"%s"}\n' "$2" "$3" "$color" > "$1"
+          }
+          badge coverage-python.json "coverage python" "$PYTHON_PCT"
+          badge coverage-js.json "coverage js" "$JS_PCT"
+          git add coverage-python.json coverage-js.json
+          git diff --cached --quiet && exit 0
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "Update coverage badges"
+          git push origin badges
 
   hassfest:
     runs-on: ubuntu-latest

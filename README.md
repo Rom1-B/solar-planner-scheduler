@@ -3,6 +3,8 @@
 [![HACS Default](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://github.com/hacs/integration)
 [![Release](https://img.shields.io/github/v/release/Rom1-B/solar-planner-scheduler)](https://github.com/Rom1-B/solar-planner-scheduler/releases)
 [![CI](https://github.com/Rom1-B/solar-planner-scheduler/actions/workflows/ci.yml/badge.svg)](https://github.com/Rom1-B/solar-planner-scheduler/actions/workflows/ci.yml)
+[![Python coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Rom1-B/solar-planner-scheduler/badges/coverage-python.json)](https://github.com/Rom1-B/solar-planner-scheduler/actions/workflows/ci.yml)
+[![JS coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Rom1-B/solar-planner-scheduler/badges/coverage-js.json)](https://github.com/Rom1-B/solar-planner-scheduler/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/Rom1-B/solar-planner-scheduler)](LICENSE)
 
 **Run your appliances on sunshine, not on the grid.**
