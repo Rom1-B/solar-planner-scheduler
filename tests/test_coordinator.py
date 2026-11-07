@@ -2136,6 +2136,54 @@ async def test_a_forced_slots_coverage_refreshes_once_a_competing_sibling_moves_
     assert cuisine.coverage_pct == 150
 
 
+async def test_a_forced_slot_is_seen_by_devices_earlier_in_config_order(hass):
+    """Device order is search priority, but a forced slot doesn't move: an earlier device used to
+    search before a later device's forced slot entered `committed`, and land on top of it."""
+    now = dt_util.now().replace(second=0, microsecond=0)
+    best = now + timedelta(hours=2)
+    second_best = now + timedelta(hours=4)
+
+    def watts(t):
+        if best <= t < best + timedelta(minutes=30):
+            return 0.15
+        if second_best <= t < second_best + timedelta(minutes=30):
+            return 0.12
+        return 0.0
+
+    forecast = [{"period_start": now + timedelta(minutes=i * 5), "pv_estimate": 0} for i in range(7 * 12)]
+    for row in forecast:
+        row["pv_estimate"] = watts(row["period_start"])
+    solcast_entry_id = register_provider_entities(hass, "solcast_solar", {"sensor.forecast": {"detailedForecast": forecast}})
+    program = {
+        CONF_POWER_PROFILE: [{"minutes": 30, "power_w": 100}],
+        CONF_DURATION_MIN: 30,
+        CONF_AUTO_DAYS: [],
+    }
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_FORECAST_CONFIG_ENTRY_SOLCAST: solcast_entry_id, CONF_MAX_SIMULTANEOUS_POWER: 4000},
+        options={
+            CONF_DEVICES: [
+                {CONF_NAME: "lave_linge", CONF_PROGRAMS: [{CONF_NAME: "5 chemises", **program}]},
+                {CONF_NAME: "cuisine", CONF_PROGRAMS: [{CONF_NAME: "30min", **program}]},
+            ]
+        },
+    )
+    entry.add_to_hass(hass)
+    coordinator = SolarPlannerSchedulerCoordinator(hass, entry)
+    await coordinator.async_load_state()
+    await coordinator.async_set_program_active("cuisine", "30min", True)
+    await coordinator.async_set_forced_start("cuisine", "30min", best)
+    await coordinator.async_set_program_active("lave_linge", "5 chemises", True)
+    await _flush(coordinator)
+
+    results = await coordinator._async_update_data()
+
+    lave_linge = results[("lave_linge", "5 chemises")]
+    assert results[("cuisine", "30min")].start == best
+    assert lave_linge.end <= best or lave_linge.start >= best + timedelta(minutes=30)
+
+
 # --- fixed load cost --------------------------------------------------------------------------
 
 

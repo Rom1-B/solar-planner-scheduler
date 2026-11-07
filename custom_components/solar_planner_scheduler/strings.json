@@ -32,6 +32,7 @@
         "menu_options": {
           "add_device": "Add a device",
           "manage_device": "Manage a device",
+          "reorder_devices": "Reorder devices",
           "remove_device": "Remove a device"
         }
       },
@@ -110,6 +111,11 @@
         "title": "Remove a device",
         "data": { "name": "Device to remove" }
       },
+      "reorder_devices": {
+        "title": "Reorder devices",
+        "description": "One device per line. Devices higher in the list get the best solar slot first.",
+        "data": { "order": "Device order" }
+      },
       "add_program": {
         "title": "Add a program",
         "description": "Add a program to {device}. Next screen asks for its phases.",
@@ -174,11 +180,13 @@
     },
     "abort": {
       "no_devices": "No devices configured yet.",
+      "nothing_to_reorder": "Add a second device to reorder them.",
       "no_fixed_loads": "No fixed loads configured yet.",
       "no_programs": "This device has no program to edit yet.",
       "no_removable_programs": "This device has no program to remove."
     },
     "error": {
+      "reorder_incomplete": "List every device exactly once, with its exact name.",
       "required_for_savings": "Required to enable savings tracking.",
       "duplicate_program": "This device already has a program with that name.",
       "duplicate_device": "A device with that name already exists.",

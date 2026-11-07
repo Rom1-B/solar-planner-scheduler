@@ -302,6 +302,47 @@ async def test_add_device_rejects_a_duplicate_name(hass, enable_custom_integrati
     assert len(entry.options[CONF_DEVICES]) == 1
 
 
+def _device(name):
+    return {CONF_NAME: name, CONF_POWER_SENSOR: "", CONF_PROGRAMS: []}
+
+
+async def _open_reorder(hass, entry):
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "devices_menu"})
+    return await hass.config_entries.options.async_configure(result["flow_id"], {"next_step_id": "reorder_devices"})
+
+
+async def test_reorder_devices_rewrites_the_device_order(hass, enable_custom_integrations):
+    entry = _entry(hass, [_device("lave_linge"), _device("pac"), _device("cuisine")])
+
+    result = await _open_reorder(hass, entry)
+    assert result["step_id"] == "reorder_devices"
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"order": "pac\ncuisine\n lave_linge \n"})
+
+    assert result["type"] == "menu"
+    assert [d[CONF_NAME] for d in entry.options[CONF_DEVICES]] == ["pac", "cuisine", "lave_linge"]
+
+
+async def test_reorder_devices_rejects_a_dropped_device(hass, enable_custom_integrations):
+    entry = _entry(hass, [_device("lave_linge"), _device("pac")])
+
+    result = await _open_reorder(hass, entry)
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {"order": "pac"})
+
+    assert result["type"] == "form"
+    assert result["errors"] == {"order": "reorder_incomplete"}
+    assert [d[CONF_NAME] for d in entry.options[CONF_DEVICES]] == ["lave_linge", "pac"]
+
+
+async def test_reorder_devices_aborts_with_a_single_device(hass, enable_custom_integrations):
+    entry = _entry(hass, [_device("lave_linge")])
+
+    result = await _open_reorder(hass, entry)
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "nothing_to_reorder"
+
+
 async def test_add_device_without_a_power_sensor_does_not_crash(hass, enable_custom_integrations):
     """Regression test: an omitted optional EntitySelector used to fail its own validation."""
     entry = _entry(hass, [])

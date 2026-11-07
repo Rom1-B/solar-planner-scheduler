@@ -51,7 +51,7 @@ Everything else is managed from Settings > Devices & services > Solar Planner Sc
 
 | Item | What it is |
 |------|------------|
-| **Device** | A physical appliance: a name and an optional power sensor, used to detect when a program actually starts and to refine its phases over time. "Manage a device" edits it and its programs. |
+| **Device** | A physical appliance: a name and an optional power sensor, used to detect when a program actually starts and to refine its phases over time. "Manage a device" edits it and its programs. Device order is scheduling priority: devices higher in the list pick their window first, the others fit around them ("Reorder devices"). A forced or about-to-start window is respected by every device, whatever the order. |
 | **Program** | One cycle of a device, as phases, one per line: `<duration>min@<watts>W` or `<duration>h@<watts>W` (e.g. `20min@150W` then `1.5h@800W` for heat then spin). Rough values are fine: with a power sensor, real runs correct them. Optionally pick the days it should auto-run on. |
 | **Fixed load** | Something drawing power that you don't control (pool pump, heat pump on a timer), with the same phases format. It's subtracted from available solar when scheduling everything else. |
 | **Tariffs** (optional) | Price bands, `HH:MM@price`, one per line. Once enabled, scheduling picks the cheapest window instead of just the sunniest one. |

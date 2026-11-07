@@ -353,7 +353,9 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
         )
 
     async def async_step_devices_menu(self, user_input: dict[str, Any] | None = None):
-        return self.async_show_menu(step_id="devices_menu", menu_options=["add_device", "manage_device", "remove_device"])
+        return self.async_show_menu(
+            step_id="devices_menu", menu_options=["add_device", "manage_device", "reorder_devices", "remove_device"]
+        )
 
     async def async_step_fixed_loads_menu(self, user_input: dict[str, Any] | None = None):
         return self.async_show_menu(
@@ -476,6 +478,26 @@ class SolarPlannerSchedulerOptionsFlow(config_entries.OptionsFlow):
             return await self._finish_step("devices_menu")
         names = [d[CONF_NAME] for d in self._devices]
         return self.async_show_form(step_id="remove_device", data_schema=vol.Schema({vol.Required(CONF_NAME): vol.In(names)}))
+
+    async def async_step_reorder_devices(self, user_input: dict[str, Any] | None = None):
+        """Device order is scheduling priority: earlier devices pick their slot first."""
+        if len(self._devices) < 2:
+            return self.async_abort(reason="nothing_to_reorder")
+        names = [d[CONF_NAME] for d in self._devices]
+        text = "\n".join(names)
+        errors = {}
+        if user_input is not None:
+            text = user_input["order"]
+            order = [line.strip() for line in text.splitlines() if line.strip()]
+            if sorted(order) == sorted(names):
+                by_name = {d[CONF_NAME]: d for d in self._devices}
+                self._devices = [by_name[name] for name in order]
+                return await self._finish_step("devices_menu")
+            errors["order"] = "reorder_incomplete"
+        schema = vol.Schema(
+            {vol.Required("order", default=text): selector.TextSelector(selector.TextSelectorConfig(multiline=True))}
+        )
+        return self.async_show_form(step_id="reorder_devices", data_schema=schema, errors=errors)
 
     async def async_step_add_program(self, user_input: dict[str, Any] | None = None):
         """Add a new named, multi-phase program to the device being managed (device_detail)."""

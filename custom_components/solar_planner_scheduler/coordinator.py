@@ -243,6 +243,15 @@ def _is_relevant_today(committed: dict | None, now: datetime) -> bool:
     return committed["start"].date() == now.date() or now < committed["end"]
 
 
+def _program_item(program: dict) -> tuple[dict, float]:
+    """A program's scheduling item and its duration (declared, or the sum of its phases)."""
+    profile = program[CONF_POWER_PROFILE]
+    duration_min = program.get(CONF_DURATION_MIN)
+    if duration_min is None:
+        duration_min = sum(phase[CONF_MINUTES] for phase in profile)
+    return {"profile": profile, "duration_min": duration_min}, duration_min
+
+
 def _phases_differ_significantly(old_profile: list[dict], new_profile: list[dict]) -> bool:
     """Whether a recalibrated profile is worth rewriting into config — see
     PHASE_CALIBRATION_MINUTES_TOLERANCE/PHASE_CALIBRATION_WATTS_TOLERANCE_RATIO.
@@ -966,6 +975,31 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             self._min_power_now = None
         return points
 
+    def _anchored_slots(self, options: dict, now: datetime) -> list[dict]:
+        """Active programs' slots that won't move this cycle: a pending forced start, a forced
+        slot, or one imminent or in progress (same reuse rules as _reusable_committed)."""
+        anchored = []
+        for device in options.get(CONF_DEVICES, []):
+            device_name = device[CONF_NAME]
+            for program in device.get(CONF_PROGRAMS, []):
+                program_name = program[CONF_NAME]
+                if not self.is_program_active(device_name, program_name, program):
+                    continue
+                item, duration_min = _program_item(program)
+                start = self._pending_forced_start(device_name, program_name)
+                if start is not None:
+                    end = start + timedelta(minutes=duration_min)
+                else:
+                    existing = self._get_committed(device_name, program_name)
+                    if existing is None or now >= existing["end"]:
+                        continue
+                    imminent = existing["start"] - now <= timedelta(minutes=DEFAULT_UPDATE_INTERVAL_MINUTES)
+                    if not (existing["forced"] or imminent):
+                        continue
+                    start, end = existing["start"], existing["end"]
+                anchored.append({**item, "start": start, "end": end, "key": (device_name, program_name)})
+        return anchored
+
     async def _schedule_devices(
         self,
         options: dict,
@@ -980,7 +1014,9 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         computation needs to see the whole picture.
         """
         results: dict[tuple[str, str], DeviceSchedule] = {}
-        committed = list(fixed_loads)
+        # Slots that won't move this cycle are visible to every device from the start, not only
+        # to devices later in config order; each program excludes its own entry (matched by "key").
+        committed = list(fixed_loads) + self._anchored_slots(options, now)
         for device in options.get(CONF_DEVICES, []):
             device_name = device[CONF_NAME]
             programs = device.get(CONF_PROGRAMS, [])
@@ -1000,12 +1036,10 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                     results[key] = DeviceSchedule(device_name, None, None, None)
                     continue
 
-                profile = program[CONF_POWER_PROFILE]
-                duration_min = program.get(CONF_DURATION_MIN)
-                if duration_min is None:
-                    duration_min = sum(phase[CONF_MINUTES] for phase in profile)
-                item = {"profile": profile, "duration_min": duration_min}
+                item, duration_min = _program_item(program)
+                profile = item["profile"]
                 idle_threshold = self._idle_threshold_for(profile, device_name)
+                others = [c for c in committed if c.get("key") != key]
                 blocked = [
                     {"start": slot["start"], "end": slot["end"]}
                     for name, slot in device_slots.items()
@@ -1014,12 +1048,13 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
 
                 def _finalize(slot: dict | None) -> None:
                     device_slots[program_name] = slot
+                    committed[:] = others
                     if slot is not None:
-                        committed.append({**item, "start": slot["start"], "end": slot["end"]})
+                        committed.append({**item, "start": slot["start"], "end": slot["end"], "key": key})
 
                 pending_start = self._pending_forced_start(device_name, program_name)
                 if pending_start is not None:
-                    slot = self._compute_slot_from_start(item, duration_min, pending_start, points, base_load, committed)
+                    slot = self._compute_slot_from_start(item, duration_min, pending_start, points, base_load, others)
                     # If the device is already drawing power right now, it's already running (e.g.
                     # the user is forcing the time to match a start that already happened) — commit
                     # it as seen_running immediately, or the next cycle's still-live power reading
@@ -1051,14 +1086,14 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
 
                 auto_days = program.get(CONF_AUTO_DAYS, [])
                 await self._update_seen_running(
-                    device_name, program_name, device, item, duration_min, points, base_load, committed, idle_threshold, now
+                    device_name, program_name, device, item, duration_min, points, base_load, others, idle_threshold, now
                 )
                 slot, forced, should_search, dormant, failed_to_start = self._reusable_committed(
                     device_name, program_name, device, duration_min, now, auto_days, idle_threshold
                 )
                 await self._note_failed_to_start(device_name, program_name, failed_to_start)
                 if dormant:
-                    device_slots[program_name] = None
+                    _finalize(None)
                     results[key] = DeviceSchedule(device_name, None, None, None)
                     if not auto_days:
                         # An on-demand program's one-off run is over: nothing will ever reactivate
@@ -1079,7 +1114,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                 if should_search:
                     if points:
                         slot = self._find_slot_for_day(
-                            item, duration_min, points, base_load, committed, max_power, 0, blocked=blocked
+                            item, duration_min, points, base_load, others, max_power, 0, blocked=blocked
                         )
                         forced = False
                         if slot is not None:
@@ -1117,7 +1152,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                     # displayed metrics were frozen at commit time — refresh them so a sibling
                     # moving out of the way, or an updated forecast, is reflected without needing
                     # a manual re-force.
-                    refreshed = self._compute_slot_from_start(item, duration_min, slot["start"], points, base_load, committed)
+                    refreshed = self._compute_slot_from_start(item, duration_min, slot["start"], points, base_load, others)
                     if (
                         refreshed["coverage_pct"] != slot["coverage_pct"]
                         or refreshed["cost"] != slot["cost"]

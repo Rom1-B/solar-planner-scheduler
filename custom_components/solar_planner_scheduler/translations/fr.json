@@ -32,6 +32,7 @@
         "menu_options": {
           "add_device": "Ajouter un appareil",
           "manage_device": "Gérer un appareil",
+          "reorder_devices": "Réordonner les appareils",
           "remove_device": "Supprimer un appareil"
         }
       },
@@ -110,6 +111,11 @@
         "title": "Supprimer un appareil",
         "data": { "name": "Appareil à supprimer" }
       },
+      "reorder_devices": {
+        "title": "Réordonner les appareils",
+        "description": "Un appareil par ligne. Les appareils en haut de la liste choisissent leur créneau solaire en premier.",
+        "data": { "order": "Ordre des appareils" }
+      },
       "add_program": {
         "title": "Ajouter un programme",
         "description": "Ajoute un programme à {device}. L'écran suivant demande ses phases.",
@@ -174,11 +180,13 @@
     },
     "abort": {
       "no_devices": "Aucun appareil configuré pour l'instant.",
+      "nothing_to_reorder": "Ajoutez un deuxième appareil pour pouvoir les réordonner.",
       "no_fixed_loads": "Aucune charge fixe configurée pour l'instant.",
       "no_programs": "Cet appareil n'a pas encore de programme à modifier.",
       "no_removable_programs": "Cet appareil n'a pas encore de programme à supprimer."
     },
     "error": {
+      "reorder_incomplete": "Indiquez chaque appareil une seule fois, avec son nom exact.",
       "required_for_savings": "Obligatoire pour activer le suivi des économies.",
       "duplicate_program": "Cet appareil a déjà un programme avec ce nom.",
       "duplicate_device": "Un appareil avec ce nom existe déjà.",
