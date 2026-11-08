@@ -10,6 +10,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -2440,6 +2442,108 @@ async def test_async_track_run_progress_records_a_sample_while_in_progress(hass)
     await coordinator.async_track_run_progress(now)
 
     assert coordinator._program_state("lave_linge", "Eco")["run_trace"] == [{"t": now.isoformat(), "w": 1590.0}]
+
+
+def _register_plug(hass, sensors, with_device=True):
+    """Register sensors (object_id -> (device_class, original_name)) on one plug device;
+    energy ones get state_class total_increasing, like a real plug's meter."""
+    plug_entry = MockConfigEntry(domain="test")
+    plug_entry.add_to_hass(hass)
+    device_id = None
+    if with_device:
+        device_id = (
+            dr.async_get(hass).async_get_or_create(config_entry_id=plug_entry.entry_id, identifiers={("test", "plug")}).id
+        )
+    registry = er.async_get(hass)
+    for object_id, (device_class, original_name) in sensors.items():
+        registry.async_get_or_create(
+            "sensor",
+            "test",
+            f"{object_id}_uid",
+            suggested_object_id=object_id,
+            config_entry=plug_entry,
+            device_id=device_id,
+            original_device_class=device_class,
+            original_name=original_name,
+            capabilities={"state_class": "total_increasing"} if device_class == "energy" else None,
+        )
+
+
+async def test_resolve_energy_sensor_picks_the_single_energy_sibling(hass):
+    coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 1600}])
+    _register_plug(
+        hass,
+        {
+            "lave_linge_power": ("power", "Power"),
+            "lave_linge_energy": ("energy", "Energy"),
+            "lave_linge_energy_returned": ("energy", "Energy returned"),
+        },
+    )
+
+    assert coordinator._resolve_energy_sensor("sensor.lave_linge_power") == "sensor.lave_linge_energy"
+
+
+async def test_resolve_energy_sensor_returns_none_when_ambiguous(hass):
+    coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 1600}])
+    _register_plug(
+        hass,
+        {
+            "lave_linge_power": ("power", "Power"),
+            "lave_linge_energy_1": ("energy", "Channel 1 energy"),
+            "lave_linge_energy_2": ("energy", "Channel 2 energy"),
+        },
+    )
+
+    assert coordinator._resolve_energy_sensor("sensor.lave_linge_power") is None
+
+
+async def test_resolve_energy_sensor_returns_none_without_a_device(hass):
+    coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 1600}])
+    _register_plug(hass, {"lave_linge_power": ("power", "Power")}, with_device=False)
+
+    assert coordinator._resolve_energy_sensor("sensor.lave_linge_power") is None
+    assert coordinator._resolve_energy_sensor("sensor.not_registered") is None
+
+
+async def test_async_track_run_progress_records_the_energy_meter_in_kwh_as_wh(hass):
+    coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 30, CONF_POWER_W: 1600}])
+    _register_plug(hass, {"lave_linge_power": ("power", "Power"), "lave_linge_energy": ("energy", "Energy")})
+    now = datetime(2026, 9, 8, 12, 10, tzinfo=UTC)
+    _seed_committed(
+        coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", now - timedelta(minutes=5), now + timedelta(minutes=25), 80)
+    )
+    hass.states.async_set("sensor.lave_linge_power", "1590")
+    hass.states.async_set("sensor.lave_linge_energy", "12.5", {"unit_of_measurement": "kWh"})
+
+    await coordinator.async_track_run_progress(now)
+
+    last_changed = hass.states.get("sensor.lave_linge_energy").last_changed
+    assert coordinator._program_state("lave_linge", "Eco")["run_trace"] == [
+        {"t": now.isoformat(), "w": 1590.0, "e": 12500.0, "e_at": last_changed.isoformat()}
+    ]
+
+
+async def test_finalize_run_calibration_rescales_phases_against_the_energy_meter(hass):
+    """08/11/2026 PAC: power stuck at 879 W while the meter measured ~2 kW over 20 min."""
+    coordinator = _profile_coordinator(hass, [{CONF_MINUTES: 25, CONF_POWER_W: 879}])
+    start = datetime(2026, 11, 8, 8, 26, tzinfo=UTC)
+    end = start + timedelta(minutes=25)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 80))
+    meter_updates = [start + timedelta(minutes=2, seconds=46 + 600 * i) for i in range(3)]
+    trace = []
+    for i in range(25):
+        at = start + timedelta(minutes=i)
+        seen = [k for k, u in enumerate(meter_updates) if u <= at]
+        sample = {"t": at.isoformat(), "w": 879.0}
+        if seen:
+            sample["e"], sample["e_at"] = 328.0 * seen[-1], meter_updates[seen[-1]].isoformat()
+        trace.append(sample)
+    coordinator._state["lave_linge"]["Eco"]["run_trace"] = trace
+
+    await coordinator.async_track_run_progress(end)
+
+    run = coordinator._program_state("lave_linge", "Eco")["phase_history"][-1]
+    assert max(p["power_w"] for p in run) > 1900
 
 
 async def test_async_track_run_progress_does_nothing_when_calibration_runs_is_zero(hass):

@@ -23,6 +23,7 @@ from custom_components.solar_planner_scheduler.scheduling import (
     min_forecast_points,
     phase_segments,
     price_at,
+    rescale_trace_to_energy,
     resegment_power_trace,
     schedule_proposals,
     snap_to_grid,
@@ -762,3 +763,58 @@ def test_interpolate_bisect_matches_the_old_linear_scan_on_random_curves():
             expected = _interpolate_linear_reference(points, query_t)
             actual = interpolate(points, query_t)
             assert actual == pytest.approx(expected), (n, query_t, points)
+
+
+# --- rescale_trace_to_energy() ------------------------------------------------------------------
+
+
+def _frozen_pac_trace():
+    """08/11/2026 PAC plug: power stuck at 879 W from 09:26 to 09:50 while drawing ~2 kW."""
+    return [(t(9, 26 + i), 879.0) for i in range(25)]
+
+
+def _at(h, m, s):
+    return DAY + timedelta(hours=h, minutes=m, seconds=s)
+
+
+def test_rescale_trace_to_energy_scales_a_frozen_interval_up():
+    marks = [(_at(9, 28, 46), 0.0), (_at(9, 38, 46), 328.0), (_at(9, 48, 46), 656.0)]
+
+    rescaled = rescale_trace_to_energy(_frozen_pac_trace(), marks)
+
+    for when, w in rescaled:
+        if _at(9, 28, 46) < when <= _at(9, 48, 46):
+            assert w == pytest.approx(879.0 * 328.0 / (879.0 * 10 / 60))
+        else:
+            assert w == 879.0
+
+
+def test_rescale_trace_to_energy_never_scales_down():
+    trace = _frozen_pac_trace()
+    marks = [(_at(9, 28, 46), 0.0), (_at(9, 38, 46), 100.0)]
+
+    assert rescale_trace_to_energy(trace, marks) == trace
+
+
+def test_rescale_trace_to_energy_ignores_marks_outside_the_trace():
+    """A stale reading taken at slot start predates the trace: only the inner interval counts."""
+    marks = [(_at(9, 18, 46), 0.0), (_at(9, 28, 46), 50.0), (_at(9, 38, 46), 378.0)]
+
+    rescaled = rescale_trace_to_energy(_frozen_pac_trace(), marks)
+
+    assert all(w == 879.0 for when, w in rescaled if when <= _at(9, 28, 46) or when > _at(9, 38, 46))
+    assert all(w > 1900 for when, w in rescaled if _at(9, 28, 46) < when <= _at(9, 38, 46))
+
+
+def test_rescale_trace_to_energy_skips_a_counter_reset():
+    trace = _frozen_pac_trace()
+    marks = [(_at(9, 28, 46), 5000.0), (_at(9, 38, 46), 10.0)]
+
+    assert rescale_trace_to_energy(trace, marks) == trace
+
+
+def test_rescale_trace_to_energy_needs_two_marks():
+    trace = _frozen_pac_trace()
+
+    assert rescale_trace_to_energy(trace, []) == trace
+    assert rescale_trace_to_energy(trace, [(_at(9, 28, 46), 0.0)]) == trace

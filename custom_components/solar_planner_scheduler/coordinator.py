@@ -9,13 +9,16 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
+from homeassistant.util.unit_conversion import EnergyConverter
 
 from .const import (
     CONF_AUTO_DAYS,
@@ -59,6 +62,7 @@ from .scheduling import (
     interpolate,
     min_forecast_points,
     phase_segments,
+    rescale_trace_to_energy,
     resegment_power_trace,
 )
 
@@ -110,6 +114,9 @@ STANDBY_SAMPLE_COUNT = 10
 STANDBY_MIN_SAMPLES = 3
 # Added above the learned median so normal standby noise doesn't sit right at the detection edge.
 STANDBY_MARGIN_W = 5
+
+# Energy meters on the power sensor's device skipped by name: they don't measure consumption.
+ENERGY_SENSOR_EXCLUDED_KEYWORDS = ("returned", "today")
 
 # Below this many samples, a run's trace is too short to trust for phase recalibration.
 RUN_CALIBRATION_MIN_SAMPLES = 3
@@ -538,6 +545,41 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         except ValueError:
             return None
 
+    def _resolve_energy_sensor(self, power_sensor: str | None) -> str | None:
+        """The single energy meter on power_sensor's device, or None if absent or ambiguous."""
+        if not power_sensor:
+            return None
+        registry = er.async_get(self.hass)
+        entry = registry.async_get(power_sensor)
+        if entry is None or entry.device_id is None:
+            return None
+        candidates = [
+            sibling.entity_id
+            for sibling in er.async_entries_for_device(registry, entry.device_id)
+            if sibling.domain == "sensor"
+            and (sibling.device_class or sibling.original_device_class) == "energy"
+            and (sibling.capabilities or {}).get("state_class") == "total_increasing"
+            and not any(
+                k in f"{sibling.entity_id} {sibling.original_name or ''}".lower() for k in ENERGY_SENSOR_EXCLUDED_KEYWORDS
+            )
+        ]
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _current_energy_wh(self, energy_sensor: str | None) -> tuple[float, datetime] | None:
+        if not energy_sensor:
+            return None
+        state = self.hass.states.get(energy_sensor)
+        if state is None or state.state in ("unknown", "unavailable"):
+            return None
+        unit = state.attributes.get("unit_of_measurement")
+        if unit not in EnergyConverter.VALID_UNITS:
+            return None
+        try:
+            value = float(state.state)
+        except ValueError:
+            return None
+        return EnergyConverter.convert(value, unit, UnitOfEnergy.WATT_HOUR), state.last_changed
+
     def _standby_samples(self, device_name: str) -> list[float]:
         return self._state.get("standby", {}).get(device_name, [])
 
@@ -715,6 +757,7 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         for device in self.entry.options.get(CONF_DEVICES, []):
             device_name = device[CONF_NAME]
             power_sensor = device.get(CONF_POWER_SENSOR)
+            energy_sensor = self._resolve_energy_sensor(power_sensor)
             for program in device.get(CONF_PROGRAMS, []):
                 program_name = program[CONF_NAME]
                 if not self.is_program_active(device_name, program_name, program):
@@ -733,7 +776,11 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
                     power = self._current_power(power_sensor)
                     if power is None:
                         continue
-                    trace = [*state.get("run_trace", []), {"t": now.isoformat(), "w": power}]
+                    sample = {"t": now.isoformat(), "w": power}
+                    energy = self._current_energy_wh(energy_sensor)
+                    if energy is not None:
+                        sample["e"], sample["e_at"] = energy[0], energy[1].isoformat()
+                    trace = [*state.get("run_trace", []), sample]
                     self._state.setdefault(device_name, {})[program_name] = {**state, "run_trace": trace}
                     await self._store.async_save(self._state)
                 elif now >= end and not state.get("phases_calibrated"):
@@ -747,6 +794,12 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         history = state.get("phase_history", [])
         if len(trace_raw) >= RUN_CALIBRATION_MIN_SAMPLES and reference_profile:
             trace = [(dt_util.parse_datetime(s["t"]), s["w"]) for s in trace_raw if dt_util.parse_datetime(s["t"])]
+            marks: list[tuple[datetime, float]] = []
+            for sample in trace_raw:
+                at = dt_util.parse_datetime(sample["e_at"]) if "e" in sample else None
+                if at is not None and (not marks or at != marks[-1][0]):
+                    marks.append((at, sample["e"]))
+            trace = rescale_trace_to_energy(trace, marks)
             # A single declared phase means the real shape isn't known yet (placeholder entry).
             levels = discover_power_levels(trace) if len(reference_profile) <= 1 else [
                 phase[CONF_POWER_W] for phase in reference_profile

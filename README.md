@@ -16,7 +16,7 @@ Tell Home Assistant your washing machine takes 2 hours: Solar Planner Scheduler 
 
 - **Best slot from your solar forecast**: each program gets the window where the forecast covers the largest share of its consumption, recomputed as the forecast updates.
 - **Realistic power profiles**: describe a program as phases (`20min@150W`, then `1.5h@800W`), so a short heating peak is placed under the sun, not just the average draw.
-- **Self-learning**: with a power sensor, the integration detects real starts and refines each program's phases from actual runs.
+- **Self-learning**: with a power sensor, the integration detects real starts and refines each program's phases from actual runs. If the power sensor's device also has an energy meter, learned power is corrected against it, for plugs that report power irregularly.
 - **Shares the sunshine**: several devices never get scheduled beyond your maximum simultaneous power, and two programs of the same machine never overlap.
 - **Off-peak aware** (optional): with your tariff bands, it picks the cheapest window, solar or off-peak grid, and shows the estimated cost or savings.
 - **Payback tracking** (optional): a sensor reports what your panels earned since installation and projects the payback date, from your Energy dashboard's data.

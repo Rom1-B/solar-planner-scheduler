@@ -150,6 +150,28 @@ def resegment_power_trace(trace: Sequence[tuple[datetime, float]], reference_lev
     return phases
 
 
+def rescale_trace_to_energy(
+    trace: Sequence[tuple[datetime, float]], energy_marks: Sequence[tuple[datetime, float]]
+) -> list[tuple[datetime, float]]:
+    """Scale up each interval between two energy-meter updates (both inside the trace) to the
+    energy the meter measured, never down. energy_marks: (update time, Wh), sorted, distinct times.
+    """
+    if len(energy_marks) < 2 or not trace:
+        return list(trace)
+    first_t, last_t = trace[0][0], trace[-1][0]
+    marks = [m for m in energy_marks if first_t <= m[0] <= last_t]
+    factors = []
+    for (t0, e0), (t1, e1) in zip(marks, marks[1:]):
+        delta_wh = e1 - e0
+        samples = [w for t, w in trace if t0 < t <= t1]
+        if delta_wh <= 0 or not samples:
+            continue
+        trace_wh = statistics.mean(samples) * (t1 - t0).total_seconds() / 3600
+        if trace_wh > 0 and delta_wh / trace_wh > 1:
+            factors.append((t0, t1, delta_wh / trace_wh))
+    return [(t, w * next((f for t0, t1, f in factors if t0 < t <= t1), 1.0)) for t, w in trace]
+
+
 def discover_power_levels(trace: Sequence[tuple[datetime, float]]) -> list[float]:
     """Discover the distinct power levels in a trace, in order, when the real phase count isn't
     known yet (a program declared with a single placeholder phase). A level change is only kept
