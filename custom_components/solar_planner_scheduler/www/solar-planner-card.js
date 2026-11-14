@@ -855,15 +855,20 @@ class SolarPlannerCard extends HTMLElement {
     const laneHeight = 10;
     const laneGap = 2;
     const ganttTop = 2;
-    const laneCount = deviceStates.length + base.fixed_loads.length;
+    // Only programs with a bar in view and fixed loads with an occurrence get a lane: idle or elapsed ones would leave empty rows.
+    const deviceLanes = deviceStates.map((ds, i) => ({ ds, i })).filter(({ ds }) => ds.start && ds.end && ds.end > viewStart && ds.start < viewEnd);
+    const fixedLanes = base.fixed_loads
+      .map((loadConfig, i) => ({ i, occurrences: fixedLoadsByIndex.get(i) || [] }))
+      .filter((lane) => lane.occurrences.length);
+    const laneCount = deviceLanes.length + fixedLanes.length;
     const ganttHeight = laneCount * (laneHeight + laneGap) + ganttTop;
 
     const laneBars = [];
-    deviceStates.forEach((ds, i) => {
-      const laneY = ganttTop + i * (laneHeight + laneGap);
+    deviceLanes.forEach(({ ds, i }, lane) => {
+      const laneY = ganttTop + lane * (laneHeight + laneGap);
       const barColor = deviceColor(i);
       const bars = [];
-      if (ds.start && ds.end) {
+      {
         const durationMin = (ds.end.getTime() - ds.start.getTime()) / 60000;
         // Profile-based programs have no flat powerW; sum each phase's own minutes*power_w instead.
         const energyWh = ds.profile ? ds.profile.reduce((s, p) => s + (p.minutes * p.power_w) / 60, 0) : (ds.powerW * durationMin) / 60;
@@ -878,9 +883,8 @@ class SolarPlannerCard extends HTMLElement {
       laneBars.push(bars.join(""));
     });
     // Fixed loads are read-only (hatched, "reserved" not "proposed"); a lane can hold today's + tomorrow's occurrence.
-    base.fixed_loads.forEach((loadConfig, i) => {
-      const laneY = ganttTop + (deviceStates.length + i) * (laneHeight + laneGap);
-      const occurrences = fixedLoadsByIndex.get(i) || [];
+    fixedLanes.forEach(({ i, occurrences }, lane) => {
+      const laneY = ganttTop + (deviceLanes.length + lane) * (laneHeight + laneGap);
       const rects = occurrences
         .map((load) => {
           const bx = x(load.start);
@@ -907,11 +911,13 @@ class SolarPlannerCard extends HTMLElement {
     });
     const deviceRows = deviceGroups
       .map((group) => {
+        // A colored dot tells apart the detail lines of several active programs of one device.
+        const showDetailDot = group.rows.filter(({ ds }) => ds.active).length > 1;
         const rows = group.rows
           .map(({ ds, i }) => {
             const rowPending = this._pendingSlugs.has(ds.slug);
             const slot = ds.active
-              ? `<input type="time" class="slot-time" data-device="${ds.slug}" value="${ds.start ? fmtTime(ds.start) : ""}" ${rowPending ? "disabled" : ""}>
+              ? `${showDetailDot ? `<span class="detail-dot" style="background:${deviceColor(i)}"></span>` : ""}<input type="time" class="slot-time" data-device="${ds.slug}" value="${ds.start ? fmtTime(ds.start) : ""}" ${rowPending ? "disabled" : ""}>
                 ${ds.locked ? `<button class="auto-btn" data-device="${ds.slug}" ${rowPending ? "disabled" : ""}>Auto</button>` : ""}
                 ${
                   ds.coveragePct != null
@@ -935,10 +941,10 @@ class SolarPlannerCard extends HTMLElement {
                 }`
               : "";
             return `<div class="program-row${rowPending ? " pending" : ""}">
-              <button class="program-toggle ${ds.active ? "active" : ""}" data-row="${ds.slug}" data-active="${ds.active}" ${ds.active ? `style="background:${deviceColor(i)};border-color:${deviceColor(i)}"` : ""} ${rowPending ? "disabled" : ""}>${ds.programName}</button>
-              ${rowPending ? `<ha-icon class="row-spinner" icon="mdi:loading"></ha-icon>` : ""}
-              ${ds.shouldRun ? `<ha-icon class="running-icon" icon="mdi:play-circle" title="Currently running"></ha-icon>` : ""}
-              ${slot}
+              <span class="program-chip"><button class="program-toggle ${ds.active ? "active" : ""}" data-row="${ds.slug}" data-active="${ds.active}" ${ds.active ? `style="background:${deviceColor(i)};border-color:${deviceColor(i)}"` : ""} ${rowPending ? "disabled" : ""}>${ds.programName}</button>${
+                rowPending ? `<ha-icon class="row-spinner" icon="mdi:loading"></ha-icon>` : ""
+              }${ds.shouldRun ? `<ha-icon class="running-icon" icon="mdi:play-circle" title="Currently running"></ha-icon>` : ""}</span>
+              ${slot ? `<div class="program-detail">${slot}</div>` : ""}
             </div>`;
           })
           .join("");
@@ -1079,10 +1085,14 @@ class SolarPlannerCard extends HTMLElement {
         .bar-draggable:active { cursor: grabbing; }
         .drag-pct-bg { fill: var(--card-background-color, #1c1c1c); opacity: 0.92; }
         .drag-pct { font-size: 9px; fill: var(--primary-text-color); }
-        .device-select { margin-top: 12px; display: flex; flex-wrap: wrap; align-items: center; column-gap: 12px; }
-        .device-select-header { flex-basis: 100%; font-size: 0.95em; font-weight: 500; color: var(--primary-text-color); margin-bottom: 4px; }
+        /* Name and program buttons share a line; each active program's details follow on their own line. */
+        .device-select { margin-top: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+        .device-select-header { font-size: 0.95em; font-weight: 500; color: var(--primary-text-color); margin-right: 4px; }
         .device-select-header .swatch { margin-right: 5px; vertical-align: middle; }
-        .program-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 0.85em; flex-wrap: wrap; }
+        .program-row { display: contents; }
+        .program-chip { order: 0; display: inline-flex; align-items: center; gap: 4px; font-size: 0.85em; }
+        .program-detail { order: 1; flex-basis: 100%; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; font-size: 0.85em; }
+        .detail-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
         .running-icon { --mdc-icon-size: 14px; color: var(--success-color, #4caf50); vertical-align: middle; }
         .program-toggle { border: 1px solid var(--divider-color); background: none; border-radius: 12px; padding: 3px 10px; font-size: 0.95em; cursor: pointer; color: var(--primary-text-color); font-family: inherit; }
         .program-toggle.active { background: var(--primary-color); color: var(--text-primary-color, #fff); border-color: var(--primary-color); }
@@ -1105,7 +1115,7 @@ class SolarPlannerCard extends HTMLElement {
         th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--divider-color); }
         .table-total td { font-weight: 500; border-bottom: none; border-top: 2px solid var(--divider-color); }
         .row-started { opacity: 0.5; }
-        .program-row.pending { opacity: 0.5; transition: opacity 0.15s; }
+        .program-row.pending > * { opacity: 0.5; transition: opacity 0.15s; }
         .row-spinner { --mdc-icon-size: 16px; color: var(--primary-color); animation: chart-spinner-spin 1s linear infinite; }
         .chart-scroll.pending { opacity: 0.4; pointer-events: none; transition: opacity 0.15s; }
         .chart-wrap { position: relative; }
@@ -1168,9 +1178,13 @@ class SolarPlannerCard extends HTMLElement {
             </g>
             <rect id="hover-catch" class="hover-catch" x="${marginLeft}" y="${marginTop}" width="${innerW}" height="${innerH}"/>
           </svg>
-          <svg class="gantt" viewBox="0 0 ${width} ${ganttHeight}" style="width: ${chartWidthPercent}%">${laneBars.join(
-                ""
-              )}<line x1="${nowX}" y1="0" x2="${nowX}" y2="${ganttHeight}" class="now-line"/><g class="drag-pct-group" style="opacity:0" pointer-events="none"><rect class="drag-pct-bg" width="60" height="14" rx="2"/><text class="drag-pct" x="30" y="10.5" text-anchor="middle"></text></g></svg>
+          ${
+            laneCount
+              ? `<svg class="gantt" viewBox="0 0 ${width} ${ganttHeight}" style="width: ${chartWidthPercent}%">${laneBars.join(
+                  ""
+                )}<line x1="${nowX}" y1="0" x2="${nowX}" y2="${ganttHeight}" class="now-line"/><g class="drag-pct-group" style="opacity:0" pointer-events="none"><rect class="drag-pct-bg" width="60" height="14" rx="2"/><text class="drag-pct" x="30" y="10.5" text-anchor="middle"></text></g></svg>`
+              : ""
+          }
         </div>
         </div>
         ${deviceRows}

@@ -1805,3 +1805,40 @@ test("cost_display: both adds a Savings column alongside Cost in the table", () 
   assert.ok(html.includes("<th>Cost</th>") && html.includes("<th>Savings</th>"), "expected both table columns");
   assert.ok(html.includes("~1.10 EUR"), "expected the savings value in a table cell");
 });
+
+const ganttViewHeight = (html) => parseFloat(/<svg class="gantt" viewBox="0 0 [\d.]+ ([\d.]+)/.exec(html)?.[1] ?? "NaN");
+
+test("the gantt only reserves lanes for scheduled programs and fixed loads, none when nothing is scheduled", () => {
+  // Lane = 10 px bar + 2 px gap, plus a 2 px top margin. One lane per idle program used to leave
+  // most of the gantt empty on a real install with many programs and few scheduled.
+  const active = buildCard();
+  active._render();
+  assert.equal(ganttViewHeight(active.shadowRoot.innerHTML), 3 * 12 + 2, "expected two program lanes plus the fixed load");
+
+  const idle = buildCard({ withActiveSelections: false });
+  idle._render();
+  assert.equal(ganttViewHeight(idle.shadowRoot.innerHTML), 12 + 2, "expected only the fixed load's lane");
+
+  const elapsed = buildCard();
+  const longAgo = new Date(Date.now() - 2 * 24 * 3600e3);
+  Object.assign(
+    elapsed._hass.states,
+    deviceEntities("lave_linge", { name: "Lave-linge", start: longAgo, end: new Date(longAgo.getTime() + 3600e3), powerW: 1800 })
+  );
+  elapsed._render();
+  assert.ok(ganttViewHeight(elapsed.shadowRoot.innerHTML) < ganttViewHeight(active.shadowRoot.innerHTML), "expected no lane for a slot outside the view");
+
+  setFixedLoads(idle, []);
+  idle._render();
+  assert.doesNotMatch(idle.shadowRoot.innerHTML, /<svg class="gantt"/, "expected no gantt at all when nothing is scheduled");
+});
+
+test("a device's name and program buttons share one line, an active program's details come after them", () => {
+  const card = buildCard();
+  card._render();
+  const group = card.shadowRoot.innerHTML.match(/<div class="device-select">\s*<div class="device-select-header">Lave-linge<\/div>[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/)?.[0];
+  assert.ok(group, "expected the Lave-linge group with its header");
+  assert.match(group, /<span class="program-chip"><button class="program-toggle active"/, "expected the toggle in a chip, ordered on the header line");
+  assert.match(group, /<div class="program-detail">[\s\S]*class="slot-time"/, "expected the active program's time input in a detail line");
+  assert.ok(group.indexOf("program-chip") < group.indexOf("program-detail"), "expected the detail after the chip");
+});
