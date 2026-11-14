@@ -23,7 +23,7 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 PLATFORMS = ["sensor", "binary_sensor", "switch", "datetime", "select"]
 
 CARD_URL_BASE = f"/{DOMAIN}_files"
-CARD_FILENAMES = ("solar-planner-card.js", "energy-split-card.js")
+CARD_FILENAMES = ("solar-planner-card.js", "energy-split-card.js", "energy-stats-graph-card.js")
 
 
 def _card_version(card_path: Path) -> str:

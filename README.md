@@ -22,6 +22,7 @@ Tell Home Assistant your washing machine takes 2 hours: Solar Planner Scheduler 
 - **Payback tracking** (optional): a sensor reports what your panels earned since installation and projects the payback date, from your Energy dashboard's data.
 - **Bundled Lovelace card**: forecast curve with confidence band, a gantt of planned runs, drag a bar to force a time, summary table. Registered automatically.
 - **Energy split card**: grid cost and solar savings of each Energy dashboard device over a period, following the dashboard's date picker. Registered automatically.
+- **Energy stats graph card**: any long-term statistics over the dashboard's date picker period, meters as stacked bars and measurements as lines, drawn like the native Energy cards. Registered automatically.
 
 ## 📋 Requirements
 
@@ -181,6 +182,46 @@ type: custom:energy-split-card
 | `title` | translated | Card title. |
 
 With an `energy-date-selection` card on the same dashboard, the card follows its period; otherwise it shows its own period buttons.
+
+## 📈 The energy stats graph card
+
+![Energy stats graph card](https://raw.githubusercontent.com/Rom1-B/solar-planner-scheduler/main/docs/energy-stats-graph-card.png)
+
+Plots long-term statistics over the period of the dashboard's `energy-date-selection` card, with Home Assistant's own chart so it looks like the Energy cards: for example heating consumption against outdoor and indoor temperatures.
+Meters (energy, gas, water) are drawn as bars, stacked per unit, with their total in the header; measurements (temperature, humidity) as lines.
+The step follows the period length: hourly up to 2 days, daily up to about 2 months, monthly beyond.
+At most two units per card: the first series' unit gets the visible axis, the other one its own hidden scale, read in the tooltip.
+
+```yaml
+type: custom:energy-stats-graph-card
+title: Heating
+series:
+  - entity: sensor.heat_pump_energy
+  - entity: sensor.stove_energy
+  - entity: sensor.outdoor_temperature
+  - entity: sensor.solar_energy
+    type: line
+    dashed: true
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `series` | required | Statistics to plot, see below. |
+| `collection_key` | none | Same value as the `energy-date-selection` card's `collection_key`, if it sets one. |
+| `period` | `auto` | `auto`, `hour`, `day` or `month`. |
+| `fallback_period` | `7d` | `today`, `yesterday`, `7d`, `30d` or `month`, used only without an `energy-date-selection` card. |
+| `title` | none | Card title. |
+
+| Series option | Default | Description |
+|---------------|---------|-------------|
+| `entity` | required | Statistic id. |
+| `name` | entity name | Legend and tooltip label. |
+| `stat` | `change` for meters, `mean` otherwise | `change`, `mean`, `min` or `max`. |
+| `type` | `bar` for `change`, `line` otherwise | `bar` or `line`; a meter as a line stays out of the stack and the totals. |
+| `color` | palette | Hex color. |
+| `dashed` | `false` | Dashed line, for `line` series. |
+
+The chart is Home Assistant's internal `ha-chart-base` element, not a public API: a frontend update may require a card update.
 
 ## 🛠️ Troubleshooting
 

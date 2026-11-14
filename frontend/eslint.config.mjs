@@ -28,7 +28,7 @@ export default [
     languageOptions: { ecmaVersion: 2022, sourceType: "module", globals: browserGlobals },
   },
   {
-    files: ["energy-split-card.js"],
+    files: ["energy-split-card.js", "energy-stats-graph-card.js"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "module",
