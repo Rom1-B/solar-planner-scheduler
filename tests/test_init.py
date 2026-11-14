@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from homeassistant.core import is_callback
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.solar_planner_scheduler import PLATFORMS, _card_version, async_setup_entry
+from custom_components.solar_planner_scheduler import (
+    CARD_FILENAMES,
+    CARD_URL_BASE,
+    PLATFORMS,
+    _card_version,
+    async_setup,
+    async_setup_entry,
+)
 from custom_components.solar_planner_scheduler.const import (
     CONF_DEVICES,
     CONF_FORECAST_ENTITY,
@@ -41,6 +48,36 @@ def test_card_version_is_stable_for_unchanged_content(tmp_path):
     card_path.write_text("console.log('same');")
 
     assert _card_version(card_path) == _card_version(card_path)
+
+
+class _FakeResources:
+    loaded = True
+
+    def __init__(self, items):
+        self.items = items
+
+    def async_items(self):
+        return self.items
+
+    async def async_create_item(self, data):
+        self.items.append({"id": str(len(self.items)), **data})
+
+    async def async_update_item(self, item_id, data):
+        next(item for item in self.items if item["id"] == item_id).update(data)
+
+
+async def test_async_setup_registers_every_bundled_card_as_a_versioned_resource(hass):
+    """Both cards ship in www/: each gets its own resource, an outdated version is updated in place."""
+    stale_url = f"{CARD_URL_BASE}/solar-planner-card.js?v=old"
+    resources = _FakeResources([{"id": "0", "res_type": "module", "url": stale_url}])
+    hass.data["lovelace"] = type("Lovelace", (), {"resources": resources})()
+
+    with patch.object(hass, "http", Mock(async_register_static_paths=AsyncMock())):
+        await async_setup(hass, {})
+
+    urls = sorted(item["url"].split("?")[0] for item in resources.items)
+    assert urls == sorted(f"{CARD_URL_BASE}/{filename}" for filename in CARD_FILENAMES)
+    assert all("?v=" in item["url"] and item["url"] != stale_url for item in resources.items)
 
 
 async def test_the_per_minute_refresh_timer_is_a_real_hass_callback(hass):

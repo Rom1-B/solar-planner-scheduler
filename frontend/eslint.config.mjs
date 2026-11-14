@@ -18,6 +18,7 @@ const nodeGlobals = {
   setTimeout: "readonly",
   clearTimeout: "readonly",
   process: "readonly",
+  setImmediate: "readonly",
 };
 
 export default [
@@ -25,6 +26,14 @@ export default [
   {
     files: ["solar-planner-card.js"],
     languageOptions: { ecmaVersion: 2022, sourceType: "module", globals: browserGlobals },
+  },
+  {
+    files: ["energy-split-card.js"],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: "module",
+      globals: { ...browserGlobals, setTimeout: "readonly", clearTimeout: "readonly" },
+    },
   },
   {
     files: ["tests/**/*.js"],

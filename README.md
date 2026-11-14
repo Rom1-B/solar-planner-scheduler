@@ -21,6 +21,7 @@ Tell Home Assistant your washing machine takes 2 hours: Solar Planner Scheduler 
 - **Off-peak aware** (optional): with your tariff bands, it picks the cheapest window, solar or off-peak grid, and shows the estimated cost or savings.
 - **Payback tracking** (optional): a sensor reports what your panels earned since installation and projects the payback date, from your Energy dashboard's data.
 - **Bundled Lovelace card**: forecast curve with confidence band, a gantt of planned runs, drag a bar to force a time, summary table. Registered automatically.
+- **Energy split card**: grid cost and solar savings of each Energy dashboard device over a period, following the dashboard's date picker. Registered automatically.
 
 ## 📋 Requirements
 
@@ -154,6 +155,32 @@ devices: "*"
 | `chart_hours_past` | `6` | Hours shown before now. |
 | `chart_hours_future` | `24` | Hours shown after now. |
 | `chart_visible_hours` | past + future | Hours that fit on screen before the chart scrolls. |
+
+## 🔌 The energy split card
+
+![Energy split card](https://raw.githubusercontent.com/Rom1-B/solar-planner-scheduler/main/docs/energy-split-card.png)
+
+Ranks the devices declared in the Energy dashboard by grid cost over a period, with what solar saved on each, its solar share and its base load.
+A "(rest)" line shows what a circuit consumes beyond its declared sub-devices; clicking a line opens its hourly average power curve.
+Devices and their hierarchy come from the Energy dashboard settings: nothing to configure in the card.
+
+For every hour, the grid share is grid import divided by house consumption (solar + import - export, plus battery discharge - charge); each device's hourly consumption is split with that share.
+It is a proportional allocation, not a measurement.
+Cost is priced at the Energy dashboard's grid price for that hour; savings are self-consumed solar at the same price, export income excluded.
+
+```yaml
+type: custom:energy-split-card
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `collection_key` | none | Same value as the `energy-date-selection` card's `collection_key`, if it sets one. |
+| `period` | `7d` | `today`, `yesterday`, `7d`, `30d` or `month`, used only without an `energy-date-selection` card. |
+| `min_kwh` | `0.1` | Hides devices consuming less over the period. |
+| `price` | Energy dashboard price | Fixed price per kWh, overriding the Energy dashboard's. |
+| `title` | translated | Card title. |
+
+With an `energy-date-selection` card on the same dashboard, the card follows its period; otherwise it shows its own period buttons.
 
 ## 🛠️ Troubleshooting
 

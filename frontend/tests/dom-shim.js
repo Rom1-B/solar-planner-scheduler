@@ -42,6 +42,9 @@ globalThis.customElements = {
   define(tag, ctor) {
     registry[tag] = ctor;
   },
+  get(tag) {
+    return registry[tag];
+  },
 };
 globalThis.window = globalThis;
 

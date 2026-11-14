@@ -23,12 +23,12 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 PLATFORMS = ["sensor", "binary_sensor", "switch", "datetime", "select"]
 
 CARD_URL_BASE = f"/{DOMAIN}_files"
-CARD_FILENAME = "solar-planner-card.js"
+CARD_FILENAMES = ("solar-planner-card.js", "energy-split-card.js")
 
 
 def _card_version(card_path: Path) -> str:
-    """Content hash of the bundled card, used as the Lovelace resource's cache-busting query
-    string: changes automatically whenever solar-planner-card.js changes, no manual bump needed.
+    """Content hash of a bundled card, used as the Lovelace resource's cache-busting query
+    string: changes automatically whenever the card file changes, no manual bump needed.
     """
     import hashlib
 
@@ -36,7 +36,7 @@ def _card_version(card_path: Path) -> str:
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Serve the bundled Lovelace card and register it as a Lovelace resource."""
+    """Serve the bundled Lovelace cards and register each as a Lovelace resource."""
     from pathlib import Path
 
     from homeassistant.components.http import StaticPathConfig
@@ -49,20 +49,24 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     if lovelace is None:
         return True
 
-    card_version = await hass.async_add_executor_job(_card_version, www_path / CARD_FILENAME)
+    card_versions = {
+        filename: await hass.async_add_executor_job(_card_version, www_path / filename) for filename in CARD_FILENAMES
+    }
 
-    async def _register_resource(_now=None) -> None:
+    async def _register_resources(_now=None) -> None:
         if not lovelace.resources.loaded:
-            async_call_later(hass, 5, _register_resource)
+            async_call_later(hass, 5, _register_resources)
             return
-        url = f"{CARD_URL_BASE}/{CARD_FILENAME}"
-        existing = next((r for r in lovelace.resources.async_items() if r["url"].split("?")[0] == url), None)
-        if existing is None:
-            await lovelace.resources.async_create_item({"res_type": "module", "url": f"{url}?v={card_version}"})
-        elif existing["url"].split("?v=")[-1] != card_version:
-            await lovelace.resources.async_update_item(existing["id"], {"res_type": "module", "url": f"{url}?v={card_version}"})
+        for filename, version in card_versions.items():
+            url = f"{CARD_URL_BASE}/{filename}"
+            existing = next((r for r in lovelace.resources.async_items() if r["url"].split("?")[0] == url), None)
+            item = {"res_type": "module", "url": f"{url}?v={version}"}
+            if existing is None:
+                await lovelace.resources.async_create_item(item)
+            elif existing["url"].split("?v=")[-1] != version:
+                await lovelace.resources.async_update_item(existing["id"], item)
 
-    await _register_resource()
+    await _register_resources()
     _async_register_services(hass)
     return True
 
