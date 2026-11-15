@@ -11,8 +11,17 @@
  * Relies on the native card's internals (_data, _processStatistics, _createOptions, _chartData,
  * _legendData, _hiddenStats), as of the 2026.9 frontend: a frontend update may require a card update.
  *
+ * With mode: cost, the bar meters are summed into two stacked native bars in currency: their grid cost
+ * and their solar savings, from an hourly split of each meter's consumption by that hour's grid share
+ * (grid import / house consumption) priced at the Energy dashboard's grid price, summed per step.
+ *
  * type: custom:energy-stats-graph-card
  *   title: <optional>
+ *   mode: <optional: energy | cost, defaults to energy>
+ *   export: <optional, cost mode: true adds the grid export income (the Energy dashboard's compensation
+ *            statistic, recorded from when an export price is set) as a negative series, and a dashed
+ *            net bill line per period (grid cost - income)>
+ *   mode_toggle: <optional, true shows a "kWh | €" switch in the card corner, starting from mode>
  *   collection_key: <optional, same value as the energy-date-selection card's collection_key>
  *   expand_legend: <optional, native option>
  *   series:
@@ -154,6 +163,230 @@ export function lineSeries(lines, extra, data, axisIndex) {
   return out;
 }
 
+export const SOLAR_SUFFIX = "#solar";
+export const COST_GRID = "cost_grid";
+export const COST_SOLAR = "cost_solar";
+export const COST_EXPORT = "cost_export";
+export const COST_NET = "cost_net";
+const COST_STRINGS = {
+  en: { grid: "Grid", solar: "Solar", export: "Export", net: "Net bill", total: "Total" },
+  fr: { grid: "Réseau", solar: "Solaire", export: "Revente", net: "Facture nette", total: "Total" },
+};
+
+/** Source statistic ids and grid price from the Energy preferences, flat (2025+) or flow_from/flow_to grid format. */
+export function energySources(prefs) {
+  const out = { solar: [], gridIn: [], gridOut: [], batteryOut: [], batteryIn: [], price: [], compensation: [] };
+  for (const src of prefs.energy_sources || []) {
+    if (src.type === "solar") out.solar.push(src.stat_energy_from);
+    else if (src.type === "battery") {
+      out.batteryOut.push(src.stat_energy_from);
+      out.batteryIn.push(src.stat_energy_to);
+    } else if (src.type === "grid") {
+      if (src.stat_energy_from) out.gridIn.push(src.stat_energy_from);
+      if (src.stat_energy_to) out.gridOut.push(src.stat_energy_to);
+      if (src.entity_energy_price) out.price.push(src.entity_energy_price);
+      if (src.number_energy_price != null) out.fixedPrice ??= src.number_energy_price;
+      if (src.stat_compensation) out.compensation.push(src.stat_compensation);
+      for (const f of src.flow_from || []) {
+        out.gridIn.push(f.stat_energy_from);
+        if (f.entity_energy_price) out.price.push(f.entity_energy_price);
+        if (f.number_energy_price != null) out.fixedPrice ??= f.number_energy_price;
+      }
+      for (const f of src.flow_to || []) {
+        out.gridOut.push(f.stat_energy_to);
+        if (f.stat_compensation) out.compensation.push(f.stat_compensation);
+      }
+    }
+  }
+  for (const k of Object.keys(out)) if (Array.isArray(out[k])) out[k] = out[k].filter(Boolean);
+  out.price = out.price.slice(0, 1);
+  out.compensation = out.compensation.slice(0, 1);
+  return out;
+}
+
+/**
+ * The export income statistic HA keeps, like its own cost cards: the configured stat_compensation, else
+ * the "<export meter>_compensation" sensor it creates once an export price is set (never retroactive).
+ */
+export function compensationStat(src, states) {
+  if (src.compensation[0]) return src.compensation[0];
+  const auto = src.gridOut[0] && `${src.gridOut[0]}_compensation`;
+  return auto && states?.[auto] ? auto : null;
+}
+
+/** Export income per step from the hourly compensation changes, negative like the native returned-energy bars. */
+export function exportStats(changes, compensationId, period) {
+  const sums = new Map();
+  for (const [h, income] of changes[compensationId] || []) {
+    const b = bucketStart(h, period);
+    sums.set(b, (sums.get(b) || 0) - income);
+  }
+  return [...sums].sort((a, b) => a[0] - b[0]).map(([start, change]) => ({ start, end: nextBucket(start, period), change }));
+}
+
+/** Hourly values of one statistic type: { id: Map(hourStartMs -> value) }. */
+export function hourlyValues(raw, type) {
+  return Object.fromEntries(
+    Object.entries(raw || {}).map(([id, rows]) => [id, new Map(rows.filter((r) => r[type] != null).map((r) => [rowTime(r), r[type]]))])
+  );
+}
+
+/** Per hour: grid share of the house consumption in [0, 1] (energy-split-card allocation) and the grid price. */
+export function hourlyShares(changes, src, priceOf) {
+  const sum = (ids, h) => ids.reduce((acc, id) => acc + (changes[id]?.get(h) || 0), 0);
+  const hours = new Set();
+  for (const id of [...src.solar, ...src.gridIn]) for (const h of changes[id]?.keys() || []) hours.add(h);
+  const shares = new Map();
+  for (const h of hours) {
+    const imp = sum(src.gridIn, h);
+    const house = sum(src.solar, h) + imp - sum(src.gridOut, h) + sum(src.batteryOut, h) - sum(src.batteryIn, h);
+    shares.set(h, { share: house > 0 ? Math.min(1, Math.max(0, imp / house)) : imp > 0 ? 1 : 0, price: priceOf(h) });
+  }
+  return shares;
+}
+
+const bucketStart = (t, period) => {
+  const d = new Date(t);
+  if (period === "hour") return new Date(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours()).getTime();
+  return (period === "day" ? startOfDay(d) : new Date(d.getFullYear(), d.getMonth(), 1)).getTime();
+};
+const nextBucket = (t, period) => {
+  const d = new Date(t);
+  if (period === "hour") return t + HOUR;
+  return (period === "day" ? addDays(d, 1) : new Date(d.getFullYear(), d.getMonth() + 1, 1)).getTime();
+};
+
+/**
+ * Grid cost and solar savings of each device summed per step of the period, as native statistic rows:
+ * { id: rows, "id#solar": rows }. Hours without a known share count as grid.
+ */
+export function costStats(changes, shares, ids, period, fallbackPrice) {
+  const out = {};
+  for (const id of ids) {
+    const grid = new Map();
+    const solar = new Map();
+    for (const [h, kwh] of changes[id] || []) {
+      const share = shares.get(h)?.share ?? 1;
+      const price = shares.get(h)?.price ?? fallbackPrice;
+      const b = bucketStart(h, period);
+      grid.set(b, (grid.get(b) || 0) + kwh * share * price);
+      solar.set(b, (solar.get(b) || 0) + kwh * (1 - share) * price);
+    }
+    const rows = (m) => [...m].sort((a, b) => a[0] - b[0]).map(([start, change]) => ({ start, end: nextBucket(start, period), change }));
+    out[id] = rows(grid);
+    out[id + SOLAR_SUFFIX] = rows(solar);
+  }
+  return out;
+}
+
+/** Per-meter grid cost and solar savings rows summed across meters: { cost_grid: rows, cost_solar: rows }. */
+export function sumCostStats(perMeter, ids, period) {
+  const total = (keys) => {
+    const sums = new Map();
+    for (const key of keys) for (const r of perMeter?.[key] || []) sums.set(r.start, (sums.get(r.start) || 0) + r.change);
+    return [...sums].sort((a, b) => a[0] - b[0]).map(([start, change]) => ({ start, end: nextBucket(start, period), change }));
+  };
+  return { [COST_GRID]: total(ids), [COST_SOLAR]: total(ids.map((id) => id + SOLAR_SUFFIX)) };
+}
+
+/** Cost mode energy data: grid cost and solar savings of all bar meters (plus export income if loaded), in currency. */
+export function costEnergyData(data, cost, words) {
+  const exported = cost?.stats && COST_EXPORT in cost.stats;
+  return {
+    ...data,
+    prefs: {
+      ...data.prefs,
+      energy_sources: [],
+      device_consumption: [
+        { stat_consumption: COST_GRID, name: words.grid },
+        { stat_consumption: COST_SOLAR, name: words.solar },
+        ...(exported ? [{ stat_consumption: COST_EXPORT, name: words.export }] : []),
+      ],
+    },
+    stats: cost?.stats || {},
+    statsCompare: data.statsCompare ? cost?.statsCompare || {} : data.statsCompare,
+  };
+}
+
+// Grid cost and solar savings take the Energy dashboard's grid and solar colors, with the native bar
+// fill and border alphas (compare: fainter, like the native compare bars).
+const COST_COLORS = {
+  [COST_GRID]: ["--energy-grid-consumption-color", "#488fc2"],
+  [COST_SOLAR]: ["--energy-solar-color", "#ff9800"],
+  [COST_EXPORT]: ["--energy-grid-return-color", "#8353d1"],
+};
+
+/**
+ * Dashed net bill line (grid cost + negative export income per step) on the currency axis, with its
+ * faded compare line, when export income is loaded.
+ */
+export function netBillSeries(cost, data, period, name, color) {
+  if (!cost?.stats?.[COST_EXPORT]) return [];
+  const offset = pointOffset(period);
+  const net = (stats) => {
+    const sums = new Map();
+    for (const key of [COST_GRID, COST_EXPORT]) for (const r of stats?.[key] || []) sums.set(r.start, (sums.get(r.start) || 0) + r.change);
+    return [...sums].sort((a, b) => a[0] - b[0]);
+  };
+  const line = (id, rows, map, alpha) => ({
+    id,
+    name,
+    type: "line",
+    yAxisIndex: 0,
+    showSymbol: false,
+    color: color + alpha,
+    lineStyle: { width: 1.5, type: "dashed", color: color + alpha },
+    data: rows.map(([start, value]) => [map(new Date(start)).getTime() + offset, value, start]),
+  });
+  const out = [];
+  if (data.statsCompare && cost.statsCompare?.[COST_EXPORT]) {
+    const shift = compareShift(new Date(data.start), new Date(data.startCompare));
+    out.push(line(`compare-${COST_NET}`, net(cost.statsCompare), shift, "7F"));
+  }
+  out.push(line(COST_NET, net(cost.stats), (d) => d, ""));
+  return out;
+}
+
+const COST_ORDER = [COST_GRID, COST_SOLAR, COST_EXPORT];
+const BAR_RADIUS = 4;
+
+/**
+ * Fixed stack order for the cost series (grid at the bottom, solar on top, export below the axis) in
+ * each period group, instead of the native order by period total, which differs between cards and
+ * periods; the native rounded stack ends are then recomputed point by point for the new order.
+ */
+export function orderCostSeries(chartData, statOf) {
+  const rank = (series) => COST_ORDER.indexOf(statOf(String(series.id)));
+  const isCompare = (series) => String(series.id).startsWith("compare-");
+  const sorted = (compare) => chartData.filter((series) => rank(series) >= 0 && isCompare(series) === compare).sort((a, b) => rank(a) - rank(b));
+  const others = chartData.filter((series) => rank(series) < 0);
+  const groups = [sorted(true), sorted(false)];
+  for (const group of groups) {
+    const value = (point) => (Array.isArray(point) ? point : point?.value);
+    const rows = group.map((series) => (series.data || []).map(value));
+    const ends = new Map();
+    rows.forEach((points, i) =>
+      points.forEach((point) => {
+        if (!point || !point[1]) return;
+        const end = ends.get(point[0]) || {};
+        if (point[1] > 0) end.top = i;
+        else end.bottom = i;
+        ends.set(point[0], end);
+      })
+    );
+    group.forEach((series, i) => {
+      series.data = rows[i].map((point) => {
+        const end = point && ends.get(point[0]);
+        if (end?.top === i && point[1] > 0) return { value: point, itemStyle: { borderRadius: [BAR_RADIUS, BAR_RADIUS, 0, 0] } };
+        if (end?.bottom === i && point[1] < 0) return { value: point, itemStyle: { borderRadius: [0, 0, BAR_RADIUS, BAR_RADIUS] } };
+        return point;
+      });
+    });
+  }
+  // Native layout: compare series first, then the placeholder, then the current ones.
+  return [...groups[0], ...others, ...groups[1]];
+}
+
 /** Defines the card class on top of the native one; exported for tests with a stand-in base. */
 export function defineCard(Base) {
   class EnergyStatsGraphCard extends Base {
@@ -171,11 +404,74 @@ export function defineCard(Base) {
       const nativeOptions = this._createOptions;
       let cache = {};
       this._createOptions = (...args) => {
+        // Cost mode: the native options take the unit as 5th argument (axis name, tooltip values).
+        if (this._isCost()) args[4] = this._currency();
         const options = nativeOptions(...args);
         const lines = this._lineCount ?? 0;
         if (cache.options !== options || cache.lines !== lines) cache = { options, lines, result: this._extendOptions(options) };
         return cache.result;
       };
+      // The native "total consumed" translation has "kWh" written in, whatever unit it is given.
+      const nativeTotal = this._formatTotal;
+      this._formatTotal = (value) => (this._isCost() ? `${this._costWords().total} ${this._money(value)} ${this._currency()}` : nativeTotal(value));
+    }
+
+    _isCost() {
+      return (this._mode ?? this._config?.mode) === "cost";
+    }
+
+    /** Switches kWh / currency in place: cost data is fetched on demand, the native card redraws. */
+    _setMode(mode) {
+      if ((this._mode ?? this._config?.mode ?? "energy") === mode) return;
+      this._mode = mode;
+      this._extra = null;
+      this._processStatistics();
+      if (this._data && this._series) this._loadExtra(this._data);
+      this.requestUpdate("_mode");
+    }
+
+    updated(changed) {
+      super.updated?.(changed);
+      this._renderModeToggle();
+    }
+
+    /** The native template owns the card content: the switch is added next to it and kept across its renders. */
+    _renderModeToggle() {
+      const card = this.shadowRoot?.querySelector("ha-card");
+      const existing = this.shadowRoot?.querySelector(".mode-toggle");
+      if (!this._config?.mode_toggle || !card) return existing?.remove();
+      let toggle = existing;
+      if (!toggle) {
+        const style = document.createElement("style");
+        style.textContent = `
+          ha-card { position: relative; }
+          .mode-toggle { position: absolute; top: 16px; right: 16px; z-index: 1; display: flex; border: 1px solid var(--divider-color); border-radius: 16px; overflow: hidden; }
+          .mode-toggle button { font: inherit; font-size: 12px; line-height: 20px; padding: 2px 10px; border: none; background: none; color: var(--secondary-text-color); cursor: pointer; }
+          .mode-toggle button.active { background: var(--primary-color); color: var(--text-primary-color); }`;
+        toggle = document.createElement("div");
+        toggle.className = "mode-toggle";
+        for (const mode of ["energy", "cost"]) {
+          const button = document.createElement("button");
+          button.dataset.mode = mode;
+          button.addEventListener("click", () => this._setMode(mode));
+          toggle.appendChild(button);
+        }
+        card.append(style, toggle);
+      }
+      for (const button of toggle.querySelectorAll("button")) {
+        const cost = button.dataset.mode === "cost";
+        button.textContent = cost ? this._currency() : "kWh";
+        button.classList.toggle("active", cost === this._isCost());
+      }
+    }
+
+    _currency() {
+      const code = this.hass?.config?.currency || "EUR";
+      return code === "EUR" ? "€" : code;
+    }
+
+    _money(value) {
+      return value.toLocaleString(this._numberLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
     setConfig(config) {
@@ -183,6 +479,7 @@ export function defineCard(Base) {
       super.setConfig(config);
       this._series = null;
       this._extra = null;
+      this._mode = undefined;
     }
 
     willUpdate(changed) {
@@ -223,11 +520,47 @@ export function defineCard(Base) {
               units: { energy: "kWh" },
             })
           : Promise.resolve({});
-      const [stats, statsCompare] = await Promise.all([fetch(data.start, data.end), data.startCompare ? fetch(data.startCompare, data.endCompare) : null]);
+      const [stats, statsCompare, cost] = await Promise.all([
+        fetch(data.start, data.end),
+        data.startCompare ? fetch(data.startCompare, data.endCompare) : null,
+        this._isCost() ? this._loadCost(data, period) : null,
+      ]);
       if (data !== this._data) return;
       const old = this._extra;
-      this._extra = { data, period, stats, statsCompare };
+      this._extra = { data, period, stats, statsCompare, cost };
       this.requestUpdate("_extra", old);
+    }
+
+    /** Hourly consumption, sources and price, split into grid cost and solar savings per step of the period. */
+    async _loadCost(data, period) {
+      const src = energySources(data.prefs);
+      const bars = this._series.filter((s) => s.type === "bar").map((s) => s.id);
+      // Export income only on request, and only when HA records it (a compensation statistic exists).
+      const compensation = this._config.export ? compensationStat(src, this.hass.states) : null;
+      const ids = [
+        ...new Set([...bars, ...src.solar, ...src.gridIn, ...src.gridOut, ...src.batteryIn, ...src.batteryOut, ...src.price, ...(compensation ? [compensation] : [])]),
+      ];
+      const current = parseFloat(this.hass.states[src.price[0]]?.state);
+      const fallbackPrice = src.fixedPrice ?? (Number.isFinite(current) ? current : 0);
+      const range = async (start, end) => {
+        const raw = await this.hass.callWS({
+          type: "recorder/statistics_during_period",
+          start_time: new Date(start).toISOString(),
+          end_time: new Date(end || Date.now()).toISOString(),
+          statistic_ids: ids,
+          period: "hour",
+          types: ["change", "mean"],
+          units: { energy: "kWh" },
+        });
+        const changes = hourlyValues(raw, "change");
+        const means = src.price.length ? hourlyValues(raw, "mean")[src.price[0]] || new Map() : new Map();
+        const shares = hourlyShares(changes, src, (h) => means.get(h) ?? fallbackPrice);
+        const stats = sumCostStats(costStats(changes, shares, bars, period, fallbackPrice), bars, period);
+        if (compensation) stats[COST_EXPORT] = exportStats(changes, compensation, period);
+        return stats;
+      };
+      const [stats, statsCompare] = await Promise.all([range(data.start, data.end), data.startCompare ? range(data.startCompare, data.endCompare) : null]);
+      return { stats, statsCompare };
     }
 
     _processStatistics() {
@@ -238,7 +571,8 @@ export function defineCard(Base) {
       const lines = this._series.filter((s) => s.type === "line");
       // Shadows the reactive accessor for the native computation only, without triggering an update.
       const own = Object.getOwnPropertyDescriptor(this, "_data");
-      Object.defineProperty(this, "_data", { value: restrictEnergyData(real, bars, extra), configurable: true, writable: true });
+      const nativeData = this._isCost() ? costEnergyData(real, extra?.cost, this._costWords()) : restrictEnergyData(real, bars, extra);
+      Object.defineProperty(this, "_data", { value: nativeData, configurable: true, writable: true });
       try {
         super._processStatistics();
       } finally {
@@ -246,13 +580,15 @@ export function defineCard(Base) {
         else delete this._data;
       }
       // Only the configured bars: other devices were passed for their colors and come out empty.
-      const keep = new Set(bars.map((s) => s.id));
+      const keep = new Set(this._isCost() ? [COST_GRID, COST_SOLAR, COST_EXPORT] : bars.map((s) => s.id));
       const isKept = (id) => id === "compare-placeholder" || keep.has(this._getStatIdFromId(String(id)));
       this._chartData = this._chartData.filter((series) => isKept(series.id));
       this._legendData = (this._legendData || []).filter((item) => isKept(item.id));
-      const lineData = lineSeries(lines, extra, real, bars.length ? 1 : 0);
+      if (this._isCost()) this._styleCostParts();
+      const netData = this._isCost() ? netBillSeries(extra?.cost, real, extra?.period, this._costWords().net, this._netColor()) : [];
+      const lineData = [...lineSeries(lines, extra, real, bars.length ? 1 : 0), ...netData];
       this._lineCount = lineData.length;
-      this._lineUnits = new Map(lines.map((s) => [s.id, s.unit]));
+      this._lineUnits = new Map([...lines.map((s) => [s.id, s.unit]), [COST_NET, this._currency()]]);
       this._chartData = [...this._chartData, ...lineData];
       this._legendData = [
         ...(this._legendData || []),
@@ -263,7 +599,56 @@ export function defineCard(Base) {
           itemStyle: { color: s.color, borderColor: s.color },
           noLabelClick: !this.hass.states[s.id],
         })),
+        ...(netData.length
+          ? [
+              {
+                id: COST_NET,
+                secondaryIds: [`compare-${COST_NET}`],
+                name: this._costWords().net,
+                itemStyle: { color: this._netColor(), borderColor: this._netColor() },
+                noLabelClick: true,
+                value: `${this._money(netData.at(-1).data.reduce((acc, p) => acc + p[1], 0))} ${this._currency()}`,
+              },
+            ]
+          : []),
       ];
+    }
+
+    _netColor() {
+      const css = typeof window.getComputedStyle === "function" ? window.getComputedStyle(this).getPropertyValue("--primary-text-color").trim() : "";
+      return /^#[0-9a-f]{6}$/i.test(css) ? css : "#616161";
+    }
+
+    _costWords() {
+      return COST_STRINGS[String(this.hass?.locale?.language || "").split("-")[0]] || COST_STRINGS.en;
+    }
+
+    /** Grid and solar series in the Energy grid and solar colors, legend totals in currency. */
+    _styleCostParts() {
+      this._chartData = orderCostSeries(this._chartData, (id) => this._getStatIdFromId(id));
+      const legendRank = (item) => COST_ORDER.indexOf(this._getStatIdFromId(String(item.id)));
+      this._legendData = [...this._legendData].sort((a, b) => legendRank(a) - legendRank(b));
+      const style = typeof window.getComputedStyle === "function" ? window.getComputedStyle(this) : null;
+      const colorOf = (stat) => {
+        const [cssVar, fallback] = COST_COLORS[stat];
+        const css = style?.getPropertyValue(cssVar).trim();
+        return /^#[0-9a-f]{6}$/i.test(css || "") ? css : fallback;
+      };
+      for (const series of this._chartData) {
+        const stat = this._getStatIdFromId(String(series.id));
+        if (!COST_COLORS[stat]) continue;
+        const color = colorOf(stat);
+        const compare = String(series.id).startsWith("compare-");
+        series.color = `${color}${compare ? "32" : "7F"}`;
+        series.itemStyle = { ...series.itemStyle, borderColor: compare ? `${color}7F` : color };
+      }
+      const current = new Map(this._chartData.filter((series) => !String(series.id).startsWith("compare-")).map((series) => [series.id, series]));
+      this._legendData = this._legendData.map((item) => {
+        const series = current.get(item.id);
+        if (!series) return item;
+        const sum = (series.data || []).reduce((acc, p) => acc + ((Array.isArray(p) ? p : p?.value)?.[1] || 0), 0);
+        return { ...item, itemStyle: { ...item.itemStyle, color: series.color, borderColor: series.itemStyle?.borderColor }, value: `${this._money(sum)} ${this._currency()}` };
+      });
     }
 
     _extendOptions(options) {

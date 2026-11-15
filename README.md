@@ -191,6 +191,9 @@ Home Assistant's own "Individual devices detail" Energy card, restricted to the 
 It follows the dashboard's `energy-date-selection` card exactly like the Energy cards: same steps, axis, colors, tooltip and legend, and the same compare modes (previous period, previous year).
 Energy meters are drawn as native stacked bars, even when they are not declared in the Energy dashboard; other statistics (temperature, humidity, gas, water) as lines on their own hidden scale, read in the tooltip, compare included.
 
+With `mode: cost`, the meters are summed into two stacked series in currency: what they cost on the grid, and what solar saved on them, in the Energy dashboard's grid and solar colors.
+Each hour of its consumption is split by that hour's grid share (grid import / house consumption, as in the energy split card) and priced at the Energy dashboard's grid price for that hour, then summed per step of the period.
+
 ```yaml
 type: custom:energy-stats-graph-card
 title: Heating
@@ -207,6 +210,9 @@ series:
 | `series` | required | Statistics to plot, see below. |
 | `collection_key` | none | Same value as the `energy-date-selection` card's `collection_key`, if it sets one. |
 | `title` | none | Card title. |
+| `mode` | `energy` | `energy` (kWh per meter) or `cost` (all meters' grid cost and solar savings, in currency). |
+| `export` | `false` | Cost mode: adds the whole house's grid export income below the axis, as Home Assistant records it once an export price is set (never retroactive), with a dashed net bill line per period (grid cost minus income). |
+| `mode_toggle` | `false` | Shows a `kWh / €` switch in the card corner, starting from `mode`. |
 | `expand_legend` | `false` | Native option: legend always expanded. |
 
 | Series option | Default | Description |
