@@ -381,3 +381,55 @@ test("cost series keep a fixed stack order whatever their totals, with the round
   assert.deepEqual(exported.data[0].itemStyle.borderRadius, [0, 0, 4, 4], "export below the axis: rounded bottom");
   assert.deepEqual(exported.data[1], [2, 0, 2], "zero export left alone");
 });
+
+const MONEY_METADATA = [
+  ...METADATA,
+  { statistic_id: "sensor.heat_cost", has_sum: true, unit_class: null, statistics_unit_of_measurement: "EUR" },
+  { statistic_id: "sensor.pellet_cost", has_sum: true, unit_class: null, statistics_unit_of_measurement: "EUR" },
+];
+
+test("resolveSeries marks sum statistics in the currency as money, a line unless forced otherwise", () => {
+  const [heat, forced, pellet] = resolveSeries(
+    { series: [{ entity: "sensor.heat_cost" }, { entity: "sensor.heat_cost", type: "line" }, { entity: "sensor.pellet_cost" }] },
+    MONEY_METADATA,
+    (id) => id,
+    "EUR"
+  );
+  assert.deepEqual([heat.type, heat.stat, heat.unit], ["money", "change", "EUR"]);
+  assert.equal(forced.type, "line");
+  assert.ok(heat.color && pellet.color && heat.color !== pellet.color, "distinct colors when drawn as lines");
+  assert.equal(resolveSeries({ series: [{ entity: "sensor.heat_cost" }] }, MONEY_METADATA, (id) => id, "USD")[0].type, "line", "another currency stays a line");
+});
+
+test("costEnergyData adds one pseudo-device per money series, without grid and solar when no energy bar", () => {
+  const money = [{ id: "sensor.heat_cost", name: "PAC" }, { id: "sensor.pellet_cost", name: "Pellets" }];
+  const words = { grid: "Grid", solar: "Solar", export: "Export" };
+  const ids = (data) => data.prefs.device_consumption.map((dev) => [dev.stat_consumption, dev.name]);
+  assert.deepEqual(ids(costEnergyData(ENERGY, { stats: {} }, words, money, false)), [["sensor.heat_cost", "PAC"], ["sensor.pellet_cost", "Pellets"]]);
+  assert.deepEqual(ids(costEnergyData(ENERGY, { stats: {} }, words, money)).map(([id]) => id), [COST_GRID, COST_SOLAR, "sensor.heat_cost", "sensor.pellet_cost"]);
+});
+
+test("orderCostSeries follows a given order, money series between solar and export", () => {
+  const statOf = (id) => id.replace(/^compare-/, "").replace(/-\d+$/, "");
+  const native = [{ id: "sensor.b-0", data: [[1, 2, 1]] }, { id: "sensor.a-1", data: [[1, 1, 1]] }];
+  const ordered = orderCostSeries(native, statOf, ["sensor.a", "sensor.b"]);
+  assert.deepEqual(ordered.map((series) => statOf(series.id)), ["sensor.a", "sensor.b"]);
+  assert.deepEqual(ordered[1].data[0].itemStyle.borderRadius, [4, 4, 0, 0], "top of the stack rounded");
+});
+
+test("cost mode with only money series stacks them as native bars, in config order, on the currency axis", () => {
+  const card = new Card();
+  card.hass = { states: {}, config: { currency: "EUR" }, locale: { language: "en", number_format: "language" }, localize: (key, args) => `${args.num} ${args.unit}` };
+  card.setConfig({ mode: "cost", series: [{ entity: "sensor.heat_cost", name: "PAC" }, { entity: "sensor.pellet_cost", name: "Pellets" }] });
+  card._series = resolveSeries(card._config, MONEY_METADATA, (id) => id, "EUR");
+  card._data = ENERGY;
+  const stats = { "sensor.heat_cost": [{ start: 1, change: 0.2 }], "sensor.pellet_cost": [{ start: 1, change: 0.9 }] };
+  card._extra = { data: ENERGY, period: "day", stats: {}, cost: { stats } };
+  card._processStatistics();
+  const ids = card._chartData.filter((s) => s.id !== "compare-placeholder").map((s) => card._getStatIdFromId(s.id));
+  assert.deepEqual(ids, ["sensor.heat_cost", "sensor.pellet_cost"], "money bars only, config order");
+  assert.equal(card._lineCount, 0, "money series are bars in cost mode, not lines");
+  assert.deepEqual(card._lineSeries(), []);
+  card._mode = "energy";
+  assert.deepEqual(card._lineSeries().map((s) => s.id), ["sensor.heat_cost", "sensor.pellet_cost"], "lines in energy mode");
+});

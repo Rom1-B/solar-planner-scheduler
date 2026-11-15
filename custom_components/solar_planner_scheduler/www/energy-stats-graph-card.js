@@ -95,14 +95,16 @@ export function compareShift(start, compareStart) {
 export const pointOffset = (period) => (period === "hour" ? HOUR / 2 : 0);
 
 /** Resolved series: bar (native, energy meters only) or line, with statistic, unit and color. */
-export function resolveSeries(config, metadata, nameOf) {
+export function resolveSeries(config, metadata, nameOf, currency = "EUR") {
   const meta = Object.fromEntries(metadata.map((m) => [m.statistic_id, m]));
   let lineIndex = 0;
   return (config.series || []).map((s) => {
     const m = meta[s.entity] || {};
     const energy = m.unit_class === "energy";
-    const type = s.type === "line" || !energy || !m.has_sum ? "line" : "bar";
-    const stat = type === "bar" ? "change" : s.stat || (m.has_sum ? "change" : "mean");
+    // A cumulative amount in the HA currency (cost sensors): a native bar in cost mode, a line otherwise.
+    const money = !energy && m.has_sum && m.statistics_unit_of_measurement === currency;
+    const type = s.type === "line" ? "line" : energy && m.has_sum ? "bar" : money ? "money" : "line";
+    const stat = type !== "line" ? "change" : s.stat || (m.has_sum ? "change" : "mean");
     return {
       id: s.entity,
       name: s.name || m.name || nameOf(s.entity),
@@ -110,7 +112,7 @@ export function resolveSeries(config, metadata, nameOf) {
       type,
       stat,
       dashed: !!s.dashed,
-      color: s.color || (type === "line" ? PALETTE[lineIndex++ % PALETTE.length] : undefined),
+      color: s.color || (type !== "bar" ? PALETTE[lineIndex++ % PALETTE.length] : undefined),
       unit: energy ? "kWh" : m.statistics_unit_of_measurement || "",
     };
   });
@@ -289,8 +291,11 @@ export function sumCostStats(perMeter, ids, period) {
   return { [COST_GRID]: total(ids), [COST_SOLAR]: total(ids.map((id) => id + SOLAR_SUFFIX)) };
 }
 
-/** Cost mode energy data: grid cost and solar savings of all bar meters (plus export income if loaded), in currency. */
-export function costEnergyData(data, cost, words) {
+/**
+ * Cost mode energy data: grid cost and solar savings of all bar meters (when there are some), the amounts
+ * already in currency (one pseudo-device each) and the export income if loaded, all in currency.
+ */
+export function costEnergyData(data, cost, words, money = [], withEnergy = true) {
   const exported = cost?.stats && COST_EXPORT in cost.stats;
   return {
     ...data,
@@ -298,8 +303,13 @@ export function costEnergyData(data, cost, words) {
       ...data.prefs,
       energy_sources: [],
       device_consumption: [
-        { stat_consumption: COST_GRID, name: words.grid },
-        { stat_consumption: COST_SOLAR, name: words.solar },
+        ...(withEnergy
+          ? [
+              { stat_consumption: COST_GRID, name: words.grid },
+              { stat_consumption: COST_SOLAR, name: words.solar },
+            ]
+          : []),
+        ...money.map((s) => ({ stat_consumption: s.id, name: s.name })),
         ...(exported ? [{ stat_consumption: COST_EXPORT, name: words.export }] : []),
       ],
     },
@@ -355,8 +365,8 @@ const BAR_RADIUS = 4;
  * each period group, instead of the native order by period total, which differs between cards and
  * periods; the native rounded stack ends are then recomputed point by point for the new order.
  */
-export function orderCostSeries(chartData, statOf) {
-  const rank = (series) => COST_ORDER.indexOf(statOf(String(series.id)));
+export function orderCostSeries(chartData, statOf, order = COST_ORDER) {
+  const rank = (series) => order.indexOf(statOf(String(series.id)));
   const isCompare = (series) => String(series.id).startsWith("compare-");
   const sorted = (compare) => chartData.filter((series) => rank(series) >= 0 && isCompare(series) === compare).sort((a, b) => rank(a) - rank(b));
   const others = chartData.filter((series) => rank(series) < 0);
@@ -497,7 +507,7 @@ export function defineCard(Base) {
       const metadata = await this.hass.callWS({ type: "recorder/get_statistics_metadata", statistic_ids: ids });
       if (config !== this._config) return;
       const old = this._series;
-      this._series = resolveSeries(config, metadata, (id) => this.hass.states[id]?.attributes?.friendly_name || id);
+      this._series = resolveSeries(config, metadata, (id) => this.hass.states[id]?.attributes?.friendly_name || id, this.hass.config?.currency || "EUR");
       this.requestUpdate("_series", old);
       if (this._data) this._loadExtra(this._data);
     }
@@ -506,7 +516,7 @@ export function defineCard(Base) {
     async _loadExtra(data) {
       const period = suggestedPeriod(new Date(data.start), data.end ? new Date(data.end) : undefined);
       const missingBars = this._series.filter((s) => s.type === "bar" && !(s.id in (data.stats || {})));
-      const lines = this._series.filter((s) => s.type === "line");
+      const lines = this._lineSeries();
       const ids = [...missingBars, ...lines].map((s) => s.id);
       const fetch = (start, end) =>
         ids.length
@@ -535,6 +545,7 @@ export function defineCard(Base) {
     async _loadCost(data, period) {
       const src = energySources(data.prefs);
       const bars = this._series.filter((s) => s.type === "bar").map((s) => s.id);
+      const money = this._series.filter((s) => s.type === "money").map((s) => s.id);
       // Export income only on request, and only when HA records it (a compensation statistic exists).
       const compensation = this._config.export ? compensationStat(src, this.hass.states) : null;
       const ids = [
@@ -542,7 +553,20 @@ export function defineCard(Base) {
       ];
       const current = parseFloat(this.hass.states[src.price[0]]?.state);
       const fallbackPrice = src.fixedPrice ?? (Number.isFinite(current) ? current : 0);
+      // Amounts already in currency are read as they are, at the step of the period.
+      const amounts = async (start, end) =>
+        money.length
+          ? this.hass.callWS({
+              type: "recorder/statistics_during_period",
+              start_time: new Date(start).toISOString(),
+              end_time: new Date(end || Date.now()).toISOString(),
+              statistic_ids: money,
+              period,
+              types: ["change"],
+            })
+          : {};
       const range = async (start, end) => {
+        if (!bars.length && !compensation) return amounts(start, end);
         const raw = await this.hass.callWS({
           type: "recorder/statistics_during_period",
           start_time: new Date(start).toISOString(),
@@ -555,9 +579,9 @@ export function defineCard(Base) {
         const changes = hourlyValues(raw, "change");
         const means = src.price.length ? hourlyValues(raw, "mean")[src.price[0]] || new Map() : new Map();
         const shares = hourlyShares(changes, src, (h) => means.get(h) ?? fallbackPrice);
-        const stats = sumCostStats(costStats(changes, shares, bars, period, fallbackPrice), bars, period);
+        const stats = bars.length ? sumCostStats(costStats(changes, shares, bars, period, fallbackPrice), bars, period) : {};
         if (compensation) stats[COST_EXPORT] = exportStats(changes, compensation, period);
-        return stats;
+        return { ...stats, ...(await amounts(start, end)) };
       };
       const [stats, statsCompare] = await Promise.all([range(data.start, data.end), data.startCompare ? range(data.startCompare, data.endCompare) : null]);
       return { stats, statsCompare };
@@ -568,10 +592,13 @@ export function defineCard(Base) {
       if (!real || !this._series) return;
       const extra = this._extra?.data === real ? this._extra : null;
       const bars = this._series.filter((s) => s.type === "bar");
-      const lines = this._series.filter((s) => s.type === "line");
+      const money = this._isCost() ? this._series.filter((s) => s.type === "money") : [];
+      const lines = this._lineSeries();
       // Shadows the reactive accessor for the native computation only, without triggering an update.
       const own = Object.getOwnPropertyDescriptor(this, "_data");
-      const nativeData = this._isCost() ? costEnergyData(real, extra?.cost, this._costWords()) : restrictEnergyData(real, bars, extra);
+      const nativeData = this._isCost()
+        ? costEnergyData(real, extra?.cost, this._costWords(), money, bars.length > 0)
+        : restrictEnergyData(real, bars, extra);
       Object.defineProperty(this, "_data", { value: nativeData, configurable: true, writable: true });
       try {
         super._processStatistics();
@@ -580,13 +607,13 @@ export function defineCard(Base) {
         else delete this._data;
       }
       // Only the configured bars: other devices were passed for their colors and come out empty.
-      const keep = new Set(this._isCost() ? [COST_GRID, COST_SOLAR, COST_EXPORT] : bars.map((s) => s.id));
+      const keep = new Set(this._isCost() ? this._costOrder() : bars.map((s) => s.id));
       const isKept = (id) => id === "compare-placeholder" || keep.has(this._getStatIdFromId(String(id)));
       this._chartData = this._chartData.filter((series) => isKept(series.id));
       this._legendData = (this._legendData || []).filter((item) => isKept(item.id));
       if (this._isCost()) this._styleCostParts();
       const netData = this._isCost() ? netBillSeries(extra?.cost, real, extra?.period, this._costWords().net, this._netColor()) : [];
-      const lineData = [...lineSeries(lines, extra, real, bars.length ? 1 : 0), ...netData];
+      const lineData = [...lineSeries(lines, extra, real, bars.length || money.length ? 1 : 0), ...netData];
       this._lineCount = lineData.length;
       this._lineUnits = new Map([...lines.map((s) => [s.id, s.unit]), [COST_NET, this._currency()]]);
       this._chartData = [...this._chartData, ...lineData];
@@ -614,6 +641,16 @@ export function defineCard(Base) {
       ];
     }
 
+    /** Line series: measurements, plus the amounts in currency outside cost mode. */
+    _lineSeries() {
+      return (this._series || []).filter((s) => s.type === "line" || (s.type === "money" && !this._isCost()));
+    }
+
+    /** Cost stack order: grid, solar, the amounts in currency in config order, export below the axis. */
+    _costOrder() {
+      return [COST_GRID, COST_SOLAR, ...(this._series || []).filter((s) => s.type === "money").map((s) => s.id), COST_EXPORT];
+    }
+
     _netColor() {
       const css = typeof window.getComputedStyle === "function" ? window.getComputedStyle(this).getPropertyValue("--primary-text-color").trim() : "";
       return /^#[0-9a-f]{6}$/i.test(css) ? css : "#616161";
@@ -625,8 +662,9 @@ export function defineCard(Base) {
 
     /** Grid and solar series in the Energy grid and solar colors, legend totals in currency. */
     _styleCostParts() {
-      this._chartData = orderCostSeries(this._chartData, (id) => this._getStatIdFromId(id));
-      const legendRank = (item) => COST_ORDER.indexOf(this._getStatIdFromId(String(item.id)));
+      const order = this._costOrder();
+      this._chartData = orderCostSeries(this._chartData, (id) => this._getStatIdFromId(id), order);
+      const legendRank = (item) => order.indexOf(this._getStatIdFromId(String(item.id)));
       this._legendData = [...this._legendData].sort((a, b) => legendRank(a) - legendRank(b));
       const style = typeof window.getComputedStyle === "function" ? window.getComputedStyle(this) : null;
       const colorOf = (stat) => {
@@ -653,9 +691,9 @@ export function defineCard(Base) {
 
     _extendOptions(options) {
       if (!this._lineCount) return options;
-      const hasBars = this._series.some((s) => s.type === "bar");
+      const hasBars = this._series.some((s) => s.type === "bar" || (s.type === "money" && this._isCost()));
       const base = Array.isArray(options.yAxis) ? options.yAxis[0] : options.yAxis;
-      const lineUnit = this._series.find((s) => s.type === "line")?.unit;
+      const lineUnit = this._lineSeries()[0]?.unit;
       const yAxis = hasBars ? [base, { type: "value", show: false, scale: true }] : [{ ...base, name: lineUnit, scale: true }];
       const nativeFormatter = options.tooltip?.formatter;
       return { ...options, yAxis, tooltip: { ...options.tooltip, formatter: (params) => this._tooltip(params, nativeFormatter) } };
