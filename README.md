@@ -180,8 +180,24 @@ type: custom:energy-split-card
 | `min_kwh` | `0.1` | Hides devices consuming less over the period. |
 | `price` | Energy dashboard price | Fixed price per kWh, overriding the Energy dashboard's. |
 | `title` | translated | Card title. |
+| `devices` | all | Device statistic ids (as in the Energy dashboard) to show; the total line then sums only these devices, without circuit remainders. |
+| `extra` | none | Extra cost lines counted in the total, each with `name`, `cost` (a cumulative cost statistic in your currency) and an optional `energy` statistic shown in its tooltip. |
 
 With an `energy-date-selection` card on the same dashboard, the card follows its period; otherwise it shows its own period buttons.
+
+For example, the heating cost of a heat pump and a pellet stove, pellets included:
+
+```yaml
+type: custom:energy-split-card
+collection_key: energy_maison
+devices:
+  - sensor.heat_pump_energy
+  - sensor.stove_energy
+extra:
+  - name: Pellets
+    cost: sensor.stove_pellets_energy_cost
+    energy: sensor.stove_pellets_energy
+```
 
 ## 📈 The energy stats graph card
 

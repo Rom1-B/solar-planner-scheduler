@@ -32,6 +32,12 @@
  *   collection_key: <optional, same value as the energy-date-selection card's collection_key>
  *   min_kwh: <optional, hides devices consuming less over the period, defaults to 0.1>
  *   price: <optional fixed price per kWh, overrides the Energy dashboard price>
+ *   devices: <optional list of device statistic ids (Energy dashboard stat_consumption): only these
+ *             rows, without circuit remainders; the total line sums them instead of the whole house>
+ *   extra:   <optional list of extra cost lines, counted in the total cost, e.g. a pellet stove>
+ *     - name: <label>
+ *       cost: <cumulative cost statistic id in the HA currency, e.g. the Energy dashboard *_cost sensor>
+ *       energy: <optional energy statistic id, shown in the line tooltip only>
  */
 
 const CARD_TAG = "energy-split-card";
@@ -55,6 +61,7 @@ const STRINGS = {
     noPrice: "No grid price found in the Energy dashboard, set the price option.",
     tip: (name, total, grid, solar) => `${name}: ${total} kWh, ${grid} kWh from the grid and ${solar} kWh from solar`,
     baseLoad: "base load",
+    extraTip: (name, kwh) => `${name}: ${kwh} kWh`,
   },
   fr: {
     title: "Solaire / réseau par appareil",
@@ -74,6 +81,7 @@ const STRINGS = {
     noPrice: "Aucun prix réseau trouvé dans le module Énergie, renseigner l'option price.",
     tip: (name, total, grid, solar) => `${name} : ${total} kWh dont ${grid} kWh réseau et ${solar} kWh solaire`,
     baseLoad: "talon",
+    extraTip: (name, kwh) => `${name} : ${kwh} kWh`,
   },
 };
 
@@ -260,6 +268,36 @@ export function buildTree(prefs, changes, hours, fallbackPrice, nameOf) {
 /** Leaf nodes of the tree: real devices plus each circuit's unmetered remainder. */
 export const leaves = (n) => (n.children.length ? n.children.flatMap(leaves) : [n]);
 
+const allNodes = (n) => [n, ...n.children.flatMap(allNodes)];
+
+/**
+ * Rows for an explicit device list (in tree order, unknown ids skipped) and their total line,
+ * computed from the summed hourly series so solar share and base load stay consistent.
+ */
+export function selectDevices(tree, ids, hours, fallbackPrice) {
+  const wanted = new Set(ids);
+  const rows = allNodes(tree).filter((n) => !n.untracked && wanted.has(n.id));
+  const series = new Map();
+  for (const n of rows) for (const [h, kwh] of n.series) series.set(h, (series.get(h) || 0) + kwh);
+  return { rows, total: node("__selection__", null, series, hours, fallbackPrice) };
+}
+
+/** Extra cost line from hourly changes of its cost (and optional energy) statistic over the period. */
+export function extraLine(spec, index, changes) {
+  const sum = (id) => [...(changes[id]?.values() || [])].reduce((acc, v) => acc + v, 0);
+  return {
+    id: `__extra__${index}`,
+    name: spec.name || spec.cost,
+    cost: sum(spec.cost),
+    energy: spec.energy ? sum(spec.energy) : null,
+    saved: 0,
+    total: 0,
+    grid: 0,
+    base: 0,
+    extra: true,
+  };
+}
+
 const HOUR = 3600e3;
 
 /** Inline SVG of hourly average power (W) over [start, end], base load dashed. */
@@ -395,7 +433,9 @@ class EnergySplitCard extends HTMLElement {
       const prefs = await this._hass.callWS({ type: "energy/get_prefs" });
       const src = sourceStats(prefs);
       const devices = (prefs.device_consumption || []).map((d) => d.stat_consumption);
-      const statIds = [...new Set([...devices, ...Object.values(src).flat()])];
+      const extras = (this._config.extra || []).filter((e) => e?.cost);
+      const extraIds = extras.flatMap((e) => [e.cost, e.energy]).filter(Boolean);
+      const statIds = [...new Set([...devices, ...Object.values(src).flat(), ...extraIds])];
       const start = new Date(this._start);
       start.setMinutes(0, 0, 0);
       const raw = await this._hass.callWS({
@@ -415,7 +455,10 @@ class EnergySplitCard extends HTMLElement {
       const priceOf = this._config.price != null ? () => this._config.price : (h) => means.get(h) ?? fallbackPrice;
       const nameOf = (id) => this._hass.states[id]?.attributes?.friendly_name || id;
       this._noPrice = !fallbackPrice && !means.size;
-      this._tree = buildTree(prefs, changes, hourlyHouse(changes, src, priceOf), fallbackPrice, nameOf);
+      const hours = hourlyHouse(changes, src, priceOf);
+      this._tree = buildTree(prefs, changes, hours, fallbackPrice, nameOf);
+      this._selection = this._config.devices?.length ? selectDevices(this._tree, this._config.devices, hours, fallbackPrice) : null;
+      this._extras = extras.map((e, i) => extraLine(e, i, changes));
     } catch (err) {
       if (token !== this._loadToken) return;
       this._error = err?.message || String(err);
@@ -451,6 +494,18 @@ class EnergySplitCard extends HTMLElement {
 
   _label(n) {
     return n.untracked ? this._t.rest(n.name ?? this._t.house) : n.name;
+  }
+
+  _extraRow(e) {
+    const tip = e.energy != null ? this._t.extraTip(e.name, fmt(e.energy)) : e.name;
+    return `
+      <div class="row extra" title="${escapeHtml(tip)}">
+        <div class="name">${escapeHtml(e.name)}</div>
+        <div class="num cost">${this._money(e.cost)}</div>
+        <div class="num saved">-</div>
+        <div class="num pct">-</div>
+        <div class="num base">-</div>
+      </div>`;
   }
 
   _row(n, label, cls = "") {
@@ -494,10 +549,13 @@ class EnergySplitCard extends HTMLElement {
       const minKwh = this._config.min_kwh ?? 0.1;
       const [key, value] = COLUMNS.find(([k]) => k === this._sort.key);
       const dir = this._sort.desc ? -1 : 1;
-      const rows = leaves(this._tree)
-        .filter((n) => n.total >= minKwh)
-        .map((n) => [n, this._label(n)])
+      const devices = this._selection ? this._selection.rows : leaves(this._tree).filter((n) => n.total >= minKwh);
+      const extras = this._extras || [];
+      const rows = [...devices, ...extras]
+        .map((n) => [n, n.extra ? n.name : this._label(n)])
         .sort(([a, la], [b, lb]) => dir * (key === "name" ? la.localeCompare(lb, this._language) : value(a) - value(b)));
+      const base = this._selection ? this._selection.total : this._tree;
+      const total = { ...base, cost: base.cost + extras.reduce((acc, e) => acc + e.cost, 0) };
       const head = COLUMNS.map(([k, , cls, icon]) => {
         const label = t.columns[k];
         const arrow = k === this._sort.key ? `<ha-icon class="arrow" icon="mdi:arrow-${this._sort.desc ? "down" : "up"}"></ha-icon>` : "";
@@ -508,8 +566,8 @@ class EnergySplitCard extends HTMLElement {
         ${this._noPrice ? `<div class="msg error">${t.noPrice}</div>` : ""}
         <div class="table">
           <div class="row head">${head}</div>
-          ${rows.map(([n, label]) => this._row(n, label)).join("")}
-          ${this._row(this._tree, t.total, "total")}
+          ${rows.map(([n, label]) => (n.extra ? this._extraRow(n) : this._row(n, label))).join("")}
+          ${this._row(total, t.total, "total")}
         </div>`;
     }
 

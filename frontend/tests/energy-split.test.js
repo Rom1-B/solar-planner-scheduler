@@ -3,7 +3,7 @@ import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { getCardClass } from "./dom-shim.js";
 
-const { strings, sourceStats, split, buildTree, leaves, hourlyHouse, energyCollection } = await import("../energy-split-card.js");
+const { strings, sourceStats, split, buildTree, leaves, hourlyHouse, energyCollection, selectDevices, extraLine } = await import("../energy-split-card.js");
 const Card = getCardClass("energy-split-card");
 
 const H0 = Date.UTC(2026, 10, 10, 10);
@@ -28,6 +28,8 @@ const STATS = {
   "sensor.export": [row(H0, 0), row(H1, 0)],
   "sensor.circuit": [row(H0, 1), row(H1, 1)],
   "sensor.washer": [row(H0, 0.5), row(H1, 0.5)],
+  "sensor.pellets_cost": [row(H0, 1.5), row(H1, 0.5)],
+  "sensor.pellets": [row(H0, 18), row(H1, 6)],
 };
 
 function fakeHass({ language = "en", connection = {}, panelUrl = "lovelace" } = {}) {
@@ -181,4 +183,42 @@ test("the card renders in the HA user's language", async () => {
   assert.match(html, /title="Appareil"/);
   assert.match(html, /Circuit \(reste\)/);
   assert.match(html, /Maison \(reste\)/);
+});
+
+const changesOf = (stats) => Object.fromEntries(Object.entries(stats).map(([id, rows]) => [id, new Map(rows.map((r) => [r.start, r.change]))]));
+
+test("selectDevices keeps only the listed devices and totals their summed series", () => {
+  const changes = changesOf(STATS);
+  const hours = hourlyHouse(changes, sourceStats(PREFS), () => 0.2);
+  const tree = buildTree(PREFS, changes, hours, 0.2, (id) => id);
+  const { rows, total } = selectDevices(tree, ["sensor.washer", "sensor.unknown"], hours, 0.2);
+  assert.deepEqual(rows.map((n) => n.id), ["sensor.washer"]);
+  assert.equal(total.total, 1);
+  // Washer: H0 0.5 kWh at 50 % grid, H1 0.5 kWh at 100 % grid, 0.2 per kWh.
+  assert.ok(Math.abs(total.cost - 0.15) < 1e-9);
+  assert.ok(Math.abs(total.saved - 0.05) < 1e-9);
+});
+
+test("extraLine sums the cost and optional energy changes over the period", () => {
+  const line = extraLine({ name: "Pellets", cost: "sensor.pellets_cost", energy: "sensor.pellets" }, 0, changesOf(STATS));
+  assert.equal(line.cost, 2);
+  assert.equal(line.energy, 24);
+  assert.equal(line.extra, true);
+  assert.equal(extraLine({ cost: "sensor.pellets_cost" }, 1, changesOf(STATS)).energy, null);
+});
+
+test("with devices and extra, the card shows only those lines and adds the extra cost to the total", async () => {
+  const collection = fakeCollection();
+  const hass = fakeHass({ connection: { _energy_lovelace: collection } });
+  const card = mountCard({ devices: ["sensor.washer"], extra: [{ name: "Pellets", cost: "sensor.pellets_cost", energy: "sensor.pellets" }] }, hass);
+  collection.listeners[0]({ start: new Date(H0), end: new Date(H1 + 3600e3) });
+  await flush();
+  const query = hass.calls.find((m) => m.type === "recorder/statistics_during_period");
+  assert.ok(query.statistic_ids.includes("sensor.pellets_cost"));
+  const html = card.shadowRoot.innerHTML;
+  assert.match(html, /Washer/);
+  assert.match(html, /class="row extra" title="Pellets: 24.0 kWh"/);
+  assert.doesNotMatch(html, /\(rest\)/);
+  // Total cost = washer 0.15 + pellets 2.00.
+  assert.match(html, /row clickable total[^"]*"[^>]*>\s*<div class="name">Total<\/div>\s*<div class="num cost">2.15 €/);
 });
