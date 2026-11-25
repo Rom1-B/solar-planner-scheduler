@@ -581,7 +581,7 @@ def test_reusable_committed_keeps_a_forced_slot_locked_even_far_in_the_future(ha
 def test_reusable_committed_unlocks_when_a_power_sensor_shows_it_never_started(hass):
     coordinator = _coordinator(hass)
     now = datetime(2026, 8, 30, 9, 13, tzinfo=UTC)
-    start = now - timedelta(minutes=2)
+    start = now - timedelta(minutes=12)
     end = start + timedelta(minutes=30)
     _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, end, 95))
     hass.states.async_set("sensor.lave_linge_power", "0")
@@ -591,6 +591,24 @@ def test_reusable_committed_unlocks_when_a_power_sensor_shows_it_never_started(h
 
     assert should_search is True
     assert failed_to_start is True
+
+
+def test_reusable_committed_keeps_a_just_started_slot_while_its_device_is_still_switching_on(hass):
+    """Regression: a device unpowered until should_run switches its plug on (0 W) was flagged as
+    failed 20 s after its start, unlocked and pushed 5 min later every cycle, never starting."""
+    coordinator = _coordinator(hass)
+    now = datetime(2026, 11, 25, 16, 40, 20, tzinfo=UTC)
+    start = now - timedelta(seconds=20)
+    end = start + timedelta(minutes=40)
+    _seed_committed(coordinator, "dryfix", "Session", DeviceSchedule("dryfix", start, end, 0))
+    hass.states.async_set("sensor.prise_dryfix_power", "0")
+
+    device = {CONF_POWER_SENSOR: "sensor.prise_dryfix_power"}
+    slot, forced, should_search, dormant, failed_to_start = coordinator._reusable_committed("dryfix", "Session", device, 40, now, [])
+
+    assert should_search is False
+    assert failed_to_start is False
+    assert slot["start"] == start
 
 
 def test_reusable_committed_ignores_the_power_sensor_when_forced(hass):

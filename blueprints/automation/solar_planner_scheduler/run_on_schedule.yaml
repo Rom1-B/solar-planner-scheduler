@@ -3,6 +3,10 @@ blueprint:
   description: >
     Runs actions when a program's scheduled window starts and ends
     (its `should_run` binary sensor turning on, then off).
+    With a running entity set, it also checks every minute and at Home Assistant start:
+    it runs the start actions again while the window is on and the device is off
+    (a missed start after a restart, a reloaded automation, a plug that didn't answer),
+    and the end actions while the device is still on up to 10 minutes after the window ended.
   domain: automation
   source_url: https://github.com/Rom1-B/solar-planner-scheduler/blob/main/blueprints/automation/solar_planner_scheduler/run_on_schedule.yaml
   input:
@@ -25,8 +29,36 @@ blueprint:
       default: []
       selector:
         action: {}
+    running_entity:
+      name: Running entity
+      description: >
+        Optional, e.g. the smart plug the start actions switch on: `on` means the device is running.
+        Enables the every-minute catch-up of missed starts and ends; leave empty to react to the
+        window edges only.
+      default: ""
+      selector:
+        entity:
+          filter:
+            - domain:
+                - switch
+                - binary_sensor
+                - input_boolean
+                - light
+                - fan
 
 mode: queued
+max: 5
+
+variables:
+  should_run: !input should_run
+  running_entity: !input running_entity
+  checked: "{{ running_entity not in ['', none] }}"
+  window_on: "{{ is_state(should_run, 'on') }}"
+  device_on: "{{ checked and is_state(running_entity, 'on') }}"
+  # Catch-up ends stay this close to the window end, so a device switched on by hand later is left alone.
+  just_ended: >
+    {{ not window_on and states[should_run] is not none
+       and now() - states[should_run].last_changed < timedelta(minutes=10) }}
 
 triggers:
   - trigger: state
@@ -38,14 +70,36 @@ triggers:
     from: "on"
     to: "off"
     id: end
+  - trigger: time_pattern
+    minutes: /1
+    id: check
+  - trigger: homeassistant
+    event: start
+    id: check
 
 actions:
   - choose:
       - conditions:
           - condition: trigger
             id: start
+          - condition: template
+            value_template: "{{ not device_on }}"
         sequence: !input start_actions
       - conditions:
           - condition: trigger
             id: end
+          - condition: template
+            value_template: "{{ not checked or device_on }}"
+        sequence: !input end_actions
+      - conditions:
+          - condition: trigger
+            id: check
+          - condition: template
+            value_template: "{{ checked and window_on and not device_on }}"
+        sequence: !input start_actions
+      - conditions:
+          - condition: trigger
+            id: check
+          - condition: template
+            value_template: "{{ checked and device_on and just_ended }}"
         sequence: !input end_actions

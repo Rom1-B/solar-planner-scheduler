@@ -94,8 +94,11 @@ STORAGE_VERSION = 1
 REQUEST_REFRESH_COOLDOWN_SECONDS = 1
 
 # One failed_to_start unlock is normal (startup lag); this many in a row means it never started.
-# At DEFAULT_UPDATE_INTERVAL_MINUTES (5 min) this is ~15 min of grace before raising a Repair.
 FAILED_TO_START_REPAIR_THRESHOLD = 3
+
+# A slot is only judged "never started" this long after its start: the should_run automation needs
+# time to switch on a device unpowered until then (0 W), else the slot slides away every cycle.
+FAILED_TO_START_GRACE_MINUTES = 10
 
 # How far today's search extends past midnight, e.g. to reach a cheap overnight tariff band.
 NIGHT_EXTENSION_HOURS = 5
@@ -629,6 +632,8 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
         first observed run so a later dip is never mistaken for a failed start.
         """
         if committed.get("seen_running"):
+            return False
+        if now - committed["start"] < timedelta(minutes=FAILED_TO_START_GRACE_MINUTES):
             return False
         power = self._current_power(device.get(CONF_POWER_SENSOR))
         if power is None:

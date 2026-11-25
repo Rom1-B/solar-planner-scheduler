@@ -102,6 +102,8 @@ The integration never turns a device on or off itself: pair each program with an
 
 Pick the program's `should_run` sensor, then what to do when the window starts and, optionally, when it ends: turn a plug on and off, send a notification, run a script.
 
+Optionally set a running entity (the plug the start actions switch on): the blueprint then checks every minute and at Home Assistant start, runs the start actions again while the window is on and the entity is off, and the end actions while it is still on up to 10 minutes after the window ended. A start missed after a restart or by a plug that didn't answer is caught up within a minute.
+
 [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FRom1-B%2Fsolar-planner-scheduler%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fsolar_planner_scheduler%2Frun_on_schedule.yaml)
 
 ### Notify before a manual start
