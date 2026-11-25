@@ -88,8 +88,6 @@ actions:
       - conditions:
           - condition: trigger
             id: end
-          - condition: template
-            value_template: "{{ not checked or device_on }}"
         sequence: !input end_actions
       - conditions:
           - condition: trigger
