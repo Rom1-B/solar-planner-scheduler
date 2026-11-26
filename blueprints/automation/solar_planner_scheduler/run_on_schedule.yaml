@@ -77,6 +77,13 @@ triggers:
     event: start
     id: check
 
+# Checked before the run is logged: an every-minute check with nothing to catch up stays out of the logbook.
+conditions:
+  - condition: template
+    value_template: >
+      {{ trigger.id != 'check'
+         or (checked and ((window_on and not device_on) or (device_on and just_ended))) }}
+
 actions:
   - choose:
       - conditions:
