@@ -25,6 +25,7 @@ from .const import (
     ATTR_LOCKED,
     ATTR_POWER_W,
     ATTR_PROFILE,
+    ATTR_STARTED,
     CONF_DEVICES,
     CONF_NAME,
     CONF_PROGRAMS,
@@ -73,6 +74,9 @@ class StartTimeDateTime(CoordinatorEntity[SolarPlannerSchedulerCoordinator], Dat
             ATTR_PROFILE: schedule.profile,
             ATTR_LOCKED: compute_locked(schedule, dt_util.now()),
         }
+        started = self.coordinator.program_started(self._device_name, self._program_name)
+        if started is not None:
+            attributes[ATTR_STARTED] = started
         if schedule.estimated_cost is not None:
             attributes[ATTR_ESTIMATED_COST] = schedule.estimated_cost
             attributes[ATTR_ESTIMATED_SAVINGS] = schedule.estimated_savings

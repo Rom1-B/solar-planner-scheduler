@@ -554,6 +554,8 @@ class SolarPlannerCard extends HTMLElement {
       start: parseTs(start),
       end: attrs.end ? new Date(attrs.end) : null,
       shouldRun: shouldRun?.state === "on",
+      // true/false once the device has a power sensor, null without one (the window alone then counts).
+      started: attrs.started ?? null,
       coveragePct: attrs.coverage_pct ?? null,
       locked: !!attrs.locked,
       powerW: attrs.power_w ?? null,
@@ -943,7 +945,13 @@ class SolarPlannerCard extends HTMLElement {
             return `<div class="program-row${rowPending ? " pending" : ""}">
               <span class="program-chip"><button class="program-toggle ${ds.active ? "active" : ""}" data-row="${ds.slug}" data-active="${ds.active}" ${ds.active ? `style="background:${deviceColor(i)};border-color:${deviceColor(i)}"` : ""} ${rowPending ? "disabled" : ""}>${ds.programName}</button>${
                 rowPending ? `<ha-icon class="row-spinner" icon="mdi:loading"></ha-icon>` : ""
-              }${ds.shouldRun ? `<ha-icon class="running-icon" icon="mdi:play-circle" title="Currently running"></ha-icon>` : ""}</span>
+              }${
+                ds.shouldRun && ds.started === false
+                  ? `<ha-icon class="waiting-icon" icon="mdi:play-circle-outline" title="To start"></ha-icon>`
+                  : ds.shouldRun || ds.started
+                    ? `<ha-icon class="running-icon" icon="mdi:play-circle" title="Currently running"></ha-icon>`
+                    : ""
+              }</span>
               ${slot ? `<div class="program-detail">${slot}</div>` : ""}
             </div>`;
           })
@@ -976,6 +984,7 @@ class SolarPlannerCard extends HTMLElement {
           energyWh: ds.profile ? ds.profile.reduce((s, p) => s + (p.minutes * p.power_w) / 60, 0) : (ds.powerW * durationMin) / 60,
           estimatedCost: ds.estimatedCost,
           estimatedSavings: ds.estimatedSavings,
+          started: ds.started,
           currency: ds.currency,
         };
       });
@@ -1020,7 +1029,8 @@ class SolarPlannerCard extends HTMLElement {
               ? "Tomorrow "
               : `${p.start.toLocaleDateString("en-US", { weekday: "long" })} `;
         const countdown = p.start ? fmtCountdown(p.start, now) : null;
-        const started = p.start && p.start <= now;
+        // A device with a power sensor only counts as started once it really draws power.
+        const started = p.started ?? (p.start && p.start <= now);
         return `<tr class="${started ? "row-started" : ""}">
           <td>${p.deviceName}${p.fixed ? " (external)" : ` - ${p.programName}`}</td>
           <td>${
@@ -1094,6 +1104,7 @@ class SolarPlannerCard extends HTMLElement {
         .program-detail { order: 1; flex-basis: 100%; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; font-size: 0.85em; }
         .detail-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
         .running-icon { --mdc-icon-size: 14px; color: var(--success-color, #4caf50); vertical-align: middle; }
+        .waiting-icon { --mdc-icon-size: 14px; color: var(--warning-color, #ff9800); vertical-align: middle; }
         .program-toggle { border: 1px solid var(--divider-color); background: none; border-radius: 12px; padding: 3px 10px; font-size: 0.95em; cursor: pointer; color: var(--primary-text-color); font-family: inherit; }
         .program-toggle.active { background: var(--primary-color); color: var(--text-primary-color, #fff); border-color: var(--primary-color); }
         .slot-time { border: 1px solid var(--divider-color); border-radius: 4px; background: none; color: var(--primary-text-color); }

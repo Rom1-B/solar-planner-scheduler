@@ -74,7 +74,7 @@ Per (device, program) pair:
 | Entity | Description |
 |--------|-------------|
 | `switch.<device>_<program>_active` | Whether this program is scheduled. |
-| `datetime.<device>_<program>_start` | Next start time, computed or forced. Attributes include `coverage_pct` (share covered by solar), `profile`, `locked`, and with tariffs, the estimated cost and savings. |
+| `datetime.<device>_<program>_start` | Next start time, computed or forced. Attributes include `coverage_pct` (share covered by solar), `profile`, `locked`, `started` (the device was really seen drawing power, only with a power sensor; the card shows a to-start icon until then), and with tariffs, the estimated cost and savings. |
 | `binary_sensor.<device>_<program>_should_run` | On during the scheduled window: trigger your automations from it. |
 
 Integration-wide:

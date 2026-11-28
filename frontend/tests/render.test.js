@@ -1619,6 +1619,21 @@ test("an active program's slot shows a countdown to its start, hidden once it's 
   assert.ok(!card.shadowRoot.innerHTML.includes('class="countdown"'), "expected no countdown once the program is running");
 });
 
+test("an open window shows a to-start icon until the device is really seen running", () => {
+  const card = buildCard();
+  card._hass.states["binary_sensor.lave_linge_should_run"] = { state: "on" };
+  const start = card._hass.states["datetime.lave_linge_start"];
+  card._hass.states["datetime.lave_linge_start"] = { ...start, attributes: { ...start.attributes, started: false } };
+  card._render();
+  assert.match(card.shadowRoot.innerHTML, /class="waiting-icon"/, "expected the to-start icon while not started");
+  assert.ok(!card.shadowRoot.innerHTML.includes('class="running-icon"'), "expected no running icon before the real start");
+
+  card._hass.states["datetime.lave_linge_start"] = { ...start, attributes: { ...start.attributes, started: true } };
+  card._render();
+  assert.match(card.shadowRoot.innerHTML, /class="running-icon"/, "expected the running icon once started");
+  assert.ok(!card.shadowRoot.innerHTML.includes('class="waiting-icon"'), "expected no to-start icon once started");
+});
+
 test("the table's Window column includes a countdown to a future fixed load's start", () => {
   const card = buildCard();
   card._showTable = true;

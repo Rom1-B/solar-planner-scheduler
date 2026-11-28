@@ -495,6 +495,20 @@ class SolarPlannerSchedulerCoordinator(DataUpdateCoordinator[dict[tuple[str, str
             "seen_running": raw.get("seen_running", False),
         }
 
+    def program_started(self, device_name: str, program_name: str) -> bool | None:
+        """Whether the committed slot's device was really seen running, None without a power sensor.
+
+        Reads the per-minute detection too, so the answer doesn't wait for the next full cycle.
+        """
+        device = next((d for d in self.entry.options.get(CONF_DEVICES, []) if d[CONF_NAME] == device_name), None)
+        if device is None or not device.get(CONF_POWER_SENSOR):
+            return None
+        state = self._program_state(device_name, program_name)
+        committed = state.get("committed")
+        if committed is None:
+            return False
+        return bool(committed.get("seen_running") or state.get("pending_power_detected_at"))
+
     async def _set_committed(
         self,
         device_name: str,

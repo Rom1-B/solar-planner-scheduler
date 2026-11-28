@@ -1077,6 +1077,29 @@ def _active_coordinator_with_sensor(hass, **kwargs) -> SolarPlannerSchedulerCoor
     return SolarPlannerSchedulerCoordinator(hass, entry)
 
 
+def test_program_started_follows_real_power_detection_not_the_window(hass):
+    coordinator = _active_coordinator_with_sensor(hass)
+    start = datetime(2026, 11, 28, 10, 15, tzinfo=UTC)
+    _seed_committed(coordinator, "lave_linge", "Eco", DeviceSchedule("lave_linge", start, start + timedelta(minutes=150), 80))
+
+    assert coordinator.program_started("lave_linge", "Eco") is False
+
+    coordinator._state["lave_linge"]["Eco"]["pending_power_detected_at"] = (start + timedelta(minutes=9)).isoformat()
+    assert coordinator.program_started("lave_linge", "Eco") is True
+
+    coordinator._state["lave_linge"]["Eco"].pop("pending_power_detected_at")
+    coordinator._state["lave_linge"]["Eco"]["committed"]["seen_running"] = True
+    assert coordinator.program_started("lave_linge", "Eco") is True
+
+
+def test_program_started_is_unknown_without_a_power_sensor(hass):
+    coordinator = _coordinator(hass)
+    start = datetime(2026, 11, 28, 10, 15, tzinfo=UTC)
+    _seed_committed(coordinator, "lave_vaisselle", "Eco", DeviceSchedule("lave_vaisselle", start, start + timedelta(minutes=90), 80))
+
+    assert coordinator.program_started("lave_vaisselle", "Eco") is None
+
+
 async def test_check_power_detection_records_the_precise_minute(hass):
     coordinator = _active_coordinator_with_sensor(hass)
     await coordinator.async_load_state()
