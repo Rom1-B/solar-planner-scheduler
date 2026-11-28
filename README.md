@@ -8,21 +8,24 @@
 [![License](https://img.shields.io/github/license/Rom1-B/solar-planner-scheduler)](LICENSE)
 
 **Run your appliances on sunshine, not on the grid.**
-Tell Home Assistant your washing machine takes 2 hours: Solar Planner Scheduler finds the best 2-hour window in today's solar forecast, shows it on a bundled card, and flips a sensor on when it's time to start.
+Your washing machine, dishwasher or water heater runs when your panels produce, instead of whenever you happen to press start.
 
 ![Solar Planner card](https://raw.githubusercontent.com/Rom1-B/solar-planner-scheduler/main/docs/card.png)
 
+## 🌞 How it works
+
+1. **Describe an appliance** once: its programs and roughly how long and how much they draw.
+2. **Pick a program**: Solar Planner finds today's window where your solar forecast covers it best, and keeps adjusting it as the forecast changes.
+3. **At the right time**, a sensor turns on: an automation switches the appliance on, or simply reminds you to start it.
+
 ## ✨ Features
 
-- **Best slot from your solar forecast**: each program gets the window where the forecast covers the largest share of its consumption, recomputed as the forecast updates.
+- **Best slot from your solar forecast** (Solcast, Forecast.Solar, Helios), recomputed as the forecast updates.
 - **Realistic power profiles**: describe a program as phases (`20min@150W`, then `1.5h@800W`), so a short heating peak is placed under the sun, not just the average draw.
-- **Self-learning**: with a power sensor, the integration detects real starts and refines each program's phases from actual runs. If the power sensor's device also has an energy meter, learned power is corrected against it, for plugs that report power irregularly.
-- **Shares the sunshine**: several devices never get scheduled beyond your maximum simultaneous power, and two programs of the same machine never overlap.
-- **Off-peak aware** (optional): with your tariff bands, it picks the cheapest window, solar or off-peak grid, and shows the estimated cost or savings.
-- **Payback tracking** (optional): a sensor reports what your panels earned since installation and projects the payback date, from your Energy dashboard's data.
-- **Bundled Lovelace card**: forecast curve with confidence band, a gantt of planned runs, drag a bar to force a time, summary table. Registered automatically.
-- **Energy split card**: grid cost and solar savings of each Energy dashboard device over a period, following the dashboard's date picker. Registered automatically.
-- **Energy stats graph card**: the native Energy devices graph for the meters you choose, with temperature or humidity lines and the native compare modes. Registered automatically.
+- **Learns from real runs**: with a power sensor, it detects real starts and refines each program's phases (corrected against the energy meter when the plug has one).
+- **Shares the sunshine**: several devices never go beyond your maximum simultaneous power, and two programs of the same machine never overlap.
+- **Bundled card**: forecast curve with confidence band, a gantt of planned runs, drag a bar to force a time.
+- **Optional extras**: off-peak tariff bands (cheapest window, estimated cost or savings), payback tracking of your panels, and two Energy cards ([energy split](#-the-energy-split-card), [stats graph](#-the-energy-stats-graph-card)).
 
 ## 📋 Requirements
 
